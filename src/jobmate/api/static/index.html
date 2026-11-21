@@ -118,6 +118,23 @@
   .digest pre { white-space: pre-wrap; font-family: inherit;
                 font-size: 14px; margin: 0; color: var(--ink-2); }
   .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+  /* ── Agent-Office ── */
+  .office-status { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .office-chip {
+    font-size: 12px; font-weight: 600; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 12px;
+  }
+  .office-chip b { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .office-stage {
+    position: relative; min-height: 340px; margin-bottom: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .office-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 820px) {
+    .office-split { grid-template-columns: 1fr; }
+  }
   /* ── Skill Radar (skillRadar UI 포팅) ── */
   #view-radar { padding: 0; }
   .sr-root {
@@ -428,7 +445,7 @@
     <nav>
       <button class="nav-item active" data-view="radar"><span class="ico">◈</span>Skill Radar</button>
       <button class="nav-item" data-view="gmail"><span class="ico">✉</span>Gmail Checker</button>
-      <button class="nav-item" data-view="coding"><span class="ico">⌘</span>코딩 에이전트</button>
+      <button class="nav-item" data-view="office"><span class="ico">⬡</span>Agent-Office</button>
       <button class="nav-item" data-view="calendar"><span class="ico">▣</span>Calendar</button>
       <button class="nav-item" data-view="runs"><span class="ico">▶</span>실행 이력</button>
     </nav>
@@ -448,39 +465,23 @@
       <div id="gmail-cards"><div class="empty">로딩…</div></div>
     </section>
 
-    <!-- 코드 어댑터 -->
-    <section id="view-coding" hidden>
+    <!-- Agent-Office -->
+    <section id="view-office" hidden>
       <div class="page-head">
-        <h1 class="page-title">코딩 에이전트</h1>
-        <p class="page-desc">내장 에이전트(파일/셸 도구 루프) 또는 코딩 CLI를 실행하고 결과를 표시</p>
+        <h1 class="page-title">Agent Command</h1>
+        <p class="page-desc">dev_review 워크플로 실행 관제판</p>
       </div>
-      <div class="card">
-        <div class="grid-form">
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-            <label style="font-size:13px;font-weight:600">실행 방식
-              <select id="coding-engine">
-                <option value="agent" selected>내장 에이전트</option>
-                <option value="cli">CLI 어댑터</option>
-              </select></label>
-            <label style="font-size:13px;font-weight:600">도구
-              <select id="coding-tool"></select></label>
-            <label style="font-size:13px;font-weight:600">모델
-              <input id="coding-model" placeholder="CLI 기본 모델"></label>
-          </div>
-          <label style="font-size:13px;font-weight:600">작업 지시
-            <textarea id="coding-task" rows="4" required
-              placeholder="예: hello.txt 파일을 만들고 내용을 'hello'로 작성"></textarea></label>
-          <div>
-            <button id="coding-run">실행</button>
-            <button id="coding-cancel" class="secondary" hidden>취소</button>
-            <span class="status-line" id="coding-status" role="status"></span>
-          </div>
-        </div>
+      <div class="office-status">
+        <span class="office-chip">실행시간 <b id="office-elapsed">-</b></span>
+        <span class="office-chip">총 토큰 <b id="office-tokens">-</b></span>
+        <span class="office-chip">진행률 <b id="office-progress">-</b></span>
       </div>
-      <div id="coding-result"></div>
-      <div class="card" style="margin-top:12px">
-        <h3 style="margin:0 0 10px;font-size:14px">최근 작업</h3>
-        <div id="coding-jobs"></div>
+      <div id="office-stage" class="office-stage">
+        <div class="empty">실행된 dev_review 워크플로가 없습니다</div>
+      </div>
+      <div class="office-split">
+        <div id="office-detail" class="card"><span class="empty">선택 에이전트</span></div>
+        <div id="office-log" class="card"><span class="empty">이벤트 로그</span></div>
       </div>
     </section>
 
@@ -662,16 +663,6 @@
         <option value="daily">매일</option>
         <option value="weekly">매주</option>
       </select></label>
-    <label style="font-size:13px;font-weight:600">코드 어댑터 CLI
-      <select id="set-coding-tool">
-        <option value="none">none (내장 implementer)</option>
-        <option value="claude">claude</option>
-        <option value="codex">codex</option>
-        <option value="antigravity">antigravity (agy)</option>
-        <option value="opencode">opencode</option>
-      </select></label>
-    <label style="font-size:13px;font-weight:600">코드 어댑터 모델
-      <input id="set-coding-model" placeholder="비우면 CLI 기본 모델"></label>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button id="settings-save">저장</button>
     </div>
@@ -845,7 +836,7 @@ async function api(path, opts, _retried) {
 const badge = (s) => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 
 /* ── 뷰 전환 ── */
-const VIEWS = { gmail: loadGmail, coding: loadCoding, calendar: loadCalendar,
+const VIEWS = { gmail: loadGmail, office: loadOffice, calendar: loadCalendar,
                 radar: () => window.loadRadar && window.loadRadar(), runs: loadRuns };
 const loaded = {};
 document.querySelectorAll(".nav-item").forEach(b =>
@@ -926,175 +917,19 @@ async function retryMsg(provider, sid) {
   } catch (e) { alert(e.message); }
 }
 
-/* ── 코드 어댑터 ── */
-let codingPoll = null;
-async function loadCoding() {
-  loadCodingJobs();
-  if ($("#coding-tool").options.length) return;
-  try {
-    const d = await api("/coding/tools");
-    $("#coding-tool").innerHTML = (d.tools || []).map(t =>
-      `<option value="${esc(t.name)}" ${t.default ? "selected" : ""}${t.available ? "" : " disabled"}>
-        ${esc(t.name)}${t.available ? "" : " (미설치)"}</option>`).join("");
-    if (d.default_model) $("#coding-model").value = d.default_model;
-    $("#coding-model").placeholder = "비우면 CLI 기본 모델";
-    syncEngineUI();
-  } catch (e) {
-    $("#coding-status").textContent = e.message;
-    $("#coding-status").className = "status-line err";
-  }
+/* ── Agent-Office ── */
+// 스켈레톤 — 실제 데이터 렌더링은 후속 태스크에서 구현
+function renderOfficeEmpty() {
+  $("#office-stage").innerHTML =
+    '<div class="empty">실행된 dev_review 워크플로가 없습니다</div>';
+  $("#office-detail").innerHTML = '<span class="empty">선택 에이전트</span>';
+  $("#office-log").innerHTML = '<span class="empty">이벤트 로그</span>';
+  $("#office-elapsed").textContent = "-";
+  $("#office-tokens").textContent = "-";
+  $("#office-progress").textContent = "-";
 }
-function syncEngineUI() {
-  const isAgent = $("#coding-engine").value === "agent";
-  $("#coding-tool").disabled = isAgent;
-  $("#coding-model").disabled = isAgent;
-  $("#coding-model").placeholder = isAgent ? "에이전트 모델 (비우면 기본)" : "CLI 기본 모델";
-}
-$("#coding-engine").addEventListener("change", syncEngineUI);
-$("#coding-run").addEventListener("click", async () => {
-  const st = $("#coding-status");
-  st.textContent = "실행 중…"; st.className = "status-line";
-  $("#coding-result").innerHTML = "";
-  $("#coding-cancel").hidden = false;
-  try {
-    const r = await api("/coding/run", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        engine: $("#coding-engine").value,
-        tool: $("#coding-tool").value,
-        model: $("#coding-model").value.trim(),
-        task: $("#coding-task").value.trim()})});
-    pollCodingJob(r.job_id);
-  } catch (e) { st.textContent = e.message; st.className = "status-line err"; }
-});
-$("#coding-cancel").addEventListener("click", async () => {
-  if (!activeCodingJob) return;
-  try {
-    await api("/coding/jobs/" + activeCodingJob + "/cancel", {method: "POST"});
-    $("#coding-status").textContent = "취소 요청됨…";
-  } catch (e) {
-    $("#coding-status").textContent = e.message;
-    $("#coding-status").className = "status-line err";
-  }
-});
-let activeCodingJob = null;
-function renderCodingJob(j) {
-  const stepsHtml = (j.steps || []).length ? `
-    <div class="card"><h3 style="margin:0 0 10px;font-size:14px">에이전트 스텝 (${j.steps.length})</h3>
-      ${j.steps.map(s => `
-        <div style="border-left:2px solid var(--accent);padding:6px 10px;margin:6px 0">
-          <div class="card-meta mono">#${s.step} ${esc(s.tool)}(${esc(JSON.stringify(s.args))})</div>
-          ${s.thought ? `<div class="card-meta">${esc(s.thought)}</div>` : ""}
-          <pre class="block" style="white-space:pre-wrap;font-size:12px">${esc(s.result || "")}</pre>
-        </div>`).join("")}
-    </div>` : "";
-  $("#coding-result").innerHTML = `
-    ${stepsHtml}
-    <div class="card"><h3 style="margin:0 0 10px;font-size:14px">출력</h3>
-      <pre class="block" style="white-space:pre-wrap">${esc(j.answer || j.text || "(출력 없음)")}</pre></div>
-    ${j.diff ? `<div class="card"><h3 style="margin:0 0 10px;font-size:14px">Diff</h3>
-      <pre class="block">${esc(j.diff)}</pre>
-      <div class="card-meta">workspace: ${esc(j.workspace || "")}</div></div>` : ""}`;
-}
-async function loadCodingJobs() {
-  const el = $("#coding-jobs");
-  try {
-    const d = await api("/coding/jobs?limit=10");
-    const jobs = d.jobs || [];
-    el.innerHTML = jobs.length ? jobs.map(j => `
-      <div class="card" data-job="${esc(j.id)}" style="cursor:pointer;margin-bottom:8px">
-        <div class="card-top">${badge(j.status)}
-          <span class="card-meta mono">${esc(j.engine || "")}/${esc(j.tool || "")}${j.model ? " · " + esc(j.model) : ""}</span></div>
-        <div style="font-size:13px;margin-top:4px">${esc((j.task || "").slice(0, 120))}</div>
-        <div class="card-meta">${esc((j.created_at || "").replace("T", " ").slice(0, 19))}</div>
-      </div>`).join("") : '<div class="empty">작업 없음</div>';
-    el.querySelectorAll("[data-job]").forEach(node =>
-      node.addEventListener("click", async () => {
-        const j = await api("/coding/jobs/" + node.dataset.job);
-        $("#coding-status").textContent =
-          `불러옴 (${j.engine}/${j.tool}, ${j.status})`;
-        $("#coding-status").className = "status-line";
-        renderCodingJob(j);
-      }));
-  } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-}
-function handleCodingJob(j) {
-  const st = $("#coding-status");
-  if (j.status === "queued") {
-    st.textContent = "대기 중…"; st.className = "status-line";
-    $("#coding-cancel").hidden = false;
-    return false;
-  }
-  if (j.status === "running") {
-    const n = (j.steps || []).length;
-    st.textContent = `${j.tool} 실행 중…${n ? ` (스텝 ${n})` : ""}`;
-    st.className = "status-line";
-    if (n) renderCodingJob(j);  // 진행 중 스텝 미리보기
-    return false;
-  }
-  $("#coding-cancel").hidden = true;
-  activeCodingJob = null;
-  loadCodingJobs();
-  if (j.status === "cancelled") {
-    st.textContent = "취소됨"; st.className = "status-line";
-  } else if (j.status === "failed") {
-    st.textContent = "실패: " + (j.error || ""); st.className = "status-line err";
-    renderCodingJob(j);
-    return true;
-  } else {
-    st.textContent = `완료 (${j.tool}${j.model ? "/" + j.model : ""}${j.exit_code != null ? ", exit=" + j.exit_code : ""}, 시도 ${j.attempts || 1}회)`;
-    st.className = "status-line";
-  }
-  renderCodingJob(j);
-  return true;
-}
-async function streamCodingJob(jobId) {
-  // SSE 우선, 실패 시 폴링 폴백
-  try {
-    const resp = await fetch(API + "/coding/jobs/" + jobId + "/events",
-      {headers: apiHeaders()});
-    if (!resp.ok || !resp.body) throw new Error("no stream");
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, {stream: true});
-      let idx;
-      while ((idx = buf.indexOf("\n\n")) >= 0) {
-        const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
-        for (const line of chunk.split("\n")) {
-          if (!line.startsWith("data: ")) continue;
-          const j = JSON.parse(line.slice(6));
-          if (handleCodingJob(j)) return;
-        }
-      }
-    }
-    // 스트림 종료 — 최종 상태 한 번 더 확인
-    handleCodingJob(await api("/coding/jobs/" + jobId));
-    return;
-  } catch (e) { /* 폴백으로 진행 */ }
-  pollCodingJobFallback(jobId);
-}
-function pollCodingJobFallback(jobId) {
-  clearInterval(codingPoll);
-  codingPoll = setInterval(async () => {
-    try {
-      const j = await api("/coding/jobs/" + jobId);
-      if (handleCodingJob(j)) clearInterval(codingPoll);
-    } catch (e) {
-      clearInterval(codingPoll);
-      $("#coding-cancel").hidden = true;
-      activeCodingJob = null;
-      $("#coding-status").textContent = e.message;
-      $("#coding-status").className = "status-line err";
-    }
-  }, 2000);
-}
-function pollCodingJob(jobId) {
-  activeCodingJob = jobId;
-  streamCodingJob(jobId);
+async function loadOffice() {
+  renderOfficeEmpty();
 }
 
 /* ── Calendar ── */
@@ -1820,8 +1655,6 @@ $("#settings-open").addEventListener("click", async () => {
     const s = await api("/settings");
     $("#set-gmail-minutes").value = String(s.gmail_check_minutes || 30);
     $("#set-radar-interval").value = s.radar_interval || "daily";
-    $("#set-coding-tool").value = s.coding_tool || "none";
-    $("#set-coding-model").value = s.coding_model || "";
     $("#settings-status").textContent = "";
   } catch (e) { $("#settings-status").textContent = e.message; }
   dlg.showModal();
@@ -1838,13 +1671,8 @@ $("#settings-save").addEventListener("click", async () => {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         gmail_check_minutes: Number($("#set-gmail-minutes").value),
-        radar_interval: $("#set-radar-interval").value,
-        coding_tool: $("#set-coding-tool").value,
-        coding_model: $("#set-coding-model").value.trim()})});
+        radar_interval: $("#set-radar-interval").value})});
     st.textContent = "저장했습니다";
-    // 코드 어댑터 뷰의 기본 선택을 새 설정으로 갱신
-    $("#coding-tool").innerHTML = "";
-    loadCoding();
   } catch (e) { st.textContent = e.message; st.className = "status-line err"; }
 });
 

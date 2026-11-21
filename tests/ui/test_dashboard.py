@@ -123,7 +123,7 @@ def test_sidebar_navigation(page: Page) -> None:
     """사이드바 5개 메뉴가 각각 우측 화면을 전환한다."""
     for view, title in [
         ("gmail", "Gmail Checker"),
-        ("coding", "코딩 에이전트"),
+        ("office", "Agent Command"),
         ("calendar", "Calendar"),
         ("radar", "SkillRadar"),
         ("runs", "실행"),
