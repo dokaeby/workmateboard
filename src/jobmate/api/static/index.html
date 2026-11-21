@@ -1279,16 +1279,29 @@ function officeBindApproval() {
   if (r) r.addEventListener("click", () => officeApprove("reject"));
 }
 
+let officeApproveBusy = false;
+
 async function officeApprove(decision) {
   const run = officeState.run;
-  if (!run) return;
+  if (!run || officeApproveBusy) return;
+  officeApproveBusy = true;
+  // 더블클릭으로 approve POST가 중복 발사되지 않도록 비활성화
+  const btns = ["#office-approve-btn", "#office-reject-btn"]
+    .map(s => $(s)).filter(Boolean);
+  btns.forEach(b => { b.disabled = true; });
   try {
     await api(`/runs/${encodeURIComponent(run.id)}/approve`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({decision, comment: ""}),
     });
-  } catch (e) { alert(e.message); return; }
+  } catch (e) {
+    alert(e.message);
+    btns.forEach(b => { b.disabled = false; });
+    officeApproveBusy = false;
+    return;
+  }
+  officeApproveBusy = false;
   loadOffice();
 }
 
@@ -1302,7 +1315,10 @@ function officeDetailSig() {
   }
   const n = OFFICE_NODES.find(x => x.code === sel.code);
   const sr = n && n.key ? officeState.stages.get(n.key) : null;
-  return "st|" + sel.code + "|" + (sr ? sr.status : "-") + "|" +
+  // run.status/updated_at 포함 — stage_run 변화 없이 run 상태만 바뀌어도
+  // (승인/거절/취소) 승인 버튼 표시 여부를 다시 렌더링해야 한다
+  return "st|" + sel.code + "|" + run.status + "|" + run.updated_at + "|" +
+    (sr ? sr.status : "-") + "|" +
     (sr ? sr.attempt : 0) + "|" + (sr ? sr.tokens_in : 0) + "|" +
     (sr ? sr.tokens_out : 0) + "|" + (sr ? sr.finished_at : "") + "|" +
     (sr ? sr.error : "");

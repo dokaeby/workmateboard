@@ -240,6 +240,31 @@ def test_office_waiting_approval_shows_approve_buttons(
     assert called and called[0]["decision"] == "approve"
 
 
+def test_office_approve_buttons_hide_when_run_leaves_waiting(
+    page: Page, ui_server: SimpleNamespace
+) -> None:
+    """stage 노드 선택 중 run.status가 waiting_approval을 벗어나면 버튼이 사라진다.
+
+    stage_run 필드 변화 없이 run 상태만 바뀌는 경우에도 상세 패널이
+    재렌더링되어 stale 승인 버튼이 남지 않아야 한다.
+    """
+    store = ui_server.store
+    # 이전 테스트가 남긴 dev_review run들은 active 상태라 pickRun에 잡힌다 —
+    # 이 테스트의 run만 선택되도록 전부 completed로 정리
+    for r in store.list_runs():
+        if r.workflow_key == "dev_review":
+            store.update_run(r.id, status=RunStatus.COMPLETED)
+    run = store.create_run("dev_review", "v1", {"task": "stale"}, trace_id="uitrace4")
+    store.update_run(run.id, status=RunStatus.WAITING_APPROVAL)
+    page.click('.nav-item[data-view="office"]')
+    page.wait_for_selector('.office-node[data-node="HUM"]', timeout=5000)
+    page.locator('.office-node[data-node="HUM"]').dispatch_event("click")
+    page.wait_for_selector("#office-approve-btn", timeout=5000)
+    # stage_run은 그대로 두고 run 상태만 completed로 전이
+    store.update_run(run.id, status=RunStatus.COMPLETED)
+    page.wait_for_selector("#office-approve-btn", state="detached", timeout=10000)
+
+
 def _seed_review_event(store: Store, event_id: str) -> None:
     store.save_scheduled_event(
         event_id=event_id,
