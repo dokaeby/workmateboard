@@ -378,7 +378,7 @@ def create_app(
         return JSONResponse(status_code=202, content={"id": run.id, "status": run.status.value})
 
     @app.get("/api/v1/runs")
-    def list_runs(limit: int = 50) -> list[dict[str, Any]]:
+    def list_runs(limit: int = 50, workflow: str | None = None) -> list[dict[str, Any]]:
         return [
             {
                 "id": r.id,
@@ -386,7 +386,7 @@ def create_app(
                 "status": r.status.value,
                 "created_at": r.created_at.isoformat(),
             }
-            for r in store.list_runs(limit)
+            for r in store.list_runs(limit, workflow=workflow)
         ]
 
     @app.get("/api/v1/runs/{run_id}")

@@ -19,8 +19,8 @@
 1. dev 의존성 설치: `uv sync --extra dev` (playwright 포함).
 2. 브라우저 설치: `uv run playwright install chromium` (최초 1회, ~290MB).
 3. 별도 서버/DB/worker 준비 불필요 — `tests/ui/test_dashboard.py`의 fixture가
-   임시 SQLite DB + 빈 adapters + `llm=None`으로 실제 uvicorn 서버를
-   랜덤 포트에 띄우고 종료 시 정리한다.
+   임시 SQLite DB + `FakeLLM`(`jobmate.llm.FakeLLM`) + fake calendar 어댑터로
+   실제 uvicorn 서버를 랜덤 포트에 띄우고 종료 시 정리한다.
 
 ## 실행
 

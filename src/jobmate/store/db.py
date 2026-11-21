@@ -606,10 +606,16 @@ class Store:
         row = self._conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         return self._row_to_run(row) if row else None
 
-    def list_runs(self, limit: int = 50) -> list[Run]:
-        rows = self._conn.execute(
-            "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+    def list_runs(self, limit: int = 50, workflow: str | None = None) -> list[Run]:
+        if workflow is None:
+            rows = self._conn.execute(
+                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM runs WHERE workflow_key=? ORDER BY created_at DESC LIMIT ?",
+                (workflow, limit),
+            ).fetchall()
         return [self._row_to_run(r) for r in rows]
 
     def update_run(

@@ -52,6 +52,17 @@ def test_create_run_validation_error():
     assert r.status_code == 422
 
 
+def test_list_runs_workflow_filter():
+    client, store = _client()
+    store.create_run("dev_review", "0.1.0", {"task": "t"}, trace_id="a")
+    store.create_run("gmail_calendar", "0.1.0", {"task": "t"}, trace_id="b")
+    assert len(client.get("/api/v1/runs").json()) == 2
+    dr = client.get("/api/v1/runs?workflow=dev_review").json()
+    assert len(dr) == 1
+    assert dr[0]["workflow"] == "dev_review"
+    assert client.get("/api/v1/runs?workflow=nope").json() == []
+
+
 def test_run_not_found():
     client, _ = _client()
     r = client.get("/api/v1/runs/nonexistent")
