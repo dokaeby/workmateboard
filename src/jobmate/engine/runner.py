@@ -55,7 +55,6 @@ class WorkflowRunner:
         settings: Any,
         checkpointer: SqliteSaver | None = None,
         adapters: dict[str, Any] | None = None,
-        coding: Any | None = None,
     ) -> None:
         self.spec = spec
         self.registry = registry
@@ -64,7 +63,6 @@ class WorkflowRunner:
         self.tools = tools
         self.settings = settings
         self.adapters = adapters or {}
-        self.coding = coding
         self._checkpointer = checkpointer
         self._graph = self._build()
 
@@ -180,17 +178,14 @@ class WorkflowRunner:
         try:
             schema = SCHEMAS.get(agent.output_schema)
             user = self._build_user_prompt(state, stage, agent)
-            if agent.coding_tool and self.coding is not None:
-                parsed, usage = self._coding_complete(agent, prompt_text, user, state, schema)
-            else:
-                out, usage = self.llm.complete(
-                    model=agent.model, system=prompt_text, user=user, schema=schema
-                )
-                parsed = (
-                    out
-                    if isinstance(out, dict)
-                    else (out.model_dump() if hasattr(out, "model_dump") else {"result": str(out)})
-                )
+            out, usage = self.llm.complete(
+                model=agent.model, system=prompt_text, user=user, schema=schema
+            )
+            parsed = (
+                out
+                if isinstance(out, dict)
+                else (out.model_dump() if hasattr(out, "model_dump") else {"result": str(out)})
+            )
             parsed = self._apply_sensors(agent.role, parsed)
             self.store.finish_stage(
                 stage_run.id,
@@ -407,78 +402,6 @@ class WorkflowRunner:
             self.store.update_run(run_id, metadata=meta)
             self.store.audit(run_id, "system", "pr_summary", "", {"chars": len(meta["pr_summary"])})
         return {"final_status": status.value}
-
-    # ---------- coding tool backend ----------
-    def _coding_workspace(self, run_id: str) -> str:
-        """코딩 도구 작업 디렉터리. 미설정 시 run별 git repo를 생성한다."""
-        import os
-        import subprocess
-
-        if self.settings.coding_workspace:
-            return self.settings.coding_workspace
-        ws = os.path.join(
-            os.path.dirname(self.settings.db_path)
-            if isinstance(self.settings.db_path, str)
-            else str(self.settings.db_path.parent),
-            "workspaces",
-            run_id,
-        )
-        if not os.path.exists(os.path.join(ws, ".git")):
-            os.makedirs(ws, exist_ok=True)
-            subprocess.run(  # noqa: S603
-                ["git", "init", "-q"],  # noqa: S607
-                cwd=ws,
-                check=True,
-                timeout=30,
-            )
-            subprocess.run(  # noqa: S603
-                [  # noqa: S607
-                    "git",
-                    "-c",
-                    "user.email=jobmate@local",
-                    "-c",
-                    "user.name=jobmate",
-                    "commit",
-                    "-q",
-                    "--allow-empty",
-                    "-m",
-                    "init",
-                ],
-                cwd=ws,
-                check=True,
-                timeout=30,
-            )
-        return ws
-
-    def _coding_complete(
-        self, agent: AgentSpec, system: str, user: str, state: HarnessState, schema: Any
-    ) -> tuple[dict[str, Any], dict[str, int]]:
-        """코딩 CLI 어댑터 실행 → 출력 스키마 dict로 변환."""
-        from ..tools.coding import CodingToolError
-
-        run_id = state["run_id"]
-        coding = self.coding
-        assert coding is not None  # 호출부에서 coding_tool 설정 시에만 진입
-        cwd = self._coding_workspace(run_id)
-        prompt = f"{system}\n\n{user}"
-        result = coding.run(prompt=prompt, cwd=cwd, timeout=self.settings.coding_timeout_seconds)
-        self.store.audit(
-            run_id,
-            f"tool:{coding.name}",
-            "invoke",
-            "",
-            {"exit_code": result.exit_code, "diff_chars": len(result.diff)},
-        )
-        if not result.ok:
-            raise CodingToolError(f"{coding.name} exit={result.exit_code}: {result.text[-300:]}")
-        text = result.text.strip()
-        summary = text[-2000:] if text else "(no output)"
-        done = "DONE" if result.diff.strip() else "DONE_WITH_CONCERNS"
-        data = {"summary": summary, "diff": result.diff, "done_state": done}
-        if schema is not None and schema.__name__ != "ChangeProposal":
-            data = {"result": summary, "done_state": done}
-        parsed = schema.model_validate(data) if schema else data
-        return (parsed.model_dump() if hasattr(parsed, "model_dump") else dict(parsed)), {}
 
     # ---------- public API ----------
     def invoke(

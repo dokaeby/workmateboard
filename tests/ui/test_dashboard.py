@@ -55,7 +55,6 @@ def ui_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SimpleNamesp
         radar_platforms=[],
         worker_interval_seconds=60,
         gmail_poll_interval_seconds=3600,
-        coding_tool="none",
     )
     store = Store(str(settings.db_path))
     llm = FakeLLM(_ui_llm_handler)

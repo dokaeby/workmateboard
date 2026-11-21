@@ -14,7 +14,7 @@ from tests.integration.helpers import default_outputs, scripted_llm
 
 def _client():
     db = str(Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     app = create_app(settings=settings, store=store, llm=scripted_llm(default_outputs()))
     return TestClient(app), store

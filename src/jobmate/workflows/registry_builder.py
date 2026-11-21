@@ -25,10 +25,6 @@ def build_registry(settings: Settings) -> Registry:
             agent = reg.agent(role)
             tier = "important" if agent.tier == "important" else "default"
             reg.register_agent(agent.model_copy(update={"model": settings.model_for(role, tier)}))
-    # 코딩 도구 어댑터가 설정되면 implementer는 CLI 백엔드로 실행
-    if settings.coding_tool and settings.coding_tool != "none":
-        agent = reg.agent("implementer")
-        reg.register_agent(agent.model_copy(update={"coding_tool": settings.coding_tool}))
     return reg
 
 
@@ -40,17 +36,12 @@ def build_runner(
     settings: Settings,
     tools: object | None = None,
     adapters: dict | None = None,
-    coding: object | None = None,
 ) -> WorkflowRunner:
-    from ..tools.coding import build_coding_tool
     from ..tools.executor import ToolExecutor
 
     reg = build_registry(settings)
     spec = reg.workflow(workflow_key)
     cp = build_checkpointer_for(settings)
-    coding_tool = coding
-    if coding_tool is None and settings.coding_tool != "none":
-        coding_tool = build_coding_tool(settings.coding_tool, model=settings.coding_model or None)
     return WorkflowRunner(
         spec=spec,
         registry=reg,
@@ -60,5 +51,4 @@ def build_runner(
         settings=settings,
         checkpointer=cp,
         adapters=adapters or {},
-        coding=coding_tool,
     )

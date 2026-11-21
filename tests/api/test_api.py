@@ -10,7 +10,7 @@ from tests.integration.helpers import default_outputs, scripted_llm
 
 def _client():
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     llm = scripted_llm(default_outputs())
     app = create_app(settings=settings, store=store, llm=llm)
@@ -103,7 +103,7 @@ def test_email_check_and_summaries():
     from jobmate.llm import FakeLLM
 
     db = str(pathlib.Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, coding_tool="none")
+    settings = Settings(db_path=db)
     store = Store(db)
     msgs = [
         {
@@ -140,7 +140,7 @@ def test_email_check_no_gmail_adapter():
     import tempfile
 
     db = str(pathlib.Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, coding_tool="none")
+    settings = Settings(db_path=db)
     app = create_app(settings=settings, store=Store(db), llm=None, adapters={})
     client = TestClient(app)
     r = client.post("/api/v1/email/check", json={})
@@ -167,7 +167,7 @@ def test_coding_run_agent_engine():
     import time
 
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     llm = scripted_llm(
         {
@@ -206,7 +206,7 @@ def test_coding_job_persistence_and_cancel():
     from jobmate.store.db import Store
 
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     llm = scripted_llm({"AgentAction": {"action": "final", "answer": "done"}})
     client = TestClient(create_app(settings=settings, store=store, llm=llm))
@@ -323,7 +323,7 @@ def _seed_review_event(store: Store, event_id: str = "gmail:m1", **over) -> None
 
 def _client_with_calendar(cal):
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     llm = scripted_llm(default_outputs())
     app = create_app(settings=settings, store=store, llm=llm, adapters={"calendar": cal})
@@ -399,7 +399,7 @@ def test_event_review_duplicate_marker_and_states():
 
 def test_event_review_no_calendar_adapter():
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     app = create_app(
         settings=settings, store=store, llm=scripted_llm(default_outputs()), adapters={}
@@ -438,7 +438,7 @@ def test_settings_cronjob_autocreate(monkeypatch):
     )
 
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     app = create_app(
         settings=settings, store=store, llm=scripted_llm(default_outputs()), adapters={}
@@ -523,7 +523,7 @@ def test_radar_refresh_serverless_runs_via_background_tasks(monkeypatch):
     from jobmate.models import RadarClassification, RadarVerify
 
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    settings = Settings(db_path=db, budget_max_tokens=100_000, coding_tool="none")
+    settings = Settings(db_path=db, budget_max_tokens=100_000)
     store = Store(db)
     gh = FakeGitHub(
         repos={
