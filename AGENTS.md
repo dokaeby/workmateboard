@@ -18,8 +18,10 @@
 ## 주요 구조
 
 - `src/jobmate/api/app.py` — FastAPI 대시보드 API + `_automation_loop` + `_sync_cronjob`
-- `src/jobmate/coding_worker.py` — 코딩 job 큐/lease/재시도/워커 (`jobmate coding-worker` 독립 실행 가능)
-- `src/jobmate/api/static/index.html` — 단일 파일 대시보드 UI
+- `src/jobmate/workflows/dev_review.py` — dev_review 워크플로(분석→구현→자동검사→보안→리뷰→QA→사람승인)
+- `src/jobmate/api/static/index.html` — 단일 파일 대시보드 UI.
+  "Agent Command"(office) 뷰는 `dev_review` run의 스테이지 진행을 3D 보드로
+  시각화하고 `POST /api/v1/runs/{id}/approve`로 승인/거절을 처리한다.
 - `src/jobmate/store/db.py` — SQLite/PostgreSQL 공용 Store (스키마 이중 정의)
 - `src/jobmate/security.py` — API 키 인증 + Fernet 암호화
 
@@ -27,4 +29,3 @@
 
 - 비밀값·토큰은 로그/커밋 금지. `.env` 미추적.
 - `scheduled_events.status`: candidate/needs_review/needs_confirmation/registered/rejected
-- 코딩 job write는 `lease_owner` 펜싱 필수 — stale worker가 상태를 덮어쓰면 안 됨.

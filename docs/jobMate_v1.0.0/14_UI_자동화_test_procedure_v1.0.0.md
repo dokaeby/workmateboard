@@ -2,8 +2,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | 1.1.0 |
-| 기준일 | 2026-11-19 |
+| 문서 버전 | 1.2.0 |
+| 기준일 | 2026-11-21 |
 | 관련 문서 | 13_UI_자동화_test_cases_v1.0.0.md |
 
 ## 문서 이력
@@ -12,6 +12,7 @@
 |---|---|---|
 | 1.0.0 | 2026-11-19 | 최초 작성 |
 | 1.1.0 | 2026-11-19 | 실제 구현 반영 — pytest + Playwright chromium, `tests/ui/` 자동화 추가 |
+| 1.2.0 | 2026-11-21 | 코딩 에이전트 뷰 제거 → Agent-Office(`office`) 뷰 시나리오로 교체 |
 
 ## 환경 준비
 
@@ -37,13 +38,13 @@ uv run pytest                      # 전체 (UI 포함)
 | test_calendar_view_empty_state | 등록 일정 없음 빈 상태 | UI-04/05 일부 |
 | test_radar_view_platforms | 플랫폼 선택지 표시 | — |
 | test_runs_view_table | 실행 이력 테이블 빈 상태 | UI-02 일부 |
-| test_coding_view_tool_options | 코드 어댑터 CLI 목록 로드 | — |
+| test_office_view_empty_state | dev_review run 없음 빈 상태 안내 | — |
 | test_settings_dialog_save | 설정 저장 → GET /settings 반영 확인 | UI-04 일부 |
 | test_push_toggle_without_vapid | VAPID 미설정 시 alert 안내·화면 유지 | UI-07 일부 |
-| test_coding_run_agent_sse_done | 코딩 에이전트 실행→SSE→완료 렌더링 | — |
-| test_coding_run_polling_fallback | SSE 실패 시 폴링 폴백 | — |
-| test_coding_cancel_running | 실행 중 취소 버튼→cancelled | — |
-| test_coding_recent_job_load | 최근 작업 카드 클릭→결과 로드 | — |
+| test_office_view_shows_dev_review_run | run+stage 시드→헤더 통계·노드·엣지 렌더링 | — |
+| test_office_node_click_shows_stage_detail | 노드 클릭→스테이지 상세·이벤트 로그 표시 | — |
+| test_office_waiting_approval_shows_approve_buttons | 승인 대기 run→승인/거절 버튼 표시 | — |
+| test_office_approve_buttons_hide_when_run_leaves_waiting | run 상태 변경 시 승인 버튼 숨김 | — |
 | test_calendar_review_reject | 검토 필요 카드→거부→rejected | — |
 | test_calendar_review_approve_with_edit | 수정값 승인→캘린더 등록→registered | — |
 | test_calendar_review_invalid_edit_rejected | 무효 수정값 승인 거부→needs_review 유지 | — |
