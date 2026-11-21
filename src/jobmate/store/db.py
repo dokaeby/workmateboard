@@ -252,6 +252,23 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp ON auth_sessions(expires_at);
+
+-- agent-sessions: 로컬 에이전트 브릿지가 push하는 코딩 에이전트 세션 상태
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  project TEXT,
+  title TEXT,
+  status TEXT NOT NULL,
+  doing TEXT,
+  ask TEXT,
+  last_event_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(tool, session_key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -465,6 +482,22 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp ON auth_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  project TEXT,
+  title TEXT,
+  status TEXT NOT NULL,
+  doing TEXT,
+  ask TEXT,
+  last_event_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(tool, session_key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1621,3 +1654,66 @@ class Store:
                     (prov, sid),
                 )
         return len(bad)
+
+    # ---- agent_sessions (로컬 에이전트 브릿지 push 세션) ----
+    def upsert_agent_session(
+        self,
+        tool: str,
+        session_key: str,
+        status: str,
+        *,
+        project: str | None = None,
+        title: str | None = None,
+        doing: str | None = None,
+        ask: str | None = None,
+        event_at: str | None = None,
+    ) -> None:
+        """(tool, session_key) 기준 upsert.
+
+        선택 필드가 None이면 기존 값을 유지한다(COALESCE) — 브릿지가 부분
+        상태만 보내도 이전 값이 지워지지 않게 하기 위함."""
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO agent_sessions(id,tool,session_key,project,title,status,"
+                "doing,ask,last_event_at,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(tool,session_key) DO UPDATE SET"
+                " project=COALESCE(excluded.project, agent_sessions.project),"
+                " title=COALESCE(excluded.title, agent_sessions.title),"
+                " status=excluded.status,"
+                " doing=COALESCE(excluded.doing, agent_sessions.doing),"
+                " ask=COALESCE(excluded.ask, agent_sessions.ask),"
+                " last_event_at=COALESCE(excluded.last_event_at,"
+                " agent_sessions.last_event_at),"
+                " updated_at=excluded.updated_at",
+                (
+                    uuid.uuid4().hex[:12],
+                    tool,
+                    session_key,
+                    project,
+                    title,
+                    status,
+                    doing,
+                    ask,
+                    event_at,
+                    now,
+                    now,
+                ),
+            )
+
+    def list_agent_sessions(
+        self, limit: int = 50, include_ended: bool = False
+    ) -> list[dict[str, Any]]:
+        """최근 이벤트 순 세션 목록. include_ended=False면 status='ended' 제외."""
+        sql = (
+            "SELECT id,tool,session_key,project,title,status,doing,ask,"
+            "last_event_at,created_at,updated_at FROM agent_sessions"
+        )
+        params: list[Any] = []
+        if not include_ended:
+            sql += " WHERE status != 'ended'"
+        sql += " ORDER BY last_event_at DESC NULLS LAST, updated_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
