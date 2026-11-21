@@ -132,6 +132,16 @@
     border-radius: var(--radius); overflow: hidden;
   }
   .office-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  /* Task 7 3D 렌더 전 임시 상태 라벨 */
+  .office-node {
+    display: inline-block; margin: 8px; padding: 8px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12px; font-weight: 600; color: var(--ink-2);
+  }
+  .office-node span { display: block; font-weight: 400; color: var(--muted); }
+  .office-node-running { border-color: var(--accent); color: var(--accent); }
+  .office-node-succeeded { border-color: #2ea043; color: #2ea043; }
+  .office-node-failed { border-color: var(--err); color: var(--err); }
   @media (max-width: 820px) {
     .office-split { grid-template-columns: 1fr; }
   }
@@ -918,8 +928,19 @@ async function retryMsg(provider, sid) {
 }
 
 /* ── Agent-Office ── */
-// 스켈레톤 — 실제 데이터 렌더링은 후속 태스크에서 구현
+// dev_review stage_key → 노드 매핑 (spec: Agent-Office 뷰)
+const OFFICE_STAGES = [
+  {node:"ANA", key:"analysis"}, {node:"DEV", key:"implement"},
+  {node:"TEST", key:"auto_checks"}, {node:"SEC", key:"security"},
+  {node:"CR", key:"code_review"}, {node:"QA", key:"qa"},
+  {node:"HUM", key:"approval"},
+];
+const OFFICE_ACTIVE = new Set(
+  ["running","waiting_approval","waiting_review","queued","needs_human"]);
+const officeState = {run:null, stages:new Map(), selected:null};
+
 function renderOfficeEmpty() {
+  officeState.run = null; officeState.stages.clear(); officeState.selected = null;
   $("#office-stage").innerHTML =
     '<div class="empty">실행된 dev_review 워크플로가 없습니다</div>';
   $("#office-detail").innerHTML = '<span class="empty">선택 에이전트</span>';
@@ -928,8 +949,78 @@ function renderOfficeEmpty() {
   $("#office-tokens").textContent = "-";
   $("#office-progress").textContent = "-";
 }
+
+// run 선택: 진행 중 상태 우선(최신 created_at), 없으면 전체 최신 created_at
+function officePickRun(runs) {
+  const dr = (runs || []).filter(r => r.workflow === "dev_review");
+  if (!dr.length) return null;
+  const byCreated = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
+  const active = dr.filter(r => OFFICE_ACTIVE.has(r.status)).sort(byCreated);
+  if (active.length) return active[0];
+  return dr.slice().sort(byCreated)[0];
+}
+
+// stage_key별 최신 attempt의 StageRun — 없으면 pending/null
+function officeNodeStatus(key) {
+  const sr = officeState.stages.get(key) || null;
+  return {status: sr ? sr.status : "pending",
+          attempt: sr ? (sr.attempt || 1) : 0, stageRun: sr};
+}
+
+function officeFmtElapsed(run) {
+  const a = Date.parse(run.created_at), b = Date.parse(run.updated_at);
+  if (isNaN(a) || isNaN(b)) return "-";
+  const s = Math.max(0, Math.round((b - a) / 1000));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return m + "m " + (r ? r + "s" : "");
+  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+}
+
+function officeRenderHeader(run) {
+  let tokens = 0, done = 0;
+  for (const {key} of OFFICE_STAGES) {
+    const {status, stageRun} = officeNodeStatus(key);
+    if (status === "succeeded") done++;
+    if (stageRun) tokens += (stageRun.tokens_in || 0) + (stageRun.tokens_out || 0);
+  }
+  $("#office-elapsed").textContent = officeFmtElapsed(run);
+  $("#office-tokens").textContent = tokens.toLocaleString();
+  $("#office-progress").textContent =
+    Math.round(done / OFFICE_STAGES.length * 100) + "%";
+}
+
+// Task 7에서 3D 노드/연결선으로 교체 — 현재는 상태 라벨만 표시
+function officeRenderStage() {
+  $("#office-stage").innerHTML = OFFICE_STAGES.map(({node, key}) => {
+    const {status, attempt} = officeNodeStatus(key);
+    const retry = attempt > 1 ? ` ×${attempt}` : "";
+    return `<div class="office-node office-node-${esc(status)}">` +
+      `<b>${node}</b> ${esc(key)}<span>${esc(status)}${retry}</span></div>`;
+  }).join("");
+}
+
 async function loadOffice() {
-  renderOfficeEmpty();
+  try {
+    const runs = await api("/runs");
+    const summary = officePickRun(runs);
+    if (!summary) { renderOfficeEmpty(); return; }
+    const detail = await api(`/runs/${summary.id}`);
+    officeState.run = detail;
+    officeState.stages.clear();
+    for (const s of detail.stages || []) {
+      const cur = officeState.stages.get(s.stage_key);
+      if (!cur || (s.attempt || 1) > (cur.attempt || 1)) {
+        officeState.stages.set(s.stage_key, s);
+      }
+    }
+    officeRenderHeader(detail);
+    officeRenderStage();
+    // 상세 패널·이벤트 로그는 Task 7에서 구현
+  } catch (e) {
+    $("#office-stage").innerHTML =
+      `<div class="empty">${esc(e.message)}</div>`;
+  }
 }
 
 /* ── Calendar ── */
@@ -1732,6 +1823,7 @@ $("#push-toggle").addEventListener("click", async () => {
 refreshPushState();
 VIEWS.radar();
 setInterval(() => { if (!document.getElementById("view-gmail").hidden) loadGmail(); }, 10000);
+setInterval(() => { if (!document.getElementById("view-office").hidden) loadOffice(); }, 3000);
 setInterval(refreshRuns, 5000);
 </script>
 </body>
