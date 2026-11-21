@@ -225,6 +225,41 @@
   .office-log-action { color: var(--accent); font-weight: 600; flex: none; }
   .office-log-ref { color: var(--ink-2); }
   .office-log-detail { color: var(--muted); overflow-wrap: anywhere; }
+  .office-mode { display: flex; gap: 6px; margin-left: auto; }
+  .office-mode-btn {
+    padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--ink-2); font-size: 12px; cursor: pointer;
+  }
+  .office-mode-btn[aria-pressed="true"] {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .jmo-summary { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+  #jmo-wrap { display: flex; flex-direction: column; min-height: 0; }
+  #jmo-wrap[hidden] { display: none; }
+  #jmo-main { flex: 1; min-height: 320px; display: flex; }
+  #jmo-stage { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+  #jmo-box { position: absolute; inset: 0; }
+  #jmo-canvas { position: absolute; inset: 0; display: block; touch-action: manipulation; }
+  #jmo-notice {
+    position: absolute; left: 12px; top: 10px; z-index: 1; max-width: min(560px, calc(100% - 24px));
+    padding: 6px 10px; font-size: 13px; line-height: 1.45; color: var(--ink);
+    background: rgba(255,255,255,.94); border: 1px solid var(--border);
+    border-left: 3px solid var(--warn); border-radius: 4px; pointer-events: none;
+  }
+  #jmo-notice[hidden] { display: none; }
+  #jmo-notice p { margin: 0; }
+  #jmo-notice p + p { margin-top: 2px; }
+  #jmo-side {
+    width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px;
+    min-height: 0; padding: 10px; background: var(--surface);
+    border-left: 1px solid var(--border); overflow: hidden;
+  }
+  #jmo-side h2 { display: flex; align-items: baseline; gap: 8px; margin: 2px 2px 0; font-size: 14px; }
+  #jmo-side h2 small { font-size: 12px; color: var(--muted); font-weight: 500; }
+  #jmo-people, #jmo-log { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+  #jmo-people { max-height: 50%; flex-shrink: 0; }
+  #jmo-log { flex: 1; min-height: 0; }
+  .o-live { color: #15803D; font-size: 11px; }
   .office-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 820px) {
     .office-split { grid-template-columns: 1fr; }
@@ -572,6 +607,10 @@
       <div class="page-head">
         <h1 class="page-title">Agent Command</h1>
         <p class="page-desc">dev_review 워크플로 실행 관제판</p>
+        <div class="office-mode" role="group" aria-label="관제 모드">
+          <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
+          <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
+        </div>
       </div>
       <div class="office-status">
         <span class="office-chip">실행시간 <b id="office-elapsed">-</b></span>
@@ -580,6 +619,22 @@
       </div>
       <div id="office-stage" class="office-stage">
         <div class="empty">실행된 dev_review 워크플로가 없습니다</div>
+      </div>
+      <div id="jmo-wrap" hidden>
+        <p id="jmo-summary" class="jmo-summary"></p>
+        <span id="jmo-demo" hidden></span>
+        <div id="jmo-main">
+          <div id="jmo-stage">
+            <div id="jmo-notice" role="status" hidden></div>
+            <div id="jmo-box"><canvas id="jmo-canvas"></canvas></div>
+          </div>
+          <aside id="jmo-side">
+            <h2>사무실 사람들 <small id="jmo-count"></small></h2>
+            <ul id="jmo-people"></ul>
+            <h2>활동 로그 <small class="o-live">● LIVE</small></h2>
+            <ol id="jmo-log"></ol>
+          </aside>
+        </div>
       </div>
       <div class="office-split">
         <div id="office-detail" class="card"><span class="empty">선택 에이전트</span></div>
@@ -1409,6 +1464,69 @@ async function loadOffice() {
     $("#office-detail").innerHTML = '<span class="empty">선택 에이전트</span>';
     $("#office-log").innerHTML = '<span class="empty">이벤트 로그</span>';
   }
+}
+
+/* ── Agent-Office 스프라이트 사무실 모드 ── */
+// claude-3d-frog-office(web/) 포팅 — /static/office/ 아래 classic script.
+// 최초 '스프라이트 사무실' 선택 시 lazy 로드 후 JMOffice2D.start().
+const OFFICE2D_FILES = [
+  "i18n.js", "office-world.js", "office-atlas.js", "office-path.js",
+  "office-life.js", "office-panel.js", "office-view.js", "jobmate-bridge.js",
+];
+let office2dState = "idle";  // idle | loading | ready
+let officeMode = "board";
+
+function officeModeApply() {
+  const sprites = officeMode === "sprites";
+  $("#office-stage").hidden = sprites;
+  $("#jmo-wrap").hidden = !sprites;
+  for (const b of document.querySelectorAll(".office-mode-btn")) {
+    b.setAttribute("aria-pressed", String(b.dataset.officeMode === officeMode));
+  }
+  if (sprites) office2dEnsure();
+  else if (window.JMOffice2D) JMOffice2D.stop();
+}
+
+function office2dEnsure() {
+  if (office2dState === "ready") { window.JMOffice2D.start(); return; }
+  if (office2dState === "loading") return;
+  office2dState = "loading";
+  const base = "/static/office/";
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = base + "office.css";
+  document.head.appendChild(link);
+  let chain = Promise.resolve();
+  for (const f of OFFICE2D_FILES) {
+    chain = chain.then(() => new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = base + f;
+      s.onload = res;
+      s.onerror = () => rej(new Error("office script load failed: " + f));
+      document.body.appendChild(s);
+    }));
+  }
+  chain.then(() => {
+    office2dState = "ready";
+    JMOffice2D.onSelect = (id) => {
+      officeState.selected = !id ? null
+        : id === "ORCH" ? {type:"orch"} : {type:"stage", code:id};
+      officeRenderStage();
+      officeRenderDetail();
+    };
+    if (officeMode === "sprites") JMOffice2D.start();
+  }).catch((e) => {
+    office2dState = "idle";
+    $("#jmo-notice").hidden = false;
+    $("#jmo-notice").innerHTML = `<p>${esc(e.message)}</p>`;
+  });
+}
+
+for (const b of document.querySelectorAll(".office-mode-btn")) {
+  b.addEventListener("click", () => {
+    officeMode = b.dataset.officeMode;
+    officeModeApply();
+  });
 }
 
 /* ── Calendar ── */
