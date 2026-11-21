@@ -24,6 +24,7 @@ from playwright.sync_api import Page, sync_playwright
 from jobmate.api.app import create_app
 from jobmate.config import Settings
 from jobmate.llm import FakeLLM
+from jobmate.models.enums import RunStatus
 from jobmate.store.db import Store
 
 
@@ -189,7 +190,54 @@ def test_office_view_shows_dev_review_run(page: Page, ui_server: SimpleNamespace
     _wait_text(page, "#office-tokens", "20")  # 15 + 5 (실패 시도 포함 전체 합산)
     _wait_text(page, "#office-progress", "14%")  # 1/7 succeeded
     _wait_text(page, "#office-stage", "succeeded")
-    assert page.locator(".office-node").count() == 7
+    # 7개 stage 노드 + ORCH 노드
+    assert page.locator(".office-node").count() == 8
+    assert page.locator('.office-node[data-node="ORCH"]').count() == 1
+    assert page.locator(".office-edges path").count() >= 7  # SVG 연결선
+
+
+def test_office_node_click_shows_stage_detail(page: Page, ui_server: SimpleNamespace) -> None:
+    """노드 클릭 → 상세 패널에 해당 stage_run 정보가 표시된다."""
+    store = ui_server.store
+    run = store.create_run("dev_review", "v1", {"task": "detail"}, trace_id="uitrace2")
+    sr = store.start_stage(run.id, "analysis", 1, {"q": "x"})
+    store.finish_stage(
+        sr.id, status="succeeded", tokens_in=7, tokens_out=3, output={"summary": "done"}
+    )
+    page.click('.nav-item[data-view="office"]')
+    page.wait_for_selector('.office-node[data-node="ANA"]', timeout=5000)
+    # rotateX 평면 위 노드는 히트 테스트 좌표가 어긋날 수 있어 DOM click 사용
+    page.locator('.office-node[data-node="ANA"]').dispatch_event("click")
+    _wait_text(page, "#office-detail", "analysis")
+    _wait_text(page, "#office-detail", "succeeded")
+    _wait_text(page, "#office-detail", "합계 10")
+    # 이벤트 로그에 stage audit이 시간순으로 렌더링된다
+    _wait_text(page, "#office-log", "stage_done")
+
+
+def test_office_waiting_approval_shows_approve_buttons(
+    page: Page, ui_server: SimpleNamespace
+) -> None:
+    """waiting_approval run → ORCH 상세에 승인/거절 버튼, 클릭 시 approve API 호출."""
+    store = ui_server.store
+    run = store.create_run("dev_review", "v1", {"task": "approve"}, trace_id="uitrace3")
+    store.update_run(run.id, status=RunStatus.WAITING_APPROVAL)
+    called: list[dict[str, Any]] = []
+
+    def handler(route: Any) -> None:
+        called.append(route.request.post_data_json)
+        route.fulfill(json={"status": "waiting_approval"})
+
+    page.route("**/api/v1/runs/*/approve", handler)
+    page.click('.nav-item[data-view="office"]')
+    page.wait_for_selector("#office-approve-btn", timeout=5000)
+    assert page.locator("#office-reject-btn").is_visible()
+    page.click("#office-approve-btn")
+    for _ in range(50):
+        if called:
+            break
+        time.sleep(0.1)
+    assert called and called[0]["decision"] == "approve"
 
 
 def _seed_review_event(store: Store, event_id: str) -> None:
