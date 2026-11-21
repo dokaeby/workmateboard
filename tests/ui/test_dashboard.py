@@ -182,8 +182,11 @@ def test_office_view_shows_dev_review_run(page: Page, ui_server: SimpleNamespace
     run = store.create_run("dev_review", "v1", {"task": "ui"}, trace_id="uitrace1")
     sr = store.start_stage(run.id, "analysis", 1, {})
     store.finish_stage(sr.id, status="succeeded", tokens_in=10, tokens_out=5)
+    # 실패한 다른 stage의 토큰도 총 토큰에 합산되어야 한다 (재시도 비용 포함)
+    sr2 = store.start_stage(run.id, "implement", 1, {})
+    store.finish_stage(sr2.id, status="failed", tokens_in=3, tokens_out=2)
     page.click('.nav-item[data-view="office"]')
-    _wait_text(page, "#office-tokens", "15")
+    _wait_text(page, "#office-tokens", "20")  # 15 + 5 (실패 시도 포함 전체 합산)
     _wait_text(page, "#office-progress", "14%")  # 1/7 succeeded
     _wait_text(page, "#office-stage", "succeeded")
     assert page.locator(".office-node").count() == 7

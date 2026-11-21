@@ -937,10 +937,11 @@ const OFFICE_STAGES = [
 ];
 const OFFICE_ACTIVE = new Set(
   ["running","waiting_approval","waiting_review","queued","needs_human"]);
-const officeState = {run:null, stages:new Map(), selected:null};
+const officeState = {run:null, stages:new Map(), stageRuns:[], selected:null};
 
 function renderOfficeEmpty() {
-  officeState.run = null; officeState.stages.clear(); officeState.selected = null;
+  officeState.run = null; officeState.stages.clear(); officeState.stageRuns = [];
+  officeState.selected = null;
   $("#office-stage").innerHTML =
     '<div class="empty">실행된 dev_review 워크플로가 없습니다</div>';
   $("#office-detail").innerHTML = '<span class="empty">선택 에이전트</span>';
@@ -978,11 +979,13 @@ function officeFmtElapsed(run) {
 }
 
 function officeRenderHeader(run) {
+  // 토큰은 재시도 포함 전체 stage_runs 합산 (실패 시도도 실제 비용)
   let tokens = 0, done = 0;
+  for (const s of officeState.stageRuns) {
+    tokens += (s.tokens_in || 0) + (s.tokens_out || 0);
+  }
   for (const {key} of OFFICE_STAGES) {
-    const {status, stageRun} = officeNodeStatus(key);
-    if (status === "succeeded") done++;
-    if (stageRun) tokens += (stageRun.tokens_in || 0) + (stageRun.tokens_out || 0);
+    if (officeNodeStatus(key).status === "succeeded") done++;
   }
   $("#office-elapsed").textContent = officeFmtElapsed(run);
   $("#office-tokens").textContent = tokens.toLocaleString();
@@ -1008,7 +1011,8 @@ async function loadOffice() {
     const detail = await api(`/runs/${summary.id}`);
     officeState.run = detail;
     officeState.stages.clear();
-    for (const s of detail.stages || []) {
+    officeState.stageRuns = detail.stages || [];
+    for (const s of officeState.stageRuns) {
       const cur = officeState.stages.get(s.stage_key);
       if (!cur || (s.attempt || 1) > (cur.attempt || 1)) {
         officeState.stages.set(s.stage_key, s);
@@ -1018,6 +1022,12 @@ async function loadOffice() {
     officeRenderStage();
     // 상세 패널·이벤트 로그는 Task 7에서 구현
   } catch (e) {
+    // 폴링 실패 시 이전 성공 로드의 통계가 남지 않도록 상태/칩을 리셋
+    officeState.run = null; officeState.stages.clear(); officeState.stageRuns = [];
+    officeState.selected = null;
+    $("#office-elapsed").textContent = "-";
+    $("#office-tokens").textContent = "-";
+    $("#office-progress").textContent = "-";
     $("#office-stage").innerHTML =
       `<div class="empty">${esc(e.message)}</div>`;
   }
