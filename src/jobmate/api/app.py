@@ -70,14 +70,6 @@ class ApprovalRequest(BaseModel):
     comment: str = ""
 
 
-class CodingRunRequest(BaseModel):
-    engine: str = ""  # ""|"cli"|"agent"
-    tool: str = ""
-    model: str = ""
-    task: str = ""
-    workspace: str = ""
-
-
 class EventReviewRequest(BaseModel):
     action: str = Field(pattern="^(approve|reject)$")
     title: str | None = None
@@ -170,9 +162,6 @@ def create_app(
     llm = llm or CompositeLLM()
     adapters = adapters if adapters is not None else _default_adapters(settings, store)
     stop_event = threading.Event()
-    from ..coding_worker import CodingJobWorker
-
-    coding_worker = CodingJobWorker(store, settings, llm)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -197,11 +186,9 @@ def create_app(
                 daemon=True,
             )
             worker.start()
-            coding_worker.start()
-            logger.info("automation worker + coding worker started")
+            logger.info("automation worker started")
         yield
         stop_event.set()
-        coding_worker.stop()
         store.close()
 
     app = FastAPI(title="jobMate Harness", version="0.1.0", lifespan=lifespan)
@@ -720,14 +707,10 @@ def create_app(
         return {
             "gmail_check_minutes": p.get("gmail_check_minutes", 30),
             "radar_interval": p.get("radar_interval", "daily"),
-            "coding_tool": p.get("coding_tool") or settings.coding_tool or "none",
-            "coding_model": p.get("coding_model") or settings.coding_model,
         }
 
     @app.post("/api/v1/settings")
     def set_prefs(body: dict[str, Any], request: Request) -> JSONResponse:
-        from ..tools.coding import CODING_TOOLS
-
         p = _prefs()
         minutes = int(body.get("gmail_check_minutes", p.get("gmail_check_minutes", 30)))
         if minutes not in (30, 60):
@@ -735,152 +718,15 @@ def create_app(
         interval = str(body.get("radar_interval", p.get("radar_interval", "daily")))
         if interval not in ("daily", "weekly"):
             return err(422, "validation", "radar_interval must be daily or weekly", request)
-        tool = str(body.get("coding_tool", p.get("coding_tool", "")))
-        if tool and tool != "none" and tool not in CODING_TOOLS:
-            return err(422, "validation", f"unknown coding tool: {tool}", request)
         p.update(
             {
                 "gmail_check_minutes": minutes,
                 "radar_interval": interval,
-                "coding_tool": tool or "none",
-                "coding_model": str(body.get("coding_model", p.get("coding_model", "")))[:100],
             }
         )
         store.set_state(PREFS_KEY, p)
         cronjob = _sync_cronjob(settings, store, p)
         return JSONResponse(content={"ok": True, "prefs": p, "cronjob": cronjob})
-
-    # ---------- coding tool (코드 어댑터) ----------
-    # job 상태는 coding_jobs 테이블에 영속화 — CodingJobWorker가 큐/lease/
-    # 재시도/샌드박스를 담당하고 이 라우트들은 등록·조회·취소·SSE만 담당한다.
-
-    @app.get("/api/v1/coding/tools")
-    def coding_tools() -> dict[str, Any]:
-        from ..tools.coding import CODING_TOOLS, build_coding_tool
-
-        default_tool = _prefs().get("coding_tool") or settings.coding_tool or "none"
-        tools = []
-        for n in CODING_TOOLS:
-            t = build_coding_tool(n)
-            tools.append(
-                {
-                    "name": n,
-                    "available": bool(t and t.available()),
-                    "default": n == default_tool,
-                }
-            )
-        return {
-            "tools": tools,
-            "default_model": _prefs().get("coding_model") or settings.coding_model,
-        }
-
-    @app.post("/api/v1/coding/run")
-    def coding_run(body: CodingRunRequest, request: Request) -> JSONResponse:
-        from ..tools.coding import build_coding_tool
-
-        engine = body.engine.strip().lower()
-        pref_tool = _prefs().get("coding_tool")
-        tool_name = (body.tool or pref_tool or settings.coding_tool).strip().lower()
-        task = body.task.strip()
-        if not task:
-            return err(422, "validation", "task is required", request)
-        if engine == "agent" or tool_name == "agent":
-            engine, tool_name = "agent", "agent"
-            tool = None
-        else:
-            engine = "cli"
-            tool = build_coding_tool(tool_name, model=body.model or settings.coding_model or None)
-            if tool is None:
-                return err(400, "unknown_tool", f"unknown coding tool: {tool_name}", request)
-            if not tool.available():
-                return err(503, "tool_unavailable", f"{tool_name} CLI not found on PATH", request)
-        job_id = uuid.uuid4().hex[:12]
-        model_name = body.model or settings.coding_model or ""
-        store.create_coding_job(
-            job_id,
-            engine=engine,
-            tool=tool_name,
-            model=model_name,
-            task=task,
-            workspace=body.workspace,
-        )
-        logger.info("coding job %s queued engine=%s tool=%s", job_id, engine, tool_name)
-        # 즉시 claim 시도 — 실패(중복 등)하면 디스패처가 due 시점에 회수.
-        # 서버리스에는 상주 워커가 없으므로 queued로 두고 외부 워커에 위임한다.
-        if os.environ.get("VERCEL"):
-            logger.warning(
-                "coding job %s queued on serverless — run `jobmate coding-worker` "
-                "on an external host to execute it",
-                job_id,
-            )
-            return JSONResponse(
-                status_code=202,
-                content={
-                    "job_id": job_id,
-                    "warning": "serverless: job queued for external coding-worker",
-                },
-            )
-        coding_worker.submit(job_id)
-        return JSONResponse(status_code=202, content={"job_id": job_id})
-
-    @app.get("/api/v1/coding/jobs")
-    def coding_jobs_list(request: Request) -> JSONResponse:
-        try:
-            limit = min(int(request.query_params.get("limit", "20")), 100)
-        except ValueError:
-            limit = 20
-        return JSONResponse(content={"jobs": store.list_coding_jobs(limit)})
-
-    @app.get("/api/v1/coding/jobs/{job_id}")
-    def coding_job(job_id: str, request: Request) -> JSONResponse:
-        job = store.get_coding_job(job_id)
-        if job is None:
-            return err(404, "not_found", "coding job not found", request)
-        job["job_id"] = job["id"]
-        return JSONResponse(content=job)
-
-    @app.post("/api/v1/coding/jobs/{job_id}/cancel")
-    def coding_job_cancel(job_id: str, request: Request) -> JSONResponse:
-        if store.get_coding_job(job_id) is None:
-            return err(404, "not_found", "coding job not found", request)
-        result = store.cancel_coding_job(job_id)
-        logger.info("coding job %s cancel requested -> %s", job_id, result)
-        return JSONResponse(content={"ok": result != "not_running", "status": result})
-
-    @app.get("/api/v1/coding/jobs/{job_id}/events")
-    async def coding_job_events(job_id: str, request: Request) -> Any:
-        """SSE 스트림 — job 상태/스텝이 바뀔 때마다 data 이벤트 전송."""
-        from fastapi.responses import StreamingResponse
-
-        if store.get_coding_job(job_id) is None:
-            return err(404, "not_found", "coding job not found", request)
-
-        async def stream() -> Any:
-            import asyncio
-            import json as _json
-
-            last_sig = ""
-            ticks = 0
-            while True:
-                job = store.get_coding_job(job_id)
-                if job is None:
-                    break
-                sig = f"{job['status']}|{job.get('updated_at')}|{len(job.get('steps') or [])}"
-                if sig != last_sig:
-                    last_sig = sig
-                    yield f"data: {_json.dumps(job, ensure_ascii=False)}\n\n"
-                if job["status"] in ("done", "failed", "cancelled"):
-                    break
-                ticks += 1
-                if ticks % 20 == 0:
-                    yield ": hb\n\n"
-                await asyncio.sleep(0.5)
-
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
 
     @app.post("/api/v1/messages/{provider}/{source_id}/retry")
     def retry_message(provider: str, source_id: str, request: Request) -> JSONResponse:
