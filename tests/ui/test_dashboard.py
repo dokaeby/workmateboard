@@ -265,6 +265,31 @@ def test_office_approve_buttons_hide_when_run_leaves_waiting(
     page.wait_for_selector("#office-approve-btn", state="detached", timeout=10000)
 
 
+def test_office_sprite_mode_shows_characters(page: Page, ui_server: SimpleNamespace) -> None:
+    """스프라이트 사무실 모드: 토글 전환, 캔버스 표시, 8명 캐릭터 매핑."""
+    store = ui_server.store
+    run = store.create_run("dev_review", "v1", {"task": "ui-sprite"}, trace_id="uisprite1")
+    sr = store.start_stage(run.id, "analysis", 1, {})
+    store.finish_stage(sr.id, status="succeeded", tokens_in=10, tokens_out=5)
+    page.click('.nav-item[data-view="office"]')
+    page.click('.office-mode-btn[data-office-mode="sprites"]')
+    page.wait_for_selector("#jmo-canvas", state="visible", timeout=15000)
+    # people provider가 officeState를 읽어 8명(7 stage + ORCH)을 생성할 때까지 대기
+    page.wait_for_function(
+        "window.officeDebug && window.officeDebug().length === 8",
+        timeout=15000,
+    )
+    people = page.evaluate("window.officeDebug()")
+    ids = {p["id"] for p in people}
+    assert ids == {"ANA", "DEV", "TEST", "SEC", "CR", "QA", "HUM", "ORCH"}
+    ana = next(p for p in people if p["id"] == "ANA")
+    assert ana["status"] == "rest"  # succeeded → 휴식
+    # 보드 모드로 복귀하면 기존 3D 노드가 다시 보인다
+    page.click('.office-mode-btn[data-office-mode="board"]')
+    page.wait_for_selector('.office-node[data-node="ANA"]', timeout=5000)
+    assert page.locator(".office-node").count() == 8
+
+
 def _seed_review_event(store: Store, event_id: str) -> None:
     store.save_scheduled_event(
         event_id=event_id,
