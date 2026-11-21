@@ -24,26 +24,8 @@ from playwright.sync_api import Page, sync_playwright
 from jobmate.api.app import create_app
 from jobmate.config import Settings
 from jobmate.llm import FakeLLM
+from jobmate.models.enums import RunStatus
 from jobmate.store.db import Store
-
-
-def _ui_llm_handler(system: str, user: str, model: Any, schema: Any) -> dict[str, Any]:
-    """결정적 코딩 에이전트 LLM.
-
-    - "SLOWLOOP" 태스크: 매 스텝 0.4s 지연 + ls만 반복 → 취소 테스트용 장기 실행
-    - 그 외: write_file 1스텝 후 final → 빠른 done 경로
-    """
-    if "SLOWLOOP" in user:
-        time.sleep(0.4)
-        return {"action": "tool", "thought": "폴링", "tool": "ls", "args": {"path": "."}}
-    if "STEPS SO FAR" in user:
-        return {"action": "final", "answer": "UI 테스트 답변"}
-    return {
-        "action": "tool",
-        "thought": "파일 생성",
-        "tool": "write_file",
-        "args": {"path": "ui-check.txt", "content": "ok"},
-    }
 
 
 @pytest.fixture(scope="module")
@@ -55,10 +37,9 @@ def ui_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SimpleNamesp
         radar_platforms=[],
         worker_interval_seconds=60,
         gmail_poll_interval_seconds=3600,
-        coding_tool="none",
     )
     store = Store(str(settings.db_path))
-    llm = FakeLLM(_ui_llm_handler)
+    llm = FakeLLM()
 
     class _FakeCalendar:
         def __init__(self) -> None:
@@ -124,7 +105,7 @@ def test_sidebar_navigation(page: Page) -> None:
     """사이드바 5개 메뉴가 각각 우측 화면을 전환한다."""
     for view, title in [
         ("gmail", "Gmail Checker"),
-        ("coding", "코딩 에이전트"),
+        ("office", "Agent Command"),
         ("calendar", "Calendar"),
         ("radar", "SkillRadar"),
         ("runs", "실행"),
@@ -162,19 +143,6 @@ def test_runs_view_table(page: Page) -> None:
     _wait_text(page, "#runs-body", "실행 없음")
 
 
-def test_coding_view_tool_options(page: Page) -> None:
-    """코딩 에이전트 뷰에 실행 방식(내장 에이전트/CLI)과 도구 목록이 로드된다."""
-    page.click('.nav-item[data-view="coding"]')
-    page.wait_for_function("document.querySelectorAll('#coding-tool option').length > 0")
-    values = page.locator("#coding-tool option").evaluate_all("els => els.map(e => e.value)")
-    assert set(values) == {"claude", "codex", "antigravity", "opencode"}
-    # 기본 실행 방식은 내장 에이전트, 선택 시 CLI 필드가 비활성화된다
-    assert page.locator("#coding-engine").input_value() == "agent"
-    assert page.locator("#coding-tool").is_disabled()
-    page.select_option("#coding-engine", "cli")
-    assert not page.locator("#coding-tool").is_disabled()
-
-
 def test_settings_dialog_save(page: Page, base_url: str) -> None:
     """설정 다이얼로그에서 값을 바꿔 저장하면 API에 반영된다."""
     page.click("#settings-open")
@@ -182,7 +150,6 @@ def test_settings_dialog_save(page: Page, base_url: str) -> None:
     page.wait_for_function("document.querySelector('#set-gmail-minutes').value !== ''")
     page.select_option("#set-gmail-minutes", "60")
     page.select_option("#set-radar-interval", "weekly")
-    page.select_option("#set-coding-tool", "codex")
     page.click("#settings-save")
     page.wait_for_function(
         "document.querySelector('#settings-status').textContent.includes('저장했습니다')",
@@ -192,7 +159,6 @@ def test_settings_dialog_save(page: Page, base_url: str) -> None:
     prefs = resp.json()
     assert prefs["gmail_check_minutes"] == 60
     assert prefs["radar_interval"] == "weekly"
-    assert prefs["coding_tool"] == "codex"
 
 
 def test_push_toggle_without_vapid(page: Page) -> None:
@@ -205,88 +171,123 @@ def test_push_toggle_without_vapid(page: Page) -> None:
     assert page.locator("#push-toggle").is_visible()
 
 
-# ---------- 코딩 에이전트 실행 흐름 ----------
+def test_office_view_empty_state(page: Page) -> None:
+    """dev_review run이 없으면 빈 상태 안내 문구를 표시한다."""
+    page.click('.nav-item[data-view="office"]')
+    _wait_text(page, "#office-stage", "dev_review")
 
 
-def _open_coding(page: Page) -> None:
-    page.click('.nav-item[data-view="coding"]')
-    page.wait_for_function("document.querySelectorAll('#coding-tool option').length > 0")
-
-
-def _run_agent_task(page: Page, task: str) -> None:
-    page.fill("#coding-task", task)
-    page.click("#coding-run")
-
-
-def test_coding_run_streams_to_done(page: Page) -> None:
-    """실행 → SSE 스트림 → 완료 상태/답변/스텝 렌더링."""
-    _open_coding(page)
-    _run_agent_task(page, "ui-check.txt 파일을 만들어줘")
-    _wait_text(page, "#coding-status", "완료")
-    _wait_text(page, "#coding-result", "UI 테스트 답변")
-    _wait_text(page, "#coding-result", "에이전트 스텝")
-    # 완료 후 취소 버튼은 숨겨진다
-    assert page.locator("#coding-cancel").is_hidden()
-
-
-def test_coding_run_sse_fallback_polling(page: Page) -> None:
-    """SSE 스트림이 실패하면 폴링 폴백으로도 완료 상태에 도달한다."""
-    page.route("**/api/v1/coding/jobs/*/events", lambda route: route.abort())
-    _open_coding(page)
-    _run_agent_task(page, "폴백 경로 테스트")
-    _wait_text(page, "#coding-status", "완료")
-    _wait_text(page, "#coding-result", "UI 테스트 답변")
-
-
-def test_coding_cancel_running_job(page: Page) -> None:
-    """실행 중 취소 버튼 → cancel_requested → cancelled 상태 표시."""
-    _open_coding(page)
-    _run_agent_task(page, "SLOWLOOP 계속 실행해줘")
-    _wait_text(page, "#coding-status", "실행 중")
-    page.click("#coding-cancel")
-    _wait_text(page, "#coding-status", "취소됨")
-    assert page.locator("#coding-cancel").is_hidden()
-
-
-def test_coding_recent_jobs_click_loads_result(ui_server: SimpleNamespace, page: Page) -> None:
-    """최근 작업 목록의 완료 job 카드를 클릭하면 저장된 결과가 렌더링된다."""
+def test_office_view_shows_dev_review_run(page: Page, ui_server: SimpleNamespace) -> None:
+    """dev_review run + stage_run을 시드하면 헤더 통계와 노드가 렌더링된다."""
     store = ui_server.store
-    jid = "uihist0001"
-    now = "2025-01-01T00:00:00+00:00"
-    with store.tx() as c:
-        c.execute(
-            "INSERT INTO coding_jobs(id,engine,tool,model,task,workspace,status,ok,"
-            " text,answer,steps,diff,error,attempts,max_attempts,created_at,updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                jid,
-                "agent",
-                "agent",
-                "",
-                "이전 완료 작업",
-                "workspace-dir",
-                "done",
-                1,
-                "저장된 출력",
-                "저장된 답변",
-                '[{"step":1,"thought":"생각","tool":"write_file",'
-                '"args":{"path":"a.txt"},"result":"wrote"}]',
-                "diff --git a/a.txt b/a.txt",
-                "",
-                1,
-                2,
-                now,
-                now,
-            ),
-        )
-    _open_coding(page)
-    card = page.locator(f'#coding-jobs [data-job="{jid}"]')
-    card.wait_for(timeout=5000)
-    card.click()
-    _wait_text(page, "#coding-status", "불러옴")
-    _wait_text(page, "#coding-result", "저장된 답변")
-    _wait_text(page, "#coding-result", "에이전트 스텝")
-    _wait_text(page, "#coding-result", "diff --git")
+    run = store.create_run("dev_review", "v1", {"task": "ui"}, trace_id="uitrace1")
+    sr = store.start_stage(run.id, "analysis", 1, {})
+    store.finish_stage(sr.id, status="succeeded", tokens_in=10, tokens_out=5)
+    # 실패한 다른 stage의 토큰도 총 토큰에 합산되어야 한다 (재시도 비용 포함)
+    sr2 = store.start_stage(run.id, "implement", 1, {})
+    store.finish_stage(sr2.id, status="failed", tokens_in=3, tokens_out=2)
+    page.click('.nav-item[data-view="office"]')
+    _wait_text(page, "#office-tokens", "20")  # 15 + 5 (실패 시도 포함 전체 합산)
+    _wait_text(page, "#office-progress", "14%")  # 1/7 succeeded
+    _wait_text(page, "#office-stage", "succeeded")
+    # 7개 stage 노드 + ORCH 노드
+    assert page.locator(".office-node").count() == 8
+    assert page.locator('.office-node[data-node="ORCH"]').count() == 1
+    assert page.locator(".office-edges path").count() >= 7  # SVG 연결선
+
+
+def test_office_node_click_shows_stage_detail(page: Page, ui_server: SimpleNamespace) -> None:
+    """노드 클릭 → 상세 패널에 해당 stage_run 정보가 표시된다."""
+    store = ui_server.store
+    run = store.create_run("dev_review", "v1", {"task": "detail"}, trace_id="uitrace2")
+    sr = store.start_stage(run.id, "analysis", 1, {"q": "x"})
+    store.finish_stage(
+        sr.id, status="succeeded", tokens_in=7, tokens_out=3, output={"summary": "done"}
+    )
+    page.click('.nav-item[data-view="office"]')
+    page.wait_for_selector('.office-node[data-node="ANA"]', timeout=5000)
+    # rotateX 평면 위 노드는 히트 테스트 좌표가 어긋날 수 있어 DOM click 사용
+    page.locator('.office-node[data-node="ANA"]').dispatch_event("click")
+    _wait_text(page, "#office-detail", "analysis")
+    _wait_text(page, "#office-detail", "succeeded")
+    _wait_text(page, "#office-detail", "합계 10")
+    # 이벤트 로그에 stage audit이 시간순으로 렌더링된다
+    _wait_text(page, "#office-log", "stage_done")
+
+
+def test_office_waiting_approval_shows_approve_buttons(
+    page: Page, ui_server: SimpleNamespace
+) -> None:
+    """waiting_approval run → ORCH 상세에 승인/거절 버튼, 클릭 시 approve API 호출."""
+    store = ui_server.store
+    run = store.create_run("dev_review", "v1", {"task": "approve"}, trace_id="uitrace3")
+    store.update_run(run.id, status=RunStatus.WAITING_APPROVAL)
+    called: list[dict[str, Any]] = []
+
+    def handler(route: Any) -> None:
+        called.append(route.request.post_data_json)
+        route.fulfill(json={"status": "waiting_approval"})
+
+    page.route("**/api/v1/runs/*/approve", handler)
+    page.click('.nav-item[data-view="office"]')
+    page.wait_for_selector("#office-approve-btn", timeout=5000)
+    assert page.locator("#office-reject-btn").is_visible()
+    page.click("#office-approve-btn")
+    for _ in range(50):
+        if called:
+            break
+        time.sleep(0.1)
+    assert called and called[0]["decision"] == "approve"
+
+
+def test_office_approve_buttons_hide_when_run_leaves_waiting(
+    page: Page, ui_server: SimpleNamespace
+) -> None:
+    """stage 노드 선택 중 run.status가 waiting_approval을 벗어나면 버튼이 사라진다.
+
+    stage_run 필드 변화 없이 run 상태만 바뀌는 경우에도 상세 패널이
+    재렌더링되어 stale 승인 버튼이 남지 않아야 한다.
+    """
+    store = ui_server.store
+    # 이전 테스트가 남긴 dev_review run들은 active 상태라 pickRun에 잡힌다 —
+    # 이 테스트의 run만 선택되도록 전부 completed로 정리
+    for r in store.list_runs():
+        if r.workflow_key == "dev_review":
+            store.update_run(r.id, status=RunStatus.COMPLETED)
+    run = store.create_run("dev_review", "v1", {"task": "stale"}, trace_id="uitrace4")
+    store.update_run(run.id, status=RunStatus.WAITING_APPROVAL)
+    page.click('.nav-item[data-view="office"]')
+    page.wait_for_selector('.office-node[data-node="HUM"]', timeout=5000)
+    page.locator('.office-node[data-node="HUM"]').dispatch_event("click")
+    page.wait_for_selector("#office-approve-btn", timeout=5000)
+    # stage_run은 그대로 두고 run 상태만 completed로 전이
+    store.update_run(run.id, status=RunStatus.COMPLETED)
+    page.wait_for_selector("#office-approve-btn", state="detached", timeout=10000)
+
+
+def test_office_sprite_mode_shows_characters(page: Page, ui_server: SimpleNamespace) -> None:
+    """스프라이트 사무실 모드: 토글 전환, 캔버스 표시, 8명 캐릭터 매핑."""
+    store = ui_server.store
+    run = store.create_run("dev_review", "v1", {"task": "ui-sprite"}, trace_id="uisprite1")
+    sr = store.start_stage(run.id, "analysis", 1, {})
+    store.finish_stage(sr.id, status="succeeded", tokens_in=10, tokens_out=5)
+    page.click('.nav-item[data-view="office"]')
+    page.click('.office-mode-btn[data-office-mode="sprites"]')
+    page.wait_for_selector("#jmo-canvas", state="visible", timeout=15000)
+    # people provider가 officeState를 읽어 8명(7 stage + ORCH)을 생성할 때까지 대기
+    page.wait_for_function(
+        "window.officeDebug && window.officeDebug().length === 8",
+        timeout=15000,
+    )
+    people = page.evaluate("window.officeDebug()")
+    ids = {p["id"] for p in people}
+    assert ids == {"ANA", "DEV", "TEST", "SEC", "CR", "QA", "HUM", "ORCH"}
+    ana = next(p for p in people if p["id"] == "ANA")
+    assert ana["status"] == "rest"  # succeeded → 휴식
+    # 보드 모드로 복귀하면 기존 3D 노드가 다시 보인다
+    page.click('.office-mode-btn[data-office-mode="board"]')
+    page.wait_for_selector('.office-node[data-node="ANA"]', timeout=5000)
+    assert page.locator(".office-node").count() == 8
 
 
 def _seed_review_event(store: Store, event_id: str) -> None:

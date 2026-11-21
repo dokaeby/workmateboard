@@ -29,12 +29,6 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("run", help="dev_review run 실행 (동기)")
     sp.add_argument("task")
     sp.add_argument("--workflow", default="dev_review")
-    sp.add_argument(
-        "--coding-tool",
-        default=None,
-        choices=["none", "claude", "codex", "antigravity", "opencode"],
-    )
-    sp.add_argument("--coding-model", default=None)
 
     sp = sub.add_parser("status", help="run 상태 조회")
     sp.add_argument("run_id")
@@ -49,11 +43,6 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("decision", choices=["approve", "reject"])
 
     sp = sub.add_parser("workflows", help="등록된 워크플로 목록")
-
-    sp = sub.add_parser(
-        "coding-worker",
-        help="코딩 job 큐를 소비하는 상주 워커 — API 서버와 분리된 프로세스/Vercel 외부 실행용",
-    )
 
     sp = sub.add_parser("google-auth", help="Google OAuth 토큰 발급 (gmail/calendar)")
     sp.add_argument("kind", choices=["gmail", "calendar"])
@@ -80,23 +69,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{w.key} v{w.version}")
         return 0
 
-    if args.cmd == "coding-worker":
-        import signal
-        import threading
-
-        from .coding_worker import CodingJobWorker
-
-        worker = CodingJobWorker(store, settings, llm)
-        worker.start()
-        logger.info("coding-worker started owner=%s", worker.owner)
-        stop = threading.Event()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(sig, lambda *_: stop.set())
-        stop.wait()
-        worker.stop()
-        logger.info("coding-worker stopped")
-        return 0
-
     if args.cmd == "google-auth":
         from .adapters.google import GoogleAuthError, issue_token, load_client_credentials
 
@@ -120,11 +92,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "run":
-        if getattr(args, "coding_tool", None):
-            update = {"coding_tool": args.coding_tool}
-            if args.coding_model:
-                update["coding_model"] = args.coding_model
-            settings = settings.model_copy(update=update)
         run = store.create_run(
             args.workflow, WORKFLOWS[args.workflow].version, {"task": args.task}, trace_id="cli"
         )

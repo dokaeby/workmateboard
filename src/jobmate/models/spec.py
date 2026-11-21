@@ -28,8 +28,6 @@ class AgentSpec(BaseModel):
     output_schema: str  # models 출력 스키마 이름 (registry에서 해석)
     model: ModelConfig
     tools: list[str] = Field(default_factory=list)
-    # 설정 시 LLM 대신 코딩 CLI 어댑터로 실행 (예: "codex", "claude")
-    coding_tool: str | None = None
     max_attempts: int = 3
     tier: Literal["default", "important"] = "default"
 

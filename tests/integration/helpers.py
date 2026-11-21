@@ -19,8 +19,7 @@ from jobmate.workflows.registry_builder import build_runner
 
 def make_env(**settings_kw: Any):
     db = str(__import__("pathlib").Path(tempfile.mkdtemp()) / "t.db")
-    # coding_tool="none" 고정 — .env의 실제 CLI 설정이 테스트에 새지 않도록
-    kw = {"budget_max_tokens": 100_000, "coding_tool": "none", **settings_kw}
+    kw = {"budget_max_tokens": 100_000, **settings_kw}
     settings = Settings(db_path=db, **kw)
     store = Store(db)
     return settings, store

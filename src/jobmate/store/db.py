@@ -252,33 +252,6 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp ON auth_sessions(expires_at);
-
--- 코딩 에이전트/CLI 작업 — 인메모리가 아닌 영속 job 상태
-CREATE TABLE IF NOT EXISTS coding_jobs (
-  id TEXT PRIMARY KEY,
-  engine TEXT NOT NULL DEFAULT '',
-  tool TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  task TEXT NOT NULL DEFAULT '',
-  workspace TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'running',
-  ok INTEGER,
-  text TEXT NOT NULL DEFAULT '',
-  answer TEXT NOT NULL DEFAULT '',
-  steps TEXT NOT NULL DEFAULT '[]',
-  diff TEXT NOT NULL DEFAULT '',
-  error TEXT NOT NULL DEFAULT '',
-  exit_code INTEGER,
-  cancel_requested INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 2,
-  next_run_at TEXT,
-  lease_owner TEXT NOT NULL DEFAULT '',
-  lease_expires_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_coding_jobs_created ON coding_jobs(created_at DESC);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -492,32 +465,6 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp ON auth_sessions(expires_at);
-
-CREATE TABLE IF NOT EXISTS coding_jobs (
-  id TEXT PRIMARY KEY,
-  engine TEXT NOT NULL DEFAULT '',
-  tool TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  task TEXT NOT NULL DEFAULT '',
-  workspace TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'running',
-  ok INTEGER,
-  text TEXT NOT NULL DEFAULT '',
-  answer TEXT NOT NULL DEFAULT '',
-  steps TEXT NOT NULL DEFAULT '[]',
-  diff TEXT NOT NULL DEFAULT '',
-  error TEXT NOT NULL DEFAULT '',
-  exit_code INTEGER,
-  cancel_requested INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 2,
-  next_run_at TEXT,
-  lease_owner TEXT NOT NULL DEFAULT '',
-  lease_expires_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_coding_jobs_created ON coding_jobs(created_at DESC);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -602,36 +549,8 @@ class Store:
             self._conn.row_factory = sqlite3.Row
             with self._conn:
                 self._conn.executescript(SCHEMA)
-        self._migrate_coding_jobs()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
-
-    _CODING_JOB_NEW_COLS = {
-        "attempts": "INTEGER NOT NULL DEFAULT 0",
-        "max_attempts": "INTEGER NOT NULL DEFAULT 2",
-        "next_run_at": "TEXT",
-        "lease_owner": "TEXT NOT NULL DEFAULT ''",
-        "lease_expires_at": "TEXT",
-    }
-
-    def _migrate_coding_jobs(self) -> None:
-        """기존 DB의 coding_jobs 테이블에 신규 컬럼을 추가한다(멱등)."""
-        if self._pg:
-            rows = self._conn.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='coding_jobs'"
-            ).fetchall()
-            existing = {r["column_name"] for r in rows}
-        else:
-            rows = self._conn.execute("PRAGMA table_info(coding_jobs)").fetchall()
-            existing = {r["name"] for r in rows}
-        with self.tx() as c:
-            for col, ddl in self._CODING_JOB_NEW_COLS.items():
-                if col not in existing:
-                    c.execute(f"ALTER TABLE coding_jobs ADD COLUMN {col} {ddl}")  # noqa: S608 - col/ddl은 내부 상수
-            # due 스캔 인덱스 — ALTER 이후에 생성해야 기존 DB에서도 안전
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_coding_jobs_due ON coding_jobs(status, next_run_at)"
-            )
 
     def close(self) -> None:
         self._conn.close()
@@ -687,10 +606,16 @@ class Store:
         row = self._conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         return self._row_to_run(row) if row else None
 
-    def list_runs(self, limit: int = 50) -> list[Run]:
-        rows = self._conn.execute(
-            "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+    def list_runs(self, limit: int = 50, workflow: str | None = None) -> list[Run]:
+        if workflow is None:
+            rows = self._conn.execute(
+                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM runs WHERE workflow_key=? ORDER BY created_at DESC LIMIT ?",
+                (workflow, limit),
+            ).fetchall()
         return [self._row_to_run(r) for r in rows]
 
     def update_run(
@@ -1696,219 +1621,3 @@ class Store:
                     (prov, sid),
                 )
         return len(bad)
-
-    # ---- coding_jobs (코딩 에이전트/CLI 영속 job) ----
-    _CODING_JOB_FIELDS = (
-        "engine",
-        "tool",
-        "model",
-        "task",
-        "workspace",
-        "status",
-        "ok",
-        "text",
-        "answer",
-        "diff",
-        "error",
-        "exit_code",
-        "lease_owner",
-        "lease_expires_at",
-    )
-
-    def create_coding_job(
-        self,
-        job_id: str,
-        *,
-        engine: str,
-        tool: str,
-        model: str,
-        task: str,
-        workspace: str = "",
-        max_attempts: int = 2,
-    ) -> None:
-        """job을 queued 상태로 등록. 실제 실행은 claim_coding_job이 담당."""
-        now = _iso(_now())
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO coding_jobs(id,engine,tool,model,task,workspace,"
-                "status,max_attempts,next_run_at,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,'queued',?,?,?,?)",
-                (
-                    job_id,
-                    engine,
-                    tool,
-                    model,
-                    task[:2000],
-                    workspace,
-                    max_attempts,
-                    now,
-                    now,
-                    now,
-                ),
-            )
-
-    def get_coding_job(self, job_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM coding_jobs WHERE id=?", (job_id,)).fetchone()
-        return self._coding_job_row(row) if row else None
-
-    def list_coding_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT * FROM coding_jobs ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [self._coding_job_row(r) for r in rows]
-
-    def list_due_coding_jobs(self, limit: int = 10) -> list[dict[str, Any]]:
-        """실행 가능한 queued job (next_run_at 경과)."""
-        now = _iso(_now())
-        rows = self._conn.execute(
-            "SELECT * FROM coding_jobs WHERE status='queued'"
-            " AND (next_run_at IS NULL OR next_run_at<=?)"
-            " ORDER BY created_at LIMIT ?",
-            (now, limit),
-        ).fetchall()
-        return [self._coding_job_row(r) for r in rows]
-
-    def list_orphaned_coding_jobs(self, limit: int = 10) -> list[dict[str, Any]]:
-        """lease가 만료된 running job — 워커 크래시/재시작으로 방치된 것."""
-        now = _iso(_now())
-        rows = self._conn.execute(
-            "SELECT * FROM coding_jobs WHERE status='running'"
-            " AND lease_expires_at IS NOT NULL AND lease_expires_at<?"
-            " ORDER BY updated_at LIMIT ?",
-            (now, limit),
-        ).fetchall()
-        return [self._coding_job_row(r) for r in rows]
-
-    def claim_coding_job(self, job_id: str, owner: str, lease_seconds: int = 30) -> bool:
-        """queued(기한 도래) 또는 lease 만료된 running job을 원자적으로 선점.
-
-        성공 시 status='running', lease_owner/expires_at 설정, attempts+1.
-        """
-        now = _iso(_now())
-        lease = _iso(_now() + timedelta(seconds=lease_seconds))
-        with self.tx() as c:
-            cur = c.execute(
-                "UPDATE coding_jobs SET status='running', lease_owner=?,"
-                " lease_expires_at=?, attempts=attempts+1, updated_at=?"
-                " WHERE id=? AND ("
-                "  (status='queued' AND (next_run_at IS NULL OR next_run_at<=?))"
-                "  OR (status='running' AND lease_expires_at IS NOT NULL"
-                "      AND lease_expires_at<?)"
-                " )",
-                (owner, lease, now, job_id, now, now),
-            )
-            return cur.rowcount > 0
-
-    def renew_coding_lease(self, job_id: str, owner: str, lease_seconds: int = 30) -> bool:
-        lease = _iso(_now() + timedelta(seconds=lease_seconds))
-        with self.tx() as c:
-            cur = c.execute(
-                "UPDATE coding_jobs SET lease_expires_at=?, updated_at=?"
-                " WHERE id=? AND lease_owner=? AND status='running'",
-                (lease, _iso(_now()), job_id, owner),
-            )
-            return cur.rowcount > 0
-
-    def schedule_coding_retry(
-        self,
-        job_id: str,
-        *,
-        delay_seconds: int,
-        error: str,
-        owner: str | None = None,
-    ) -> str:
-        """실패한 job을 재큐 또는 최종 failed로 전이.
-
-        반환: 'queued'|'failed'|'lost'(owner 불일치/행 없음).
-        """
-        job = self.get_coding_job(job_id)
-        if job is None:
-            return "lost"
-        attempts = int(job.get("attempts") or 0)
-        max_attempts = int(job.get("max_attempts") or 1)
-        now = _now()
-        if attempts < max_attempts:
-            status = "queued"
-            nxt = _iso(now + timedelta(seconds=delay_seconds))
-        else:
-            status = "failed"
-            nxt = None
-        sql = (
-            "UPDATE coding_jobs SET status=?, next_run_at=?, error=?,"
-            " lease_owner='', lease_expires_at=NULL, updated_at=? WHERE id=?"
-        )
-        params: list[Any] = [status, nxt, error[:500], _iso(now), job_id]
-        if owner is not None:
-            sql += " AND lease_owner=?"
-            params.append(owner)
-        with self.tx() as c:
-            cur = c.execute(sql, params)
-        return status if cur.rowcount > 0 else "lost"
-
-    def update_coding_job(self, job_id: str, *, owner: str | None = None, **fields: Any) -> bool:
-        """job 갱신. owner 지정 시 lease_owner 일치할 때만 씀(fencing).
-
-        반환: 갱신된 행이 있으면 True, lease 상실/행 없음이면 False.
-        """
-        sets = {k: v for k, v in fields.items() if k in self._CODING_JOB_FIELDS}
-        if "steps" in fields:
-            sets["steps"] = json.dumps(fields["steps"], ensure_ascii=False)
-        if not sets:
-            return True
-        sets["updated_at"] = _iso(_now())
-        cols = ", ".join(f"{k}=?" for k in sets)
-        sql = f"UPDATE coding_jobs SET {cols} WHERE id=?"  # noqa: S608 - cols는 화이트리스트 필드명만 사용
-        params: list[Any] = [*sets.values(), job_id]
-        if owner is not None:
-            sql += " AND lease_owner=?"
-            params.append(owner)
-        with self.tx() as c:
-            cur = c.execute(sql, params)
-        return cur.rowcount > 0
-
-    def cancel_coding_job(self, job_id: str) -> str:
-        """queued는 즉시 cancelled, running은 cancel_requested 플래그.
-
-        반환: 'cancelled'|'cancel_requested'|'not_running'|'not_found'.
-        """
-        now = _iso(_now())
-        with self.tx() as c:
-            cur = c.execute(
-                "UPDATE coding_jobs SET status='cancelled', error='cancelled by user',"
-                " lease_owner='', lease_expires_at=NULL, updated_at=?"
-                " WHERE id=? AND status='queued'",
-                (now, job_id),
-            )
-            if cur.rowcount > 0:
-                return "cancelled"
-            cur = c.execute(
-                "UPDATE coding_jobs SET cancel_requested=1, updated_at=?"
-                " WHERE id=? AND status='running'",
-                (now, job_id),
-            )
-            if cur.rowcount > 0:
-                return "cancel_requested"
-            row = c.execute("SELECT status FROM coding_jobs WHERE id=?", (job_id,)).fetchone()
-        if row is None:
-            return "not_found"
-        return "not_running"
-
-    def coding_job_cancel_requested(self, job_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT cancel_requested FROM coding_jobs WHERE id=?", (job_id,)
-        ).fetchone()
-        if row is None:
-            return False
-        return bool(row["cancel_requested"] if isinstance(row, dict) else row[0])
-
-    @staticmethod
-    def _coding_job_row(row: Any) -> dict[str, Any]:
-        d = dict(row)
-        try:
-            d["steps"] = json.loads(d.get("steps") or "[]")
-        except json.JSONDecodeError:
-            d["steps"] = []
-        d["ok"] = None if d.get("ok") is None else bool(d["ok"])
-        d["exit_code"] = d.get("exit_code")
-        return d
