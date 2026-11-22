@@ -313,6 +313,16 @@ def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: Simpl
     page.click('.nav-item[data-view="office"]')
     page.click('.office-tab-btn[data-office-tab="sessions"]')
     page.wait_for_selector("#jmo-canvas", state="visible", timeout=15000)
+    # 기본 필터는 codex — claude 세션은 표시되지 않는다
+    page.wait_for_function(
+        "window.officeDebug && window.officeDebug().length === 1",
+        timeout=15000,
+    )
+    people = page.evaluate("window.officeDebug()")
+    assert {p["id"] for p in people} == {"codex:ui-session-2"}
+    assert people[0]["status"] == "decision"
+    # '전체' 선택 시 두 세션 모두 표시
+    page.click('.office-tool-btn[data-office-tool="all"]')
     page.wait_for_function(
         "window.officeDebug && window.officeDebug().length === 2",
         timeout=15000,

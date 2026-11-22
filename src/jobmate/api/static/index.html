@@ -611,6 +611,13 @@
           <button class="office-mode-btn office-tab-btn" data-office-tab="workflow" aria-pressed="true">워크플로</button>
           <button class="office-mode-btn office-tab-btn" data-office-tab="sessions" aria-pressed="false">세션</button>
         </div>
+        <div class="office-mode" id="office-tool-filter" role="group" aria-label="세션 도구 필터" hidden>
+          <button class="office-mode-btn office-tool-btn" data-office-tool="codex" aria-pressed="true">Codex</button>
+          <button class="office-mode-btn office-tool-btn" data-office-tool="claude" aria-pressed="false">Claude</button>
+          <button class="office-mode-btn office-tool-btn" data-office-tool="gemini" aria-pressed="false">Gemini</button>
+          <button class="office-mode-btn office-tool-btn" data-office-tool="devin" aria-pressed="false">Devin</button>
+          <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="false">전체</button>
+        </div>
         <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
           <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
           <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
@@ -1484,13 +1491,18 @@ let office2dState = "idle";  // idle | loading | ready
 let officeMode = "board";
 let officeTab = "workflow";  // workflow | sessions
 let jmWorkflowProvider = null;
+const OFFICE_TOOLS = ["codex", "claude", "gemini", "devin", "all"];
+const _savedTool = localStorage.getItem("jobmate.officeTool");
+let officeTool = OFFICE_TOOLS.includes(_savedTool) ? _savedTool : "codex";
 
 // 세션 탭 provider — GET /api/v1/agent-sessions → people 계약
 const SESSION_TOOL_LABEL = {claude:"Claude", codex:"Codex", gemini:"Gemini", devin:"Devin"};
 async function jmSessionProvider() {
   const d = await api("/agent-sessions?limit=50");
-  const list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
-  const people = (Array.isArray(list) ? list : []).map(s => ({
+  let list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
+  list = (Array.isArray(list) ? list : []).filter(
+    s => officeTool === "all" || s.tool === officeTool);
+  const people = list.map(s => ({
     id: `${s.tool}:${s.session_key}`,
     name: `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.project || s.session_key}`,
     status: s.status === "decision" ? "decision"
@@ -1513,6 +1525,7 @@ function officeRefresh() {
   const sprites = sessions || (officeTab === "workflow" && officeMode === "sprites");
   $("#office-chips").hidden = sessions;
   $("#office-view-toggle").hidden = sessions;
+  $("#office-tool-filter").hidden = !sessions;
   $("#office-split").hidden = sessions;
   $("#office-stage").hidden = sprites || sessions;
   $("#jmo-wrap").hidden = !sprites;
@@ -1578,6 +1591,20 @@ for (const b of document.querySelectorAll(".office-tab-btn")) {
     officeApplyProvider();
     officeRefresh();
   });
+}
+for (const b of document.querySelectorAll(".office-tool-btn")) {
+  b.addEventListener("click", () => {
+    officeTool = b.dataset.officeTool;
+    localStorage.setItem("jobmate.officeTool", officeTool);
+    for (const x of document.querySelectorAll(".office-tool-btn")) {
+      x.setAttribute("aria-pressed", String(x === b));
+    }
+    officeApplyProvider();
+  });
+}
+// 세션 탭 필터 초기 상태 동기화
+for (const x of document.querySelectorAll(".office-tool-btn")) {
+  x.setAttribute("aria-pressed", String(x.dataset.officeTool === officeTool));
 }
 
 /* ── Calendar ── */
