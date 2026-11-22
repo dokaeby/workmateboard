@@ -52,8 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     sp.add_argument(
         "--url",
-        default=os.environ.get("JOBMATE_URL", "http://127.0.0.1:8000"),
-        help="jobMate API base URL (기본: JOBMATE_URL env 또는 http://127.0.0.1:8000)",
+        default=None,
+        help="jobMate API base URL (기본: --url > JOBMATE_URL env > http://127.0.0.1:8000)",
     )
     sp.add_argument(
         "--api-key-env",
@@ -172,15 +172,17 @@ def main(argv: list[str] | None = None) -> int:
 def _agent_bridge(args: argparse.Namespace) -> int:
     from .agent_bridge import Bridge
 
+    # get_settings()의 load_dotenv() 이후 호출되므로 .env의 JOBMATE_URL도 반영된다.
+    url = args.url or os.environ.get("JOBMATE_URL") or "http://127.0.0.1:8000"
     api_key = os.environ.get(args.api_key_env, "")
     if not api_key:
         logger.warning("agent-bridge: env %s not set — push will likely fail", args.api_key_env)
-    bridge = Bridge(args.url, api_key or None)
+    bridge = Bridge(url, api_key or None)
     if args.once:
         counts = bridge.push()
         logger.info("agent-bridge once: %s", counts)
         return 0
-    logger.info("agent-bridge start url=%s interval=%ss", args.url, args.interval)
+    logger.info("agent-bridge start url=%s interval=%ss", url, args.interval)
     try:
         while True:
             counts = bridge.push()

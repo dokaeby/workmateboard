@@ -321,6 +321,105 @@ def test_scan_devin_decision_and_no_lock(tmp_path: Path) -> None:
     assert states[0].ask == "ask_user_question"
 
 
+def test_scan_codex_catalog_desktop_threads(tmp_path: Path) -> None:
+    """~/.codex/sqlite/codex.db local_thread_catalog — 데스크톱/IDE 스레드."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    sqldir = tmp_path / "sqlite"
+    sqldir.mkdir()
+    db = sqldir / "codex.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE local_thread_catalog (host_id TEXT, thread_id TEXT,"
+        " display_title TEXT, source_created_at REAL, source_updated_at REAL,"
+        " cwd TEXT, source_kind TEXT, source_detail TEXT,"
+        " model_provider TEXT, git_branch TEXT, observation_sequence INTEGER,"
+        " missing_candidate INTEGER, thread_source TEXT,"
+        " source_recency_at REAL, pending_observed_title INTEGER,"
+        " project_id TEXT, conversation_origin TEXT,"
+        " trial_conversation_type TEXT, chatgpt_async_status INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO local_thread_catalog VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("h", "thread-1", "데스크톱 스레드", 0, 0, "/Users/sec/proj", "vscode",
+         None, None, None, 0, 0, None, NOW - 10, 0, None, None, None, None),
+    )
+    con.execute(
+        "INSERT INTO local_thread_catalog VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("h", "thread-old", "오래된 스레드", 0, 0, "/x", "chatgpt",
+         None, None, None, 0, 0, None, NOW - 700, 0, None, None, None, None),
+    )
+    con.commit()
+    con.close()
+
+    states = ab.scan_codex(root, NOW)
+    assert len(states) == 1
+    st = states[0]
+    assert st.tool == "codex"
+    assert st.session_key == "thread-1"
+    assert st.project == "proj"
+    assert st.title == "데스크톱 스레드"
+    assert st.status == "working"
+
+
+def test_scan_gemini_presence_lock_merges(tmp_path: Path) -> None:
+    """presence/*.lock — db가 오래돼도 lock이 최근이면 활성 세션으로 병합."""
+    root = tmp_path / "conversations"
+    root.mkdir()
+    pdir = tmp_path / "presence"
+    pdir.mkdir()
+    # 오래된 db + 최신 lock → 같은 session_key로 상태만 갱신
+    db = root / "sess-x.db"
+    sqlite3.connect(db).close()
+    _touch(db, 500)
+    lock = pdir / "sess-x.lock"
+    lock.write_text("1")
+    _touch(lock, 10)
+    # lock만 있는 세션
+    lock2 = pdir / "sess-y.lock"
+    lock2.write_text("1")
+    _touch(lock2, 30)
+
+    states = {s.session_key: s for s in ab.scan_gemini(root, NOW)}
+    assert states["sess-x"].status == "working"
+    assert states["sess-y"].status == "working"
+    assert states["sess-y"].doing == "gemini session"
+
+
+def test_scan_devin_sessions_db(tmp_path: Path) -> None:
+    """sessions.db — transcript 없는 데스크톱 세션도 최근 활동으로 수집."""
+    root = _devin_root(tmp_path)
+    db = root / "sessions.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT,"
+        " backend_type TEXT, model TEXT, agent_mode TEXT, created_at INTEGER,"
+        " last_activity_at INTEGER, title TEXT, main_chain_id INTEGER,"
+        " shell_last_seen_index INTEGER, cogs_json TEXT, workspace_dirs TEXT,"
+        " hidden INTEGER, metadata TEXT)"
+    )
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("desk-sess", "/Users/sec/proj", "local", "m", "a",
+         NOW - 100, NOW - 10, "데스크톱 세션", None, 0, None, None, 0, None),
+    )
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("hidden-sess", "/x", "local", "m", "a",
+         NOW - 100, NOW - 10, "숨김", None, 0, None, None, 1, None),
+    )
+    con.commit()
+    con.close()
+
+    states = ab.scan_devin(root, NOW)
+    assert len(states) == 1
+    st = states[0]
+    assert st.session_key == "desk-sess"
+    assert st.project == "proj"
+    assert st.title == "데스크톱 세션"
+    assert st.status == "working"
+
+
 # ---------------------------------------------------------------------------
 # Bridge diff / heartbeat / ended
 # ---------------------------------------------------------------------------

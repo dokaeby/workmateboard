@@ -520,17 +520,42 @@ def _pg_translate(sql: str) -> str:
 
 
 class _PGConn:
-    """psycopg 연결 래퍼 — Store의 sqlite3.Connection 사용 패턴을 모사."""
+    """psycopg 연결 래퍼 — Store의 sqlite3.Connection 사용 패턴을 모사.
+
+    서버리스(Vercel)에서는 함수 freeze 동안 DB 측이 유휴 연결을 끊으므로,
+    죽은 연결을 만나면 1회 재접속 후 재시도한다."""
 
     def __init__(self, dsn: str) -> None:
-        self._c = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+        self._dsn = dsn
+        self._reconnect_lock = threading.Lock()
+        self._connect()
+
+    def _connect(self) -> None:
+        self._c = psycopg.connect(self._dsn, autocommit=True, row_factory=dict_row)
+
+    def _reconnect(self) -> None:
+        with self._reconnect_lock:
+            try:
+                self._c.close()
+            except Exception as e:
+                logger.debug("pg conn close before reconnect failed: %s", e)
+            self._connect()
 
     def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Any:
-        return self._c.execute(_pg_translate(sql), params)
+        try:
+            return self._c.execute(_pg_translate(sql), params)
+        except psycopg.OperationalError:
+            self._reconnect()
+            return self._c.execute(_pg_translate(sql), params)
 
     def __enter__(self) -> _PGConn:
-        self._tx = self._c.transaction()
-        self._tx.__enter__()
+        try:
+            self._tx = self._c.transaction()
+            self._tx.__enter__()
+        except psycopg.OperationalError:
+            self._reconnect()
+            self._tx = self._c.transaction()
+            self._tx.__enter__()
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
