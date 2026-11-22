@@ -401,6 +401,68 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
                 path=str(path),
             )
         )
+
+    # 데스크톱/앱 서버 스레드 — ~/.codex/sqlite/codex.db (local_thread_catalog)
+    # rollout jsonl과 thread_id가 같으면 rollout 쪽을 우선한다.
+    rollout_keys = {s.session_key for s in states}
+    db_path = root.parent / "sqlite" / "codex.db"
+    states.extend(_codex_catalog_sessions(db_path, rollout_keys, now))
+    return states
+
+
+def _codex_catalog_sessions(
+    db_path: Path, seen_keys: set[str], now: float
+) -> list[SessionState]:
+    """codex.db local_thread_catalog — Codex 데스크톱/IDE(chatgpt, vscode) 스레드."""
+    states: list[SessionState] = []
+    if not db_path.is_file():
+        return states
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            tables = {
+                r[0]
+                for r in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "local_thread_catalog" not in tables:
+                return states
+            rows = con.execute(
+                "SELECT thread_id, display_title, cwd, source_kind,"
+                " source_recency_at FROM local_thread_catalog"
+                " WHERE missing_candidate = 0"
+                " ORDER BY source_recency_at DESC LIMIT 50"
+            ).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        logger.debug("codex catalog read failed %s: %s", db_path, e)
+        return states
+
+    for thread_id, title, cwd, source_kind, recency in rows:
+        if not thread_id or thread_id in seen_keys:
+            continue
+        try:
+            recency_f = float(recency or 0)
+        except (TypeError, ValueError):
+            continue
+        if recency_f <= 0 or (now - recency_f) > ENDED_SECONDS:
+            continue
+        project = Path(cwd).name if isinstance(cwd, str) and cwd else str(source_kind or "")
+        states.append(
+            SessionState(
+                tool="codex",
+                session_key=thread_id,
+                project=project,
+                title=_clip(str(title or ""), 60),
+                status=_base_status(recency_f, now),
+                doing="",
+                ask="",
+                event_at=_iso(recency_f),
+                path=str(db_path),
+            )
+        )
     return states
 
 
@@ -480,6 +542,34 @@ def scan_gemini(root: Path, now: float) -> list[SessionState]:
                 path=str(path),
             )
         )
+
+    # presence/*.lock — 대화 db 파일이 오래돼도 lock이 최근이면 활성 세션.
+    # lock stem = conversations/*.db stem 이므로 같은 session_key로 병합한다.
+    by_key = {s.session_key: s for s in states}
+    pdir = root.parent / "presence"
+    if pdir.is_dir():
+        for lock in sorted(pdir.glob("*.lock")):
+            lm = _mtime(lock)
+            if not _alive(lm, now):
+                continue
+            existing = by_key.get(lock.stem)
+            if existing is not None:
+                existing.status = _base_status(lm, now)
+                existing.event_at = _iso(lm)
+            else:
+                st = SessionState(
+                    tool="gemini",
+                    session_key=lock.stem,
+                    project="",
+                    title="",
+                    status=_base_status(lm, now),
+                    doing="gemini session",
+                    ask="",
+                    event_at=_iso(lm),
+                    path=str(lock),
+                )
+                states.append(st)
+                by_key[lock.stem] = st
     return states
 
 
@@ -552,6 +642,64 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
                 path=str(path),
             )
         )
+
+    # sessions.db — Devin 데스크톱/클라우드 세션 목록. transcript가 없어도
+    # 최근 활동이 있는 세션을 잡고, transcript가 있으면 project/title을 채운다.
+    by_key = {s.session_key: s for s in states}
+    db_path = root / "sessions.db"
+    if db_path.is_file():
+        try:
+            con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+            try:
+                tables = {
+                    r[0]
+                    for r in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                if "sessions" in tables:
+                    rows = con.execute(
+                        "SELECT id, title, working_directory, last_activity_at"
+                        " FROM sessions WHERE hidden = 0"
+                        " ORDER BY last_activity_at DESC LIMIT 50"
+                    ).fetchall()
+                else:
+                    rows = []
+            finally:
+                con.close()
+        except sqlite3.Error as e:
+            logger.debug("devin sessions.db read failed %s: %s", db_path, e)
+            rows = []
+        for sid, title, wd, activity in rows:
+            if not sid:
+                continue
+            try:
+                act = float(activity or 0)
+            except (TypeError, ValueError):
+                continue
+            if act <= 0 or (now - act) > ENDED_SECONDS:
+                continue
+            project = Path(wd).name if isinstance(wd, str) and wd else ""
+            existing = by_key.get(sid)
+            if existing is not None:
+                if not existing.project:
+                    existing.project = project
+                if not existing.title and title:
+                    existing.title = _clip(str(title), 60)
+                continue
+            st = SessionState(
+                tool="devin",
+                session_key=sid,
+                project=project,
+                title=_clip(str(title or ""), 60),
+                status=_base_status(act, now),
+                doing="",
+                ask="",
+                event_at=_iso(act),
+                path=str(db_path),
+            )
+            states.append(st)
+            by_key[sid] = st
     return states
 
 
