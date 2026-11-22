@@ -607,12 +607,16 @@
       <div class="page-head">
         <h1 class="page-title">Agent Command</h1>
         <p class="page-desc">dev_review 워크플로 실행 관제판</p>
-        <div class="office-mode" role="group" aria-label="관제 모드">
+        <div class="office-mode" role="group" aria-label="Agent-Office 탭">
+          <button class="office-mode-btn office-tab-btn" data-office-tab="workflow" aria-pressed="true">워크플로</button>
+          <button class="office-mode-btn office-tab-btn" data-office-tab="sessions" aria-pressed="false">세션</button>
+        </div>
+        <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
           <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
           <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
         </div>
       </div>
-      <div class="office-status">
+      <div class="office-status" id="office-chips">
         <span class="office-chip">실행시간 <b id="office-elapsed">-</b></span>
         <span class="office-chip">총 토큰 <b id="office-tokens">-</b></span>
         <span class="office-chip">진행률 <b id="office-progress">-</b></span>
@@ -636,9 +640,12 @@
           </aside>
         </div>
       </div>
-      <div class="office-split">
+      <div class="office-split" id="office-split">
         <div id="office-detail" class="card"><span class="empty">선택 에이전트</span></div>
         <div id="office-log" class="card"><span class="empty">이벤트 로그</span></div>
+      </div>
+      <div id="office-sessions-empty" class="empty" hidden>
+        활성 에이전트 세션이 없습니다 — 로컬에서 <code>jobmate agent-bridge</code>를 실행하세요
       </div>
     </section>
 
@@ -1475,17 +1482,45 @@ const OFFICE2D_FILES = [
 ];
 let office2dState = "idle";  // idle | loading | ready
 let officeMode = "board";
+let officeTab = "workflow";  // workflow | sessions
+let jmWorkflowProvider = null;
 
-function officeModeApply() {
-  const sprites = officeMode === "sprites";
-  $("#office-stage").hidden = sprites;
+// 세션 탭 provider — GET /api/v1/agent-sessions → people 계약
+const SESSION_TOOL_LABEL = {claude:"Claude", codex:"Codex", gemini:"Gemini", devin:"Devin"};
+async function jmSessionProvider() {
+  const d = await api("/agent-sessions?limit=50");
+  const list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
+  const people = (Array.isArray(list) ? list : []).map(s => ({
+    id: `${s.tool}:${s.session_key}`,
+    name: `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.project || s.session_key}`,
+    status: s.status === "decision" ? "decision"
+          : s.status === "working" ? "working" : "rest",
+    ask: s.ask || "", doing: s.doing || "",
+    subs: [], subCount: 0, kid: false, home: null, commits: null, log: [],
+  }));
+  const emptyEl = $("#office-sessions-empty");
+  if (emptyEl) emptyEl.hidden = people.length > 0 || officeTab !== "sessions";
+  return { people };
+}
+
+function officeApplyProvider() {
+  if (officeTab === "sessions") window.JM_OFFICE_PROVIDER = jmSessionProvider;
+  else if (jmWorkflowProvider) window.JM_OFFICE_PROVIDER = jmWorkflowProvider;
+}
+
+function officeRefresh() {
+  const sessions = officeTab === "sessions";
+  const sprites = sessions || (officeTab === "workflow" && officeMode === "sprites");
+  $("#office-chips").hidden = sessions;
+  $("#office-view-toggle").hidden = sessions;
+  $("#office-split").hidden = sessions;
+  $("#office-stage").hidden = sprites || sessions;
   $("#jmo-wrap").hidden = !sprites;
-  for (const b of document.querySelectorAll(".office-mode-btn")) {
-    b.setAttribute("aria-pressed", String(b.dataset.officeMode === officeMode));
-  }
   if (sprites) office2dEnsure();
   else if (window.JMOffice2D) JMOffice2D.stop();
 }
+
+function officeModeApply() { officeRefresh(); }
 
 function office2dEnsure() {
   if (office2dState === "ready") { window.JMOffice2D.start(); return; }
@@ -1508,13 +1543,16 @@ function office2dEnsure() {
   }
   chain.then(() => {
     office2dState = "ready";
+    jmWorkflowProvider = window.JM_OFFICE_PROVIDER || null;
     JMOffice2D.onSelect = (id) => {
+      if (officeTab !== "workflow") return;   // 세션 탭은 OfficePanel 상세에 위임
       officeState.selected = !id ? null
         : id === "ORCH" ? {type:"orch"} : {type:"stage", code:id};
       officeRenderStage();
       officeRenderDetail();
     };
-    if (officeMode === "sprites") JMOffice2D.start();
+    officeApplyProvider();
+    if (officeMode === "sprites" || officeTab === "sessions") JMOffice2D.start();
   }).catch((e) => {
     office2dState = "idle";
     $("#jmo-notice").hidden = false;
@@ -1522,10 +1560,23 @@ function office2dEnsure() {
   });
 }
 
-for (const b of document.querySelectorAll(".office-mode-btn")) {
+for (const b of document.querySelectorAll(".office-mode-btn[data-office-mode]")) {
   b.addEventListener("click", () => {
     officeMode = b.dataset.officeMode;
+    for (const x of document.querySelectorAll(".office-mode-btn[data-office-mode]")) {
+      x.setAttribute("aria-pressed", String(x === b));
+    }
     officeModeApply();
+  });
+}
+for (const b of document.querySelectorAll(".office-tab-btn")) {
+  b.addEventListener("click", () => {
+    officeTab = b.dataset.officeTab;
+    for (const x of document.querySelectorAll(".office-tab-btn")) {
+      x.setAttribute("aria-pressed", String(x === b));
+    }
+    officeApplyProvider();
+    officeRefresh();
   });
 }
 

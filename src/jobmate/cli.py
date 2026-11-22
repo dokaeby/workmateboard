@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
+import time
 
 from .config import (
     configure_langsmith,
@@ -44,6 +46,23 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("workflows", help="등록된 워크플로 목록")
 
+    sp = sub.add_parser(
+        "agent-bridge",
+        help="로컬 에이전트 세션(claude/codex/gemini/devin) 수집 → API push",
+    )
+    sp.add_argument(
+        "--url",
+        default=os.environ.get("JOBMATE_URL", "http://127.0.0.1:8000"),
+        help="jobMate API base URL (기본: JOBMATE_URL env 또는 http://127.0.0.1:8000)",
+    )
+    sp.add_argument(
+        "--api-key-env",
+        default="JOBMATE_API_KEY",
+        help="API 키를 담은 환경변수 이름 (기본: JOBMATE_API_KEY)",
+    )
+    sp.add_argument("--interval", type=float, default=15.0, help="스캔 주기(초)")
+    sp.add_argument("--once", action="store_true", help="1회 스캔+push 후 종료")
+
     sp = sub.add_parser("google-auth", help="Google OAuth 토큰 발급 (gmail/calendar)")
     sp.add_argument("kind", choices=["gmail", "calendar"])
     sp.add_argument(
@@ -61,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
     configure_logging(settings)
     configure_langsmith(settings)
+
+    if args.cmd == "agent-bridge":
+        return _agent_bridge(args)
+
     store = Store(database_dsn(settings))
     llm = CompositeLLM()
 
@@ -144,6 +167,29 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return 1
+
+
+def _agent_bridge(args: argparse.Namespace) -> int:
+    from .agent_bridge import Bridge
+
+    api_key = os.environ.get(args.api_key_env, "")
+    if not api_key:
+        logger.warning("agent-bridge: env %s not set — push will likely fail", args.api_key_env)
+    bridge = Bridge(args.url, api_key or None)
+    if args.once:
+        counts = bridge.push()
+        logger.info("agent-bridge once: %s", counts)
+        return 0
+    logger.info("agent-bridge start url=%s interval=%ss", args.url, args.interval)
+    try:
+        while True:
+            counts = bridge.push()
+            if counts["pushed"] or counts["ended"]:
+                logger.info("agent-bridge push: %s", counts)
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        logger.info("agent-bridge stopped")
+    return 0
 
 
 if __name__ == "__main__":

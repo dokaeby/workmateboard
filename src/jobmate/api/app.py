@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -77,6 +77,19 @@ class EventReviewRequest(BaseModel):
     end_at: str | None = None
     timezone: str | None = None
     location: str | None = None
+
+
+class AgentSessionRequest(BaseModel):
+    """로컬 에이전트 브릿지 push — tool은 알려진 값 외에도 허용(미래 도구 대비)."""
+
+    tool: str = Field(min_length=1, max_length=64)
+    session_key: str = Field(min_length=1, max_length=512)
+    status: Literal["working", "decision", "rest", "ended"]
+    project: str | None = Field(default=None, max_length=512)
+    title: str | None = Field(default=None, max_length=500)
+    doing: str | None = Field(default=None, max_length=500)
+    ask: str | None = Field(default=None, max_length=500)
+    event_at: str | None = Field(default=None, max_length=64)
 
 
 def _token_path_for(kind: str, settings: Settings) -> str | None:
@@ -427,6 +440,35 @@ def create_app(
     @app.get("/api/v1/event-links")
     def event_links(limit: int = 50) -> list[dict[str, Any]]:
         return [x.model_dump(mode="json") for x in store.list_links(limit)]
+
+    # ---- agent-sessions: 로컬 에이전트 브릿지 push/pull ----
+    @app.post("/api/v1/agent-sessions")
+    def push_agent_session(body: AgentSessionRequest, request: Request) -> JSONResponse:
+        """머신 push 전용 — API 키 인증만 허용. 세션 쿠키만으로는 거부."""
+        from ..security import authorized
+
+        if not authorized(request):
+            logger.warning("agent-sessions push rejected: session-only auth")
+            return err(403, "forbidden", "machine API key required", request)
+        tool = body.tool.strip()
+        session_key = body.session_key.strip()
+        if not tool or not session_key:
+            return err(422, "validation_error", "tool/session_key must not be blank", request)
+        store.upsert_agent_session(
+            tool,
+            session_key,
+            body.status,
+            project=body.project,
+            title=body.title,
+            doing=body.doing,
+            ask=body.ask,
+            event_at=body.event_at,
+        )
+        return JSONResponse(content={"ok": True})
+
+    @app.get("/api/v1/agent-sessions")
+    def list_agent_sessions(limit: int = 50) -> list[dict[str, Any]]:
+        return store.list_agent_sessions(limit=limit)
 
     @app.get("/api/v1/gmail-calendar")
     def gmail_status() -> dict[str, Any]:

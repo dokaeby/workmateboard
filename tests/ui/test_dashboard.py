@@ -290,6 +290,44 @@ def test_office_sprite_mode_shows_characters(page: Page, ui_server: SimpleNamesp
     assert page.locator(".office-node").count() == 8
 
 
+def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: SimpleNamespace) -> None:
+    """세션 탭: agent-bridge가 push한 세션이 스프라이트 사무실 캐릭터로 표시된다."""
+    store = ui_server.store
+    store.upsert_agent_session(
+        "claude",
+        "ui-session-1",
+        "working",
+        project="workmateboard",
+        title="UI 테스트 세션",
+        doing="코드 수정 중",
+        event_at="2026-11-22T01:00:00+00:00",
+    )
+    store.upsert_agent_session(
+        "codex",
+        "ui-session-2",
+        "decision",
+        project="workmateboard",
+        ask="Bash 권한 요청",
+        event_at="2026-11-22T01:00:00+00:00",
+    )
+    page.click('.nav-item[data-view="office"]')
+    page.click('.office-tab-btn[data-office-tab="sessions"]')
+    page.wait_for_selector("#jmo-canvas", state="visible", timeout=15000)
+    page.wait_for_function(
+        "window.officeDebug && window.officeDebug().length === 2",
+        timeout=15000,
+    )
+    people = page.evaluate("window.officeDebug()")
+    ids = {p["id"] for p in people}
+    assert ids == {"claude:ui-session-1", "codex:ui-session-2"}
+    statuses = {p["id"]: p["status"] for p in people}
+    assert statuses["claude:ui-session-1"] == "working"
+    assert statuses["codex:ui-session-2"] == "decision"
+    # 워크플로 탭으로 복귀하면 기존 보드가 보인다
+    page.click('.office-tab-btn[data-office-tab="workflow"]')
+    page.wait_for_selector("#office-stage", state="visible", timeout=5000)
+
+
 def _seed_review_event(store: Store, event_id: str) -> None:
     store.save_scheduled_event(
         event_id=event_id,
