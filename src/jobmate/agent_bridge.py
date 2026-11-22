@@ -242,7 +242,7 @@ def scan_claude(root: Path, now: float) -> list[SessionState]:
 
 
 # ---------------------------------------------------------------------------
-# Codex CLI: ~/.codex/sessions/**/*.jsonl.zst
+# Codex CLI: ~/.codex/sessions/**/*.jsonl(.zst)
 # ---------------------------------------------------------------------------
 
 _CODEX_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -326,13 +326,19 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
     states: list[SessionState] = []
     if not root.is_dir():
         return states
-    for path in sorted(root.rglob("*.jsonl.zst")):
-        if not path.is_file():
-            continue
+    paths = sorted(
+        p
+        for p in root.rglob("*")
+        if p.is_file() and (p.name.endswith(".jsonl") or p.name.endswith(".jsonl.zst"))
+    )
+    for path in paths:
         mtime = _mtime(path)
         if not _alive(mtime, now):
             continue
-        head, tail = _zstd_edges(path, _CODEX_HEAD_BYTES, _CODEX_TAIL_BYTES)
+        if path.name.endswith(".zst"):
+            head, tail = _zstd_edges(path, _CODEX_HEAD_BYTES, _CODEX_TAIL_BYTES)
+        else:
+            head, tail = _read_edges(path, _CODEX_HEAD_BYTES, _CODEX_TAIL_BYTES)
         head_entries, tail_entries = _codex_entries(head, tail)
         entries = tail_entries or head_entries
 
@@ -410,9 +416,7 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
     return states
 
 
-def _codex_catalog_sessions(
-    db_path: Path, seen_keys: set[str], now: float
-) -> list[SessionState]:
+def _codex_catalog_sessions(db_path: Path, seen_keys: set[str], now: float) -> list[SessionState]:
     """codex.db local_thread_catalog — Codex 데스크톱/IDE(chatgpt, vscode) 스레드."""
     states: list[SessionState] = []
     if not db_path.is_file():
@@ -422,9 +426,7 @@ def _codex_catalog_sessions(
         try:
             tables = {
                 r[0]
-                for r in con.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
+                for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
             if "local_thread_catalog" not in tables:
                 return states

@@ -193,6 +193,47 @@ def test_scan_codex_decision(codex_root: Path) -> None:
     assert st.doing == "파일을 수정합니다"
 
 
+def test_scan_codex_plain_jsonl(codex_root: Path) -> None:
+    """codex exec 등은 압축 없이 .jsonl로 rollout을 쓴다."""
+    uuid = "01a203d2-5643-7681-a947-26634175eec6"
+    lines = [
+        _codex_line(
+            "2026-11-03T14:10:30Z",
+            0,
+            "session_meta",
+            {"cwd": "/Users/sec/work/jobmate-demo", "session_id": uuid},
+        ),
+        _codex_line(
+            "2026-11-03T14:11:00Z",
+            1,
+            "response_item",
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "demo 작업"}],
+            },
+        ),
+        _codex_line(
+            "2026-11-03T14:11:30Z",
+            2,
+            "event_msg",
+            {"type": "task_complete", "last_agent_message": "완료"},
+        ),
+    ]
+    f = codex_root / f"rollout-2026-11-03T23-10-30-{uuid}.jsonl"
+    f.write_text("\n".join(lines) + "\n")
+    _touch(f, 60)
+
+    states = ab.scan_codex(codex_root.parent.parent.parent, NOW)
+    assert len(states) == 1
+    st = states[0]
+    assert st.tool == "codex"
+    assert st.session_key == uuid
+    assert st.project == "jobmate-demo"
+    assert st.title == "demo 작업"
+    assert st.status == "rest"
+
+
 def test_scan_codex_task_complete_rest(codex_root: Path) -> None:
     uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     lines = [
@@ -341,13 +382,51 @@ def test_scan_codex_catalog_desktop_threads(tmp_path: Path) -> None:
     )
     con.execute(
         "INSERT INTO local_thread_catalog VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("h", "thread-1", "데스크톱 스레드", 0, 0, "/Users/sec/proj", "vscode",
-         None, None, None, 0, 0, None, NOW - 10, 0, None, None, None, None),
+        (
+            "h",
+            "thread-1",
+            "데스크톱 스레드",
+            0,
+            0,
+            "/Users/sec/proj",
+            "vscode",
+            None,
+            None,
+            None,
+            0,
+            0,
+            None,
+            NOW - 10,
+            0,
+            None,
+            None,
+            None,
+            None,
+        ),
     )
     con.execute(
         "INSERT INTO local_thread_catalog VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("h", "thread-old", "오래된 스레드", 0, 0, "/x", "chatgpt",
-         None, None, None, 0, 0, None, NOW - 700, 0, None, None, None, None),
+        (
+            "h",
+            "thread-old",
+            "오래된 스레드",
+            0,
+            0,
+            "/x",
+            "chatgpt",
+            None,
+            None,
+            None,
+            0,
+            0,
+            None,
+            NOW - 700,
+            0,
+            None,
+            None,
+            None,
+            None,
+        ),
     )
     con.commit()
     con.close()
@@ -400,13 +479,41 @@ def test_scan_devin_sessions_db(tmp_path: Path) -> None:
     )
     con.execute(
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("desk-sess", "/Users/sec/proj", "local", "m", "a",
-         NOW - 100, NOW - 10, "데스크톱 세션", None, 0, None, None, 0, None),
+        (
+            "desk-sess",
+            "/Users/sec/proj",
+            "local",
+            "m",
+            "a",
+            NOW - 100,
+            NOW - 10,
+            "데스크톱 세션",
+            None,
+            0,
+            None,
+            None,
+            0,
+            None,
+        ),
     )
     con.execute(
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("hidden-sess", "/x", "local", "m", "a",
-         NOW - 100, NOW - 10, "숨김", None, 0, None, None, 1, None),
+        (
+            "hidden-sess",
+            "/x",
+            "local",
+            "m",
+            "a",
+            NOW - 100,
+            NOW - 10,
+            "숨김",
+            None,
+            0,
+            None,
+            None,
+            1,
+            None,
+        ),
     )
     con.commit()
     con.close()
