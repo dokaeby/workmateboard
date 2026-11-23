@@ -21,6 +21,7 @@ class Run(BaseModel):
     updated_at: datetime
     error: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    created_by: str = ""
 
 
 class StageRun(BaseModel):

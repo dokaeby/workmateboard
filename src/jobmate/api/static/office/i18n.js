@@ -223,9 +223,9 @@ const JMO_I18N = (() => {
     return s;
   }
   function ev(key, arg) {
-    if (key === "ask") return t("ev.ask", { a: cut(ask(arg, true) || t("ev.check"), 24) });
-    if (key === "subIn") return t("ev.subIn", { a: cut(arg || t("ev.task"), 22) });
-    if (key === "subOut") return t("ev.subOut", { a: cut(arg || t("ev.end"), 22) });
+    if (key === "ask") return t("ev.ask", { a: cut(ask(arg, true) || t("ev.check"), 60) });
+    if (key === "subIn") return t("ev.subIn", { a: cut(arg || t("ev.task"), 60) });
+    if (key === "subOut") return t("ev.subOut", { a: cut(arg || t("ev.end"), 60) });
     return t("ev." + key);
   }
   // 로그 시각 — 보는 사람의 시간대

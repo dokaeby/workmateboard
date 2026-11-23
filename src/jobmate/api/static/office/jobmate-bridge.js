@@ -13,7 +13,7 @@ function jmAuditText(e) {
   if (!e) return "";
   const d = e.detail;
   const s = d == null ? "" : (typeof d === "string" ? d : JSON.stringify(d));
-  return String(s || e.action || "").slice(0, 60);
+  return String(s || e.action || "").slice(0, 200);
 }
 
 function jmOfficePeople() {
@@ -43,7 +43,7 @@ function jmOfficePeople() {
       // 활동 로그는 run 감사 기록 전체를 ORCH 가 담당한다
       p.log = audit.map(a => ({
         at: a.created_at, k: "text",
-        a: [a.actor, a.action, jmAuditText(a)].filter(Boolean).join(" ").slice(0, 120),
+        a: [a.actor, a.action, jmAuditText(a)].filter(Boolean).join(" ").slice(0, 400),
       })).filter(e => e.at);
       return p;
     }
@@ -60,7 +60,7 @@ function jmOfficePeople() {
       } else if (st === "succeeded") {
         p.doing = "승인 완료";
       } else if (st === "failed") {
-        p.doing = "실패: " + String(sr.error || "").slice(0, 40);
+        p.doing = "실패: " + String(sr.error || "").slice(0, 120);
       } else {
         p.doing = "대기";
       }
@@ -75,7 +75,7 @@ function jmOfficePeople() {
       p.doing = "완료";
     } else if (st === "failed") {
       const detail = sr.error || JSON.stringify(sr.output || "");
-      p.doing = "실패: " + String(detail).slice(0, 40);
+      p.doing = "실패: " + String(detail).slice(0, 120);
     } else if (st === "skipped") {
       p.doing = "건너뜀";
     } else {

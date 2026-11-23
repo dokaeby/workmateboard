@@ -35,7 +35,7 @@ const OfficeLife = (() => {
 
   // ---------- 말풍선 ----------
   function say(p, text, dur = 2.8, kind = "talk") {
-    if (text) p.bubble = { text: cut(text, 26), until: L.t + dur, kind };
+    if (text) p.bubble = { text: cut(text, 48), until: L.t + dur, kind };
   }
 
   // ---------- 알림 소리 — 승인·질문이 새로 생기면 짧은 차임(WebAudio 진동자, 파일 없음) ----------

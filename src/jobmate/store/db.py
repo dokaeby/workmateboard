@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS runs (
   trace_id TEXT NOT NULL,
   error TEXT NOT NULL DEFAULT '',
   metadata TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -351,6 +352,93 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reports_kind ON reports(kind, created_at);
+
+-- playbooks: 원클릭 작업 템플릿
+CREATE TABLE IF NOT EXISTS playbooks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  workflow TEXT NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+-- run_comments: run/diff 토론
+CREATE TABLE IF NOT EXISTS run_comments (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  user_id TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_comments_run ON run_comments(run_id);
+
+-- connectors: 외부 데이터 소스 (github/jira/notion/linear/webhook)
+CREATE TABLE IF NOT EXISTS connectors (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  has_token INTEGER NOT NULL DEFAULT 0,
+  last_fetch_at TEXT,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+-- custom_workflows: 비주얼 빌더로 만든 WorkflowSpec 영속화
+CREATE TABLE IF NOT EXISTS custom_workflows (
+  name TEXT PRIMARY KEY,
+  spec TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- triggers: 세션 상태 전이 기반 자동화
+CREATE TABLE IF NOT EXISTS triggers (
+  id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  match TEXT NOT NULL DEFAULT '{}',
+  action TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  last_fired_at TEXT,
+  last_error TEXT NOT NULL DEFAULT ''
+);
+
+-- trigger_fires: trigger+session+state 전이당 1회 발사의 멱등 기록
+CREATE TABLE IF NOT EXISTS trigger_fires (
+  id TEXT PRIMARY KEY,
+  trigger_id TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  state TEXT NOT NULL,
+  fp TEXT NOT NULL DEFAULT '',
+  fired_at TEXT NOT NULL,
+  UNIQUE(trigger_id, tool, session_key, state, fp)
+);
+CREATE INDEX IF NOT EXISTS idx_trigger_fires_trigger ON trigger_fires(trigger_id);
+
+-- share_links: 공개 스냅샷 공유 토큰 (+30일 만료)
+CREATE TABLE IF NOT EXISTS share_links (
+  token TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  ref_id TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- dashboard_cards: 사용자 등록 webhook/JSON 위젯
+CREATE TABLE IF NOT EXISTS dashboard_cards (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  json_path TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -364,6 +452,7 @@ CREATE TABLE IF NOT EXISTS runs (
   trace_id TEXT NOT NULL,
   error TEXT NOT NULL DEFAULT '',
   metadata TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -658,6 +747,93 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reports_kind ON reports(kind, created_at);
+
+-- playbooks: 원클릭 작업 템플릿
+CREATE TABLE IF NOT EXISTS playbooks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  workflow TEXT NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+-- run_comments: run/diff 토론
+CREATE TABLE IF NOT EXISTS run_comments (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  user_id TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_comments_run ON run_comments(run_id);
+
+-- connectors: 외부 데이터 소스 (github/jira/notion/linear/webhook)
+CREATE TABLE IF NOT EXISTS connectors (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  has_token INTEGER NOT NULL DEFAULT 0,
+  last_fetch_at TEXT,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+-- custom_workflows: 비주얼 빌더로 만든 WorkflowSpec 영속화
+CREATE TABLE IF NOT EXISTS custom_workflows (
+  name TEXT PRIMARY KEY,
+  spec TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- triggers: 세션 상태 전이 기반 자동화
+CREATE TABLE IF NOT EXISTS triggers (
+  id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  match TEXT NOT NULL DEFAULT '{}',
+  action TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  last_fired_at TEXT,
+  last_error TEXT NOT NULL DEFAULT ''
+);
+
+-- trigger_fires: trigger+session+state 전이당 1회 발사의 멱등 기록
+CREATE TABLE IF NOT EXISTS trigger_fires (
+  id TEXT PRIMARY KEY,
+  trigger_id TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  state TEXT NOT NULL,
+  fp TEXT NOT NULL DEFAULT '',
+  fired_at TEXT NOT NULL,
+  UNIQUE(trigger_id, tool, session_key, state, fp)
+);
+CREATE INDEX IF NOT EXISTS idx_trigger_fires_trigger ON trigger_fires(trigger_id);
+
+-- share_links: 공개 스냅샷 공유 토큰 (+30일 만료)
+CREATE TABLE IF NOT EXISTS share_links (
+  token TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  ref_id TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- dashboard_cards: 사용자 등록 webhook/JSON 위젯
+CREATE TABLE IF NOT EXISTS dashboard_cards (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  json_path TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -773,6 +949,7 @@ class Store:
         self._migrate_agent_session_columns()
         self._migrate_approval_columns()
         self._migrate_user_columns()
+        self._migrate_run_columns()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -826,6 +1003,10 @@ class Store:
         """기존 DB의 users에 role 컬럼 보강 (admin|user, 기본 user)."""
         self._ensure_columns("users", {"role": "TEXT NOT NULL DEFAULT 'user'"})
 
+    def _migrate_run_columns(self) -> None:
+        """기존 DB의 runs에 created_by 컬럼 보강 (팀 뷰/export용)."""
+        self._ensure_columns("runs", {"created_by": "TEXT NOT NULL DEFAULT ''"})
+
     def close(self) -> None:
         self._conn.close()
 
@@ -842,6 +1023,7 @@ class Store:
         input_data: dict[str, Any],
         trace_id: str,
         metadata: dict[str, Any] | None = None,
+        created_by: str = "",
     ) -> Run:
         run = Run(
             id=uuid.uuid4().hex[:12],
@@ -853,11 +1035,13 @@ class Store:
             created_at=_now(),
             updated_at=_now(),
             metadata=metadata or {},
+            created_by=created_by,
         )
         with self.tx() as c:
             c.execute(
                 "INSERT INTO runs(id,workflow_key,workflow_version,input,status,trace_id,"
-                "error,metadata,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "error,metadata,created_by,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run.id,
                     run.workflow_key,
@@ -867,6 +1051,7 @@ class Store:
                     run.trace_id,
                     run.error,
                     json.dumps(run.metadata),
+                    run.created_by,
                     _iso(run.created_at),
                     _iso(run.updated_at),
                 ),
@@ -925,6 +1110,7 @@ class Store:
             trace_id=row["trace_id"],
             error=row["error"],
             metadata=_loads(row["metadata"]),
+            created_by=row["created_by"] if "created_by" in row.keys() else "",
             created_at=_dt(row["created_at"]) or _now(),
             updated_at=_dt(row["updated_at"]) or _now(),
         )
@@ -2770,6 +2956,469 @@ class Store:
                 "UPDATE users SET role=?, updated_at=? WHERE id=?",
                 (role, _iso(_now()), user_id),
             )
+
+    # ---- playbooks (원클릭 작업 템플릿) ----
+    @staticmethod
+    def _playbook_json(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        d["input"] = _loads(d.get("input") or "{}")
+        return d
+
+    def create_playbook(
+        self, name: str, workflow: str, input_data: dict[str, Any], created_by: str = ""
+    ) -> dict[str, Any]:
+        pid = uuid.uuid4().hex[:12]
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO playbooks(id,name,workflow,input,created_by,created_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (pid, name, workflow, json.dumps(input_data or {}), created_by, now),
+            )
+        pb = self.get_playbook(pid)
+        return pb if pb is not None else {"id": pid}
+
+    def list_playbooks(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute("SELECT * FROM playbooks ORDER BY created_at DESC").fetchall()
+        return [self._playbook_json(r) for r in rows]
+
+    def get_playbook(self, playbook_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM playbooks WHERE id=?", (playbook_id,)).fetchone()
+        return self._playbook_json(row) if row else None
+
+    def delete_playbook(self, playbook_id: str) -> bool:
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM playbooks WHERE id=?", (playbook_id,))
+        return cur.rowcount > 0
+
+    # ---- run_comments (run/diff 토론) ----
+    def add_run_comment(self, run_id: str, user_id: str, email: str, body: str) -> dict[str, Any]:
+        cid = uuid.uuid4().hex[:12]
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO run_comments(id,run_id,user_id,email,body,created_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (cid, run_id, user_id, email, body, now),
+            )
+        return {
+            "id": cid,
+            "run_id": run_id,
+            "user_id": user_id,
+            "email": email,
+            "body": body,
+            "created_at": now,
+        }
+
+    def list_run_comments(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT id,run_id,user_id,email,body,created_at FROM run_comments"
+            " WHERE run_id=? ORDER BY created_at, id",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- connectors (외부 데이터 소스) ----
+    @staticmethod
+    def _connector_json(r: Any, *, with_config: bool = False) -> dict[str, Any]:
+        d = dict(r)
+        d["enabled"] = bool(d.get("enabled"))
+        d["has_token"] = bool(d.get("has_token"))
+        if with_config:
+            d["config"] = _loads(d.get("config") or "{}")
+        else:
+            d.pop("config", None)
+        return d
+
+    def create_connector(
+        self,
+        ctype: str,
+        name: str,
+        config: dict[str, Any],
+        enabled: bool = True,
+        has_token: bool = False,
+    ) -> dict[str, Any]:
+        cid = uuid.uuid4().hex[:12]
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO connectors(id,type,name,config,enabled,has_token,"
+                "last_fetch_at,last_error,created_at) VALUES(?,?,?,?,?,?,NULL,'',?)",
+                (
+                    cid,
+                    ctype,
+                    name,
+                    json.dumps(config or {}, ensure_ascii=False),
+                    1 if enabled else 0,
+                    int(has_token),
+                    now,
+                ),
+            )
+        conn = self.get_connector(cid)
+        if conn is not None:
+            conn.pop("config", None)  # 생성 응답에도 config(암호문 포함) 비노출
+        return conn if conn is not None else {"id": cid}
+
+    def list_connectors(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute("SELECT * FROM connectors ORDER BY created_at DESC").fetchall()
+        return [self._connector_json(r) for r in rows]
+
+    def get_connector(self, connector_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM connectors WHERE id=?", (connector_id,)).fetchone()
+        return self._connector_json(row, with_config=True) if row else None
+
+    def delete_connector(self, connector_id: str) -> bool:
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM connectors WHERE id=?", (connector_id,))
+        return cur.rowcount > 0
+
+    def set_connector_enabled(self, connector_id: str, enabled: bool) -> dict[str, Any] | None:
+        conn = self.get_connector(connector_id)
+        if conn is None:
+            return None
+        with self.tx() as c:
+            c.execute(
+                "UPDATE connectors SET enabled=? WHERE id=?",
+                (1 if enabled else 0, connector_id),
+            )
+        return self.get_connector(connector_id)
+
+    def mark_connector_fetch(self, connector_id: str, error: str = "") -> None:
+        """fetch 시도 결과 기록 — last_fetch_at은 성공/실패 무관하게 갱신."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE connectors SET last_fetch_at=?, last_error=? WHERE id=?",
+                (_iso(_now()), error[:300], connector_id),
+            )
+
+    # ---- custom_workflows (비주얼 빌더 WorkflowSpec) ----
+    def upsert_custom_workflow(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO custom_workflows(name,spec,created_at) VALUES(?,?,?)"
+                " ON CONFLICT(name) DO UPDATE SET spec=excluded.spec",
+                (name, json.dumps(spec, ensure_ascii=False), now),
+            )
+        return {"name": name, "spec": spec, "created_at": now}
+
+    def list_custom_workflows(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT name,spec,created_at FROM custom_workflows ORDER BY name"
+        ).fetchall()
+        out = []
+        for r in rows:
+            spec = _loads(r["spec"])
+            out.append({"name": r["name"], "spec": spec, "created_at": r["created_at"]})
+        return out
+
+    def get_custom_workflow(self, name: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT name,spec,created_at FROM custom_workflows WHERE name=?", (name,)
+        ).fetchone()
+        if not row:
+            return None
+        return {"name": row["name"], "spec": _loads(row["spec"]), "created_at": row["created_at"]}
+
+    def delete_custom_workflow(self, name: str) -> bool:
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM custom_workflows WHERE name=?", (name,))
+        return cur.rowcount > 0
+
+    # ---- triggers (세션 상태 전이 자동화) ----
+    @staticmethod
+    def _trigger_json(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        d["enabled"] = bool(d.get("enabled"))
+        d["match"] = _loads(d.get("match") or "{}")
+        d["action"] = _loads(d.get("action") or "{}")
+        return d
+
+    def create_trigger(
+        self, match: dict[str, Any], action: dict[str, Any], enabled: bool = True
+    ) -> dict[str, Any]:
+        tid = uuid.uuid4().hex[:12]
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO triggers(id,enabled,match,action,created_at,"
+                "last_fired_at,last_error) VALUES(?,?,?,?,?,NULL,'')",
+                (
+                    tid,
+                    1 if enabled else 0,
+                    json.dumps(match or {}, ensure_ascii=False),
+                    json.dumps(action or {}, ensure_ascii=False),
+                    now,
+                ),
+            )
+        trig = self.get_trigger(tid)
+        return trig if trig is not None else {"id": tid}
+
+    def list_triggers(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM triggers"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY created_at DESC"
+        rows = self._conn.execute(sql).fetchall()
+        return [self._trigger_json(r) for r in rows]
+
+    def get_trigger(self, trigger_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM triggers WHERE id=?", (trigger_id,)).fetchone()
+        return self._trigger_json(row) if row else None
+
+    def delete_trigger(self, trigger_id: str) -> bool:
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM triggers WHERE id=?", (trigger_id,))
+            c.execute("DELETE FROM trigger_fires WHERE trigger_id=?", (trigger_id,))
+        return cur.rowcount > 0
+
+    def set_trigger_enabled(self, trigger_id: str, enabled: bool) -> dict[str, Any] | None:
+        trig = self.get_trigger(trigger_id)
+        if trig is None:
+            return None
+        with self.tx() as c:
+            c.execute(
+                "UPDATE triggers SET enabled=? WHERE id=?",
+                (1 if enabled else 0, trigger_id),
+            )
+        return self.get_trigger(trigger_id)
+
+    def claim_trigger_fire(
+        self,
+        trigger_id: str,
+        tool: str,
+        session_key: str,
+        state: str,
+        fp: str,
+    ) -> bool:
+        """trigger+session+state+fp 조합의 발사권 선점 — 최초 1회만 True.
+
+        fp는 상태 전이 지문(세션 updated_at 등). 같은 전이의 반복 평가는
+        UNIQUE 충돌로 False를 반환해 중복 발사를 막는다."""
+        fid = uuid.uuid4().hex[:12]
+        with self.tx() as c:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO trigger_fires"
+                "(id,trigger_id,tool,session_key,state,fp,fired_at)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (fid, trigger_id, tool, session_key, state, fp, _iso(_now())),
+            )
+            return cur.rowcount > 0
+
+    def mark_trigger_error(self, trigger_id: str, error: str) -> None:
+        """발사 실패 기록 — last_error만 갱신(last_fired_at은 유지)."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE triggers SET last_error=? WHERE id=?",
+                (error[:300], trigger_id),
+            )
+
+    def mark_trigger_fired(self, trigger_id: str) -> None:
+        """발사 성공 기록 — last_fired_at 갱신 + last_error 클리어."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE triggers SET last_fired_at=?, last_error='' WHERE id=?",
+                (_iso(_now()), trigger_id),
+            )
+
+    # ---- share_links (공개 스냅샷 공유) ----
+    def create_share_link(
+        self,
+        token: str,
+        kind: str,
+        ref_id: str,
+        payload: dict[str, Any],
+        created_by: str,
+        expires_at: str,
+    ) -> None:
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO share_links(token,kind,ref_id,payload,created_by,"
+                "expires_at,created_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    token,
+                    kind,
+                    ref_id,
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                    created_by,
+                    expires_at,
+                    now,
+                ),
+            )
+
+    def get_share_link(self, token: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT token,kind,ref_id,payload,created_by,expires_at,created_at"
+            " FROM share_links WHERE token=?",
+            (token,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["payload"] = _loads(d.get("payload") or "{}")
+        return d
+
+    # ---- dashboard_cards (사용자 등록 JSON 위젯) ----
+    def create_card(
+        self,
+        title: str,
+        url: str,
+        json_path: str = "",
+        enabled: bool = True,
+        created_by: str = "",
+    ) -> dict[str, Any]:
+        cid = uuid.uuid4().hex[:12]
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO dashboard_cards(id,title,url,json_path,enabled,"
+                "created_by,created_at) VALUES(?,?,?,?,?,?,?)",
+                (cid, title, url, json_path, 1 if enabled else 0, created_by, now),
+            )
+        card = self.get_card(cid)
+        return card if card is not None else {"id": cid}
+
+    def list_cards(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM dashboard_cards ORDER BY created_at DESC"
+        ).fetchall()
+        return [self._card_json(r) for r in rows]
+
+    @staticmethod
+    def _card_json(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        d["enabled"] = bool(d.get("enabled"))
+        return d
+
+    def get_card(self, card_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM dashboard_cards WHERE id=?", (card_id,)).fetchone()
+        return self._card_json(row) if row else None
+
+    def delete_card(self, card_id: str) -> bool:
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM dashboard_cards WHERE id=?", (card_id,))
+        return cur.rowcount > 0
+
+    def set_card_enabled(self, card_id: str, enabled: bool) -> dict[str, Any] | None:
+        card = self.get_card(card_id)
+        if card is None:
+            return None
+        with self.tx() as c:
+            c.execute(
+                "UPDATE dashboard_cards SET enabled=? WHERE id=?",
+                (1 if enabled else 0, card_id),
+            )
+        return self.get_card(card_id)
+
+    # ---- 감사 로그 뷰 (audit_events 전역 조회) ----
+    def list_audit(self, limit: int = 200) -> list[dict[str, Any]]:
+        """전체 audit_events 최신순 — 관리자 감사 타임라인용."""
+        rows = self._conn.execute(
+            "SELECT id,run_id,actor,action,object_ref,detail,created_at"
+            " FROM audit_events ORDER BY created_at DESC, id DESC LIMIT ?",
+            (min(max(int(limit), 1), 1000),),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "run_id": r["run_id"],
+                "actor": r["actor"],
+                "action": r["action"],
+                "target": r["object_ref"],
+                "detail": _loads(r["detail"]),
+                "ts": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    # ---- team 뷰 (다중 사용자 활동 집계) ----
+    def team_activity(self) -> list[dict[str, Any]]:
+        """users × runs.created_by × auth_sessions 집계.
+
+        created_by는 세션 사용자 email(없으면 'api-key'/'local' 등 시스템 값) —
+        email/id 어느 쪽으로 기록됐든 매칭한다."""
+        users = self.list_users()
+        run_rows = self._conn.execute(
+            "SELECT created_by, COUNT(*) AS n, MAX(created_at) AS last_at"
+            " FROM runs WHERE created_by != '' GROUP BY created_by"
+        ).fetchall()
+        sess_rows = self._conn.execute(
+            "SELECT user_id, COUNT(*) AS n, MAX(created_at) AS last_at"
+            " FROM auth_sessions GROUP BY user_id"
+        ).fetchall()
+        run_by_actor = {r["created_by"]: dict(r) for r in run_rows}
+        sess_by_user = {r["user_id"]: dict(r) for r in sess_rows}
+        items = []
+        for u in users:
+            uid, email = u["id"], u["email"]
+            rr = run_by_actor.get(email) or run_by_actor.get(uid)
+            sr = sess_by_user.get(uid)
+            last_active = ""
+            for cand in (
+                (rr or {}).get("last_at"),
+                (sr or {}).get("last_at"),
+            ):
+                if cand and cand > last_active:
+                    last_active = cand
+            items.append(
+                {
+                    "id": uid,
+                    "email": email,
+                    "name": u.get("display_name", ""),
+                    "role": u.get("role", "user"),
+                    "run_count": int((rr or {}).get("n") or 0),
+                    "session_count": int((sr or {}).get("n") or 0),
+                    "last_active_at": last_active or None,
+                }
+            )
+        items.sort(key=lambda x: (x["last_active_at"] or "", x["email"]), reverse=True)
+        return items
+
+    # ---- export 헬퍼 ----
+    def export_runs(self, since_iso: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT id,workflow_key,workflow_version,status,trace_id,error,"
+            "created_by,created_at,updated_at FROM runs WHERE created_at >= ?"
+            " ORDER BY created_at",
+            (since_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def export_sessions(self, since_iso: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT tool,session_key,project,title,status,machine,"
+            "tokens_in,tokens_out,last_event_at,created_at,updated_at"
+            " FROM agent_sessions WHERE updated_at >= ? ORDER BY updated_at",
+            (since_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def export_reports(self, since_iso: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT id,kind,content,created_at FROM reports WHERE created_at >= ?"
+            " ORDER BY created_at",
+            (since_iso,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["content"] = _loads(d.get("content") or "{}")
+            out.append(d)
+        return out
+
+    def get_report(self, report_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT id,kind,content,created_at FROM reports WHERE id=?", (report_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "content": _loads(row["content"]),
+            "created_at": row["created_at"],
+        }
 
     # ---- db 메타 (헬스 상세) ----
     def db_info(self) -> dict[str, Any]:

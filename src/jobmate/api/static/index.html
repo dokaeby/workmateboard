@@ -58,7 +58,7 @@
   /* ── 레이아웃: 사이드바 + 메인 ── */
   .app-body {
     display: grid; grid-template-columns: 220px minmax(0, 1fr);
-    gap: 24px; max-width: 1240px; margin: 0 auto;
+    gap: 24px; max-width: 1720px; margin: 0 auto;
     padding: 24px; align-items: start;
   }
   .sidebar {
@@ -444,7 +444,7 @@
   #jmo-notice p { margin: 0; }
   #jmo-notice p + p { margin-top: 2px; }
   #jmo-side {
-    width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px;
+    width: 340px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px;
     min-height: 0; padding: 10px; background: var(--surface);
     border-left: 1px solid var(--border); overflow: hidden;
   }
@@ -880,6 +880,62 @@
     box-shadow: 0 8px 30px rgba(0,0,0,.18);
   }
 #auth-overlay[hidden], #auth-needed[hidden] { display: none !important; }
+  /* ── 신규 뷰 공통 (플레이북/커넥터/트리거/빌더/팀/감사/카드) ── */
+  .mini-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .mini-form input, .mini-form select, .mini-form textarea {
+    font-size: 13px; padding: 7px 10px;
+  }
+  .spec-editor {
+    width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; min-height: 320px; resize: vertical;
+  }
+  .wf-grid { display: grid; grid-template-columns: 250px minmax(0, 1fr);
+             gap: 14px; align-items: start; }
+  @media (max-width: 820px) { .wf-grid { grid-template-columns: 1fr; } }
+  .list-row {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 14px;
+  }
+  .list-row:last-child { border-bottom: none; }
+  .list-row .grow { flex: 1; min-width: 0; }
+  .list-row button { padding: 3px 10px; font-size: 12px; flex: none; }
+  .conn-items {
+    margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px;
+  }
+  .conn-items[hidden] { display: none; }
+  .conn-item-row {
+    display: flex; gap: 8px; align-items: baseline; padding: 5px 0;
+    border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .conn-item-row:last-child { border-bottom: none; }
+  .conn-item-row .st { margin-left: auto; flex: none; }
+  .toggle-btn.on { color: var(--ok); border-color: var(--ok-border); }
+  .toggle-btn.off { color: var(--muted); }
+  .me-row { background: var(--accent-soft); }
+  .card-val {
+    font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums;
+    margin-top: 6px; overflow-wrap: anywhere;
+  }
+  /* ── 모바일 요약 바 ── */
+  #mob-bar { display: none; }
+  @media (max-width: 820px) {
+    #mob-bar {
+      display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+      background: var(--surface); border-top: 1px solid var(--border);
+      box-shadow: 0 -4px 18px rgba(15, 23, 42, .08);
+    }
+    #mob-bar button {
+      flex: 1; border: none; border-radius: 0; background: transparent;
+      color: var(--ink-2); padding: 8px 4px 10px; font-size: 11px;
+      font-weight: 600; display: flex; flex-direction: column;
+      align-items: center; gap: 1px;
+    }
+    #mob-bar button b {
+      font-size: 16px; color: var(--accent); font-variant-numeric: tabular-nums;
+    }
+    .app-body { padding-bottom: 76px; }
+    .sidebar { padding-bottom: 8px; }
+  }
 </style>
 </head>
 <body>
@@ -910,9 +966,9 @@
 <div class="app-body">
   <aside class="sidebar">
     <nav>
-      <button class="nav-item active" data-view="radar"><span class="ico">◈</span>Skill Radar</button>
+      <button class="nav-item active" data-view="office"><span class="ico">⬡</span>Agent-Office</button>
+      <button class="nav-item" data-view="radar"><span class="ico">◈</span>Skill Radar</button>
       <button class="nav-item" data-view="gmail"><span class="ico">✉</span>Gmail Checker</button>
-      <button class="nav-item" data-view="office"><span class="ico">⬡</span>Agent-Office</button>
       <button class="nav-item" data-view="calendar"><span class="ico">▣</span>Calendar</button>
       <button class="nav-item" data-view="runs"><span class="ico">▶</span>실행 이력</button>
       <button class="nav-item" data-view="inbox"><span class="ico">🔔</span>알림<span class="nav-badge" id="nav-inbox-badge" hidden></span></button>
@@ -922,6 +978,12 @@
       <button class="nav-item" data-view="archive"><span class="ico">🗄</span>아카이브</button>
       <button class="nav-item" data-view="cost"><span class="ico">💰</span>비용</button>
       <button class="nav-item" data-view="developer"><span class="ico">🛠</span>개발자</button>
+      <button class="nav-item" data-view="playbooks"><span class="ico">📒</span>플레이북</button>
+      <button class="nav-item" data-view="connectors"><span class="ico">🔌</span>커넥터</button>
+      <button class="nav-item" data-view="triggers"><span class="ico">⚡</span>트리거</button>
+      <button class="nav-item" data-view="builder"><span class="ico">🧩</span>워크플로 빌더</button>
+      <button class="nav-item" data-view="team"><span class="ico">👥</span>팀</button>
+      <button class="nav-item" id="nav-audit" data-view="audit" hidden><span class="ico">🔍</span>감사 로그</button>
     </nav>
   </aside>
 
@@ -940,7 +1002,7 @@
     </section>
 
     <!-- Agent-Office -->
-    <section id="view-office" hidden>
+    <section id="view-office">
       <div class="page-head">
         <h1 class="page-title">Agent Command</h1>
         <p class="page-desc">dev_review 워크플로 실행 관제판</p>
@@ -1057,7 +1119,7 @@
     </section>
 
     <!-- Skill Radar (skillRadar UI 포팅) -->
-    <section id="view-radar">
+    <section id="view-radar" hidden>
       <div class="sr-root" id="sr-root">
         <header class="sr-header">
           <div class="sr-header-top">
@@ -1268,6 +1330,29 @@
         </div>
         <div id="rpt-body"><span class="empty">리포트를 불러오려면 버튼을 누르세요</span></div>
       </div>
+      <div class="card" data-widget="cards" id="cards-widget">
+        <div class="card-top" style="justify-content:space-between">
+          <h3 style="margin:0;font-size:15px">카드</h3>
+          <button class="secondary" id="card-add-btn"
+                  style="padding:4px 10px;font-size:12px">+ 카드 추가</button>
+        </div>
+        <div id="card-form" hidden style="margin-bottom:10px">
+          <div class="grid-form">
+            <input id="card-title" placeholder="제목" autocomplete="off">
+            <input id="card-url" placeholder="URL" autocomplete="off">
+            <input id="card-jsonpath" placeholder="JSON 경로 (선택, 예: $.value)" autocomplete="off">
+            <div class="mini-form">
+              <label style="font-size:13px"><input type="checkbox" id="card-enabled" checked> 활성</label>
+              <button type="button" class="secondary" id="card-save"
+                      style="padding:4px 12px;font-size:12px">저장</button>
+              <button type="button" class="secondary" id="card-cancel"
+                      style="padding:4px 12px;font-size:12px">취소</button>
+            </div>
+            <span class="status-line" id="card-status" role="status"></span>
+          </div>
+        </div>
+        <div id="cards-list"><span class="empty">카드 없음</span></div>
+      </div>
     </section>
 
     <!-- 인사이트 -->
@@ -1328,6 +1413,29 @@
         </form>
       </div>
       <div id="arch-body"><div class="empty">검색어를 입력하고 검색을 누르세요</div></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px;font-size:15px">내보내기 / 공유</h3>
+        <div class="mini-form">
+          <select id="exp-kind" aria-label="내보내기 종류">
+            <option value="runs">실행</option>
+            <option value="sessions">세션</option>
+            <option value="usage">사용량</option>
+            <option value="reports">리포트</option>
+          </select>
+          <select id="exp-format" aria-label="형식">
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+          <select id="exp-days" aria-label="기간">
+            <option value="7">최근 7일</option>
+            <option value="30" selected>최근 30일</option>
+            <option value="90">최근 90일</option>
+          </select>
+          <button class="secondary" id="exp-dl" style="padding:6px 12px;font-size:13px">다운로드</button>
+          <button class="secondary" id="share-open" style="padding:6px 12px;font-size:13px">공유 링크 만들기</button>
+        </div>
+        <div class="card-meta" style="margin-top:6px">공유 링크는 로그인 없이 열리는 읽기 전용 URL입니다.</div>
+      </div>
     </section>
 
     <!-- 비용 -->
@@ -1357,6 +1465,185 @@
         <p class="page-desc">연동 · 인증 설정 상태</p>
       </div>
       <div id="dev-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 플레이북 -->
+    <section id="view-playbooks" hidden>
+      <div class="page-head">
+        <h1 class="page-title">플레이북</h1>
+        <p class="page-desc">자주 쓰는 워크플로 실행 템플릿</p>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 10px;font-size:15px">새 플레이북</h3>
+        <form id="pb-form" class="grid-form">
+          <div class="mini-form">
+            <input id="pb-name" placeholder="이름 (예: 주간 리뷰)" required
+                   style="flex:1;min-width:180px" autocomplete="off">
+            <select id="pb-workflow" aria-label="워크플로"></select>
+          </div>
+          <textarea id="pb-task" rows="3" required
+            placeholder="작업 내용 (task) — 플레이북 실행 시 이 입력이 사용됩니다"></textarea>
+          <div>
+            <button type="submit">생성</button>
+            <span class="status-line" id="pb-status" role="status"></span>
+          </div>
+        </form>
+      </div>
+      <div id="pb-list"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 커넥터 -->
+    <section id="view-connectors" hidden>
+      <div class="page-head">
+        <h1 class="page-title">커넥터</h1>
+        <p class="page-desc">외부 서비스 연동 — 토큰은 서버에 암호화되어 저장됩니다</p>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 10px;font-size:15px">커넥터 추가</h3>
+        <form id="conn-form" class="grid-form">
+          <div class="mini-form">
+            <select id="conn-type" aria-label="커넥터 종류">
+              <option value="github">GitHub</option>
+              <option value="jira">Jira</option>
+              <option value="notion">Notion</option>
+              <option value="linear">Linear</option>
+              <option value="webhook">Webhook</option>
+            </select>
+            <input id="conn-name" placeholder="이름 (예: 회사 GitHub)" required
+                   style="flex:1;min-width:180px" autocomplete="off">
+          </div>
+          <div class="mini-form" id="conn-config"></div>
+          <div>
+            <button type="submit">추가</button>
+            <span class="status-line" id="conn-status" role="status"></span>
+          </div>
+        </form>
+      </div>
+      <div id="conn-list"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 트리거 -->
+    <section id="view-triggers" hidden>
+      <div class="page-head">
+        <h1 class="page-title">트리거</h1>
+        <p class="page-desc">세션 상태가 조건에 맞으면 워크플로/플레이북/리포트를 자동 실행</p>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 10px;font-size:15px">트리거 추가</h3>
+        <form id="trg-form" class="grid-form">
+          <div style="font-size:12px;font-weight:700;color:var(--muted)">조건 (match)</div>
+          <div class="mini-form">
+            <select id="trg-tool" aria-label="도구">
+              <option value="">도구: 전체</option>
+              <option value="devin">Devin</option>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude</option>
+              <option value="gemini">Gemini</option>
+            </select>
+            <input id="trg-project" placeholder="프로젝트 (선택)" autocomplete="off">
+            <select id="trg-state" aria-label="상태">
+              <option value="">상태: 전체</option>
+              <option value="working">작업 중</option>
+              <option value="decision">결정 대기</option>
+              <option value="rest">휴식</option>
+            </select>
+          </div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted)">동작 (action)</div>
+          <div class="mini-form">
+            <select id="trg-action" aria-label="동작 종류">
+              <option value="run_workflow">워크플로 실행</option>
+              <option value="run_playbook">플레이북 실행</option>
+              <option value="report">리포트 생성</option>
+            </select>
+            <select id="trg-wf" aria-label="워크플로" hidden></select>
+            <select id="trg-pb" aria-label="플레이북" hidden></select>
+            <select id="trg-report" aria-label="리포트 종류" hidden>
+              <option value="daily">일일 리포트</option>
+              <option value="weekly">주간 리포트</option>
+            </select>
+          </div>
+          <div>
+            <button type="submit">추가</button>
+            <span class="status-line" id="trg-status" role="status"></span>
+          </div>
+        </form>
+      </div>
+      <div id="trg-list"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 워크플로 빌더 -->
+    <section id="view-builder" hidden>
+      <div class="page-head">
+        <h1 class="page-title">워크플로 빌더</h1>
+        <p class="page-desc">커스텀 워크플로 스펙(JSON)을 작성·저장·실행</p>
+      </div>
+      <div class="wf-grid">
+        <div class="card" style="margin-bottom:0">
+          <h3 style="margin:0 0 8px;font-size:15px">커스텀 워크플로</h3>
+          <div id="wf-custom-list"><div class="empty">로딩…</div></div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="mini-form" style="margin-bottom:8px">
+              <input id="wf-name" placeholder="워크플로 이름 (key)" autocomplete="off"
+                     style="flex:1;min-width:180px">
+              <button class="secondary" id="wf-template"
+                      style="padding:6px 12px;font-size:13px">템플릿 삽입</button>
+            </div>
+            <textarea id="wf-spec" class="spec-editor" spellcheck="false"
+              placeholder='{"key":"...","version":"0.1.0","entry":"...","stages":[...]}'></textarea>
+            <div class="mini-form" style="margin-top:10px">
+              <input id="wf-task" placeholder="실행 시 task 입력 (선택)" autocomplete="off"
+                     style="flex:1;min-width:180px">
+              <button id="wf-save" style="padding:6px 14px;font-size:13px">저장</button>
+              <button class="secondary" id="wf-run"
+                      style="padding:6px 14px;font-size:13px">실행</button>
+            </div>
+            <div id="wf-status" class="status-line" role="status"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin:0 0 6px;font-size:14px">스펙 형식</h3>
+            <pre class="block" style="font-size:11.5px">{
+  "key": "my_flow", "version": "0.1.0",
+  "entry": "analyze",
+  "stages": [
+    {"key":"analyze","kind":"llm","agent":"analysis","description":"분석"},
+    {"key":"done","kind":"human","description":"확인"}
+  ],
+  "branches": {}
+}
+kind: llm(등록된 agent 키 필요) | function | human</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 팀 -->
+    <section id="view-team" hidden>
+      <div class="page-head">
+        <h1 class="page-title">팀</h1>
+        <p class="page-desc">멤버 목록과 활동 요약</p>
+      </div>
+      <div class="card">
+        <div class="table-scroll"><table>
+          <thead><tr><th>이메일</th><th>이름</th><th>역할</th><th>실행 수</th><th>최근 활동</th></tr></thead>
+          <tbody id="team-body"><tr><td colspan="5" class="empty">로딩…</td></tr></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- 감사 로그 (admin only) -->
+    <section id="view-audit" hidden>
+      <div class="page-head">
+        <h1 class="page-title">감사 로그</h1>
+        <p class="page-desc">관리자 전용 — 최근 200건 · 최신순</p>
+      </div>
+      <div class="card">
+        <div class="table-scroll"><table>
+          <thead><tr><th>시각</th><th>행위자</th><th>행동</th><th>대상</th><th>상세</th></tr></thead>
+          <tbody id="audit-body"><tr><td colspan="5" class="empty">로딩…</td></tr></tbody>
+        </table></div>
+      </div>
     </section>
   </main>
 </div>
@@ -1449,6 +1736,34 @@
   <span class="card-meta">로그인이 필요합니다 — 세션이 만료됐거나 로그인이 필요해요.</span>
   <button id="auth-needed-btn" style="padding:6px 12px;font-size:13px">다시 로그인</button>
 </div>
+
+<dialog id="share-dialog" style="width:min(480px,94vw);padding:24px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="font-size:18px;margin:0">공유 링크 만들기</h2>
+    <button class="secondary" id="share-close" style="padding:4px 12px">✕</button>
+  </div>
+  <div class="grid-form">
+    <label style="font-size:13px;font-weight:600">종류
+      <select id="share-kind" style="width:100%;margin-top:4px">
+        <option value="run">실행</option>
+        <option value="report">리포트</option>
+        <option value="insights">인사이트</option>
+      </select></label>
+    <label style="font-size:13px;font-weight:600">참조 ID (선택 — run id 등)
+      <input id="share-ref" placeholder="비우면 최신 항목" autocomplete="off"
+             style="width:100%;margin-top:4px;box-sizing:border-box"></label>
+    <div><button id="share-create">링크 생성</button></div>
+    <div id="share-result"></div>
+  </div>
+</dialog>
+
+<!-- 모바일 요약 바 (≤820px에서만 표시) -->
+<nav id="mob-bar" aria-label="모바일 요약">
+  <button type="button" data-mob="office"><b id="mob-approval">–</b><span>승인 대기</span></button>
+  <button type="button" data-mob="runs"><b id="mob-runs">–</b><span>오늘 실행</span></button>
+  <button type="button" data-mob="office-sessions"><b id="mob-sessions">–</b><span>활성 세션</span></button>
+  <button type="button" data-mob="cost"><b id="mob-cost">–</b><span>월 비용</span></button>
+</nav>
 
 <script>
 const API = "/api/v1";
@@ -1617,7 +1932,10 @@ const VIEWS = { gmail: loadGmail,
                 inbox: loadInbox,
                 insights: loadInsights, automation: loadAutomation,
                 system: () => {}, archive: () => {},
-                cost: loadCostView, developer: loadDeveloper };
+                cost: loadCostView, developer: loadDeveloper,
+                playbooks: () => {}, connectors: () => {},
+                triggers: () => {}, builder: () => {},
+                team: () => {}, audit: () => {} };
 const loaded = {};
 document.querySelectorAll(".nav-item").forEach(b =>
   b.addEventListener("click", () => {
@@ -1628,6 +1946,8 @@ document.querySelectorAll(".nav-item").forEach(b =>
     const v = b.dataset.view;
     if (!loaded[v]) { loaded[v] = true; VIEWS[v](); }
   }));
+// 기본 활성 뷰 로드 (Agent-Office가 첫 메뉴)
+document.querySelector(".nav-item.active")?.click();
 // ?view=office 딥링크 — Web Push source_url 대응 (없는 뷰는 무시)
 (() => {
   const v = new URLSearchParams(location.search).get("view");
@@ -4157,7 +4477,8 @@ async function showDetail(id) {
       ${d.error ? `<p style="color:var(--err)">${esc(d.error)}</p>` : ""}
       <h3 style="margin:14px 0 8px;font-size:14px">단계</h3><ul>${stages || "<li class='empty'>없음</li>"}</ul>
       ${appr ? `<h3 style="margin:14px 0 8px;font-size:14px">승인 기록</h3><ul>${appr}</ul>` : ""}
-      ${pr}${approveBtn}`;
+      ${pr}${approveBtn}
+      <div id="run-comments"></div>`;
     el.querySelectorAll("button[data-dec]").forEach(b =>
       b.addEventListener("click", async () => {
         try {
@@ -4167,6 +4488,7 @@ async function showDetail(id) {
           showDetail(id); refreshRuns();
         } catch (e) { alert(e.message); }
       }));
+    loadRunComments(id);
   } catch (e) { el.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
 $("#run-form").addEventListener("submit", async (e) => {
@@ -4338,6 +4660,7 @@ const DASH_WIDGETS = [
   {id: "inbox",   name: "알림함"},
   {id: "usage",   name: "비용 요약"},
   {id: "reports", name: "리포트"},
+  {id: "cards",   name: "카드"},
 ];
 let _prefsCache = null;
 let _widgetDraft = [];
@@ -4757,6 +5080,7 @@ async function loadInbox() {
   loadInboxList();
   loadUsageSummary();
   loadReport();
+  loadCards();
   getPrefs().then(applyDashboardWidgets).catch(() => {});
 }
 
@@ -5075,6 +5399,878 @@ async function loadDeveloper() {
     el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
+
+/* ══ 신규 뷰: 플레이북 / 커넥터 / 트리거 / 워크플로 빌더 / 팀 / 감사 로그 ══ */
+
+// 현재 로그인 사용자 (/auth/me) — 팀 하이라이트·관리자 판별에 공용
+let _meUser = null;
+async function jmMe() {
+  if (_meUser) return _meUser;
+  try {
+    const r = await fetch(API + "/auth/me", {headers: apiHeaders()});
+    if (r.ok) {
+      const me = await r.json();
+      _meUser = (me && me.user) || me || {};
+    }
+  } catch (e) { /* 비로그인/미지원 환경 */ }
+  return _meUser || {};
+}
+
+// 내장 + 커스텀 워크플로 키 목록 (셀렉트 공용)
+async function _allWorkflowKeys() {
+  const keys = [];
+  try {
+    for (const w of await loadWorkflows()) {
+      if (w.key && !keys.includes(w.key)) keys.push(w.key);
+    }
+  } catch (e) { /* /workflows 실패 시 커스텀만 */ }
+  try {
+    const d = await api("/workflows/custom");
+    for (const c of (d.items || [])) {
+      const n = c.name || (c.spec && c.spec.key) || "";
+      if (n && !keys.includes(n)) keys.push(n);
+    }
+  } catch (e) { /* 엔드포인트 미구현 시 무시 */ }
+  return keys;
+}
+
+/* ── 플레이북 (/playbooks) ── */
+async function loadPlaybooks() {
+  const el = $("#pb-list");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const [d, wfs] = await Promise.all([
+      api("/playbooks"), _allWorkflowKeys()]);
+    const sel = $("#pb-workflow");
+    if (sel) {
+      sel.innerHTML = wfs.length
+        ? wfs.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join("")
+        : '<option value="">워크플로 없음</option>';
+    }
+    const items = d.items || [];
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">플레이북이 없습니다</div>';
+      return;
+    }
+    el.innerHTML = items.map(p => `
+      <div class="list-row">
+        <div class="grow"><b>${esc(p.name || "(이름 없음)")}</b>
+          <span class="card-meta" style="margin-left:8px">` +
+          `${esc(p.created_by || "")} · ${esc((p.created_at || "").slice(0, 16).replace("T", " "))}</span></div>
+        ${badge(p.workflow || "-")}
+        <button class="secondary pb-run" data-id="${esc(p.id)}">실행</button>
+        <button class="secondary pb-del" data-id="${esc(p.id)}">삭제</button>
+      </div>`).join("");
+    el.querySelectorAll(".pb-run").forEach(b =>
+      b.addEventListener("click", () => pbRun(b)));
+    el.querySelectorAll(".pb-del").forEach(b =>
+      b.addEventListener("click", () => pbDelete(b)));
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function pbRun(btn) {
+  const id = btn.dataset.id;
+  btn.disabled = true; btn.textContent = "실행 중…";
+  try {
+    const r = await api("/playbooks/" + encodeURIComponent(id) + "/run",
+      {method: "POST"});
+    const rid = r.run_id || r.id || "";
+    document.querySelector('.nav-item[data-view="runs"]')?.click();
+    if (rid) setTimeout(() => showDetail(rid), 400);
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false; btn.textContent = "실행";
+  }
+}
+
+async function pbDelete(btn) {
+  const id = btn.dataset.id;
+  if (!confirm("이 플레이북을 삭제할까요?")) return;
+  try {
+    await api("/playbooks/" + encodeURIComponent(id), {method: "DELETE"});
+    loadPlaybooks();
+  } catch (e) { alert(e.message); }
+}
+
+$("#pb-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const st = $("#pb-status");
+  const name = ($("#pb-name").value || "").trim();
+  const workflow = ($("#pb-workflow") || {}).value || "";
+  const task = ($("#pb-task").value || "").trim();
+  if (!name || !workflow || !task) {
+    st.textContent = "이름·워크플로·작업 내용을 모두 입력하세요";
+    st.className = "status-line err"; return;
+  }
+  st.textContent = "생성 중…"; st.className = "status-line";
+  try {
+    await api("/playbooks", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name, workflow, input: {task}})});
+    st.textContent = "생성했습니다";
+    $("#pb-name").value = ""; $("#pb-task").value = "";
+    loadPlaybooks();
+  } catch (err) {
+    st.textContent = err.message; st.className = "status-line err";
+  }
+});
+
+/* ── 커넥터 (/connectors) ── */
+const CONN_TYPES = {
+  github:  [["token", "토큰", "password"], ["repo", "저장소 (owner/repo)", "text"]],
+  jira:    [["url", "Jira URL", "text"], ["email", "이메일", "text"],
+            ["token", "API 토큰", "password"]],
+  notion:  [["token", "통합 토큰", "password"]],
+  linear:  [["token", "API 토큰", "password"], ["team", "팀 키", "text"]],
+  webhook: [["url", "Webhook URL", "text"], ["secret", "시크릿 (선택)", "password"]],
+};
+const CONN_TYPE_LABEL = {github: "GitHub", jira: "Jira", notion: "Notion",
+                         linear: "Linear", webhook: "Webhook"};
+
+function connRenderConfigFields() {
+  const t = ($("#conn-type") || {}).value || "github";
+  const fields = CONN_TYPES[t] || [];
+  $("#conn-config").innerHTML = fields.map(([k, label, ty]) =>
+    `<input name="cfg-${k}" type="${ty}" placeholder="${esc(label)}" ` +
+    `autocomplete="off" style="flex:1;min-width:140px">`).join("");
+}
+connRenderConfigFields();
+$("#conn-type")?.addEventListener("change", connRenderConfigFields);
+
+async function loadConnectors() {
+  const el = $("#conn-list");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const d = await api("/connectors");
+    const items = d.items || [];
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">연결된 커넥터가 없습니다</div>';
+      return;
+    }
+    el.innerHTML = items.map(c => {
+      const en = c.enabled !== false;
+      return `<div class="card conn-card" data-id="${esc(c.id)}" style="margin-bottom:10px">
+        <div class="card-top">
+          <b>${esc(c.name || "(이름 없음)")}</b>
+          ${badge(CONN_TYPE_LABEL[c.type] || c.type || "-")}
+          ${en ? '<span class="badge succeeded">사용</span>'
+              : '<span class="badge failed">중지</span>'}
+          ${c.has_token ? '<span class="badge">토큰 설정됨</span>' : ""}
+        </div>
+        <div class="card-meta">마지막 수집: ${esc(officeFmtTs(c.last_fetch_at))}</div>
+        ${c.last_error
+          ? `<div class="card-meta" style="color:var(--err);margin-top:4px">` +
+            `최근 오류: ${esc(c.last_error)}</div>` : ""}
+        <div class="mini-form" style="margin-top:8px">
+          <button class="secondary conn-toggle ${en ? "on" : "off"}">${en ? "중지" : "사용"}</button>
+          <button class="secondary conn-refresh">항목 새로고침</button>
+          <button class="secondary conn-items-btn">항목 보기</button>
+          <button class="secondary conn-del">삭제</button>
+          <span class="status-line conn-msg" role="status"></span>
+        </div>
+        <div class="conn-items" hidden></div>
+      </div>`;
+    }).join("");
+    el.querySelectorAll(".conn-card").forEach(card => {
+      const id = card.dataset.id;
+      const msg = () => card.querySelector(".conn-msg");
+      card.querySelector(".conn-toggle").addEventListener("click", async (e) => {
+        try {
+          await api(`/connectors/${encodeURIComponent(id)}/toggle`, {method: "POST"});
+          loadConnectors();
+        } catch (err) { msg().textContent = err.message; msg().className = "status-line err conn-msg"; }
+      });
+      card.querySelector(".conn-refresh").addEventListener("click", async (e) => {
+        const b = e.target; b.disabled = true; b.textContent = "새로고침 중…";
+        try {
+          await api(`/connectors/${encodeURIComponent(id)}/items?limit=50`);
+          msg().textContent = "항목을 새로 가져왔습니다";
+          connLoadItems(card, true);
+        } catch (err) {
+          msg().textContent = err.message;
+          msg().className = "status-line err conn-msg";
+        } finally { b.disabled = false; b.textContent = "항목 새로고침"; }
+      });
+      card.querySelector(".conn-items-btn").addEventListener("click", () =>
+        connLoadItems(card));
+      card.querySelector(".conn-del").addEventListener("click", async () => {
+        if (!confirm("이 커넥터를 삭제할까요?")) return;
+        try {
+          await api(`/connectors/${encodeURIComponent(id)}`, {method: "DELETE"});
+          loadConnectors();
+        } catch (err) { alert(err.message); }
+      });
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function connLoadItems(card, force) {
+  const box = card.querySelector(".conn-items");
+  if (!box) return;
+  if (!force && !box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = '<span class="card-meta">불러오는 중…</span>';
+  try {
+    const d = await api(`/connectors/${encodeURIComponent(card.dataset.id)}/items?limit=50`);
+    const items = d.items || [];
+    if (!items.length) {
+      box.innerHTML = '<span class="card-meta">가져온 항목이 없습니다</span>';
+      return;
+    }
+    box.innerHTML = items.map(it => `
+      <div class="conn-item-row">
+        ${it.url
+          ? `<a href="${esc(it.url)}" target="_blank" rel="noopener"
+               style="color:var(--accent);font-weight:600;overflow-wrap:anywhere">${esc(it.title || it.url)}</a>`
+          : `<b style="overflow-wrap:anywhere">${esc(it.title || "(제목 없음)")}</b>`}
+        ${it.state ? badge(it.state) : ""}
+        <span class="card-meta st">${esc(officeFmtTs(it.updated_at))}` +
+        `${it.author ? " · " + esc(it.author) : ""}</span>
+      </div>`).join("");
+  } catch (e) {
+    box.innerHTML = `<span class="card-meta" style="color:var(--err)">${esc(e.message)}</span>`;
+  }
+}
+
+$("#conn-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const st = $("#conn-status");
+  const type = ($("#conn-type") || {}).value || "github";
+  const name = ($("#conn-name").value || "").trim();
+  if (!name) { st.textContent = "이름을 입력하세요"; st.className = "status-line err"; return; }
+  const config = {};
+  (CONN_TYPES[type] || []).forEach(([k]) => {
+    const inp = document.querySelector(`#conn-config [name="cfg-${k}"]`);
+    const v = inp ? inp.value.trim() : "";
+    if (v) config[k] = v;
+  });
+  st.textContent = "추가 중…"; st.className = "status-line";
+  try {
+    await api("/connectors", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({type, name, config, enabled: true})});
+    st.textContent = "추가했습니다";
+    $("#conn-name").value = "";
+    connRenderConfigFields();
+    loadConnectors();
+  } catch (err) {
+    st.textContent = err.message; st.className = "status-line err";
+  }
+});
+
+/* ── 트리거 (/triggers) ── */
+const TRG_STATE_LABEL = {working: "작업 중", decision: "결정 대기", rest: "휴식"};
+
+function trgMatchText(m) {
+  m = m || {};
+  const p = [];
+  if (m.tool) p.push("도구=" + m.tool);
+  if (m.project) p.push("프로젝트=" + m.project);
+  if (m.state) p.push("상태=" + (TRG_STATE_LABEL[m.state] || m.state));
+  return p.join(" · ") || "전체 세션";
+}
+function trgActionText(a) {
+  a = a || {};
+  if (a.type === "run_workflow") return "워크플로 실행: " + (a.workflow || "-");
+  if (a.type === "run_playbook") return "플레이북 실행: #" + (a.playbook_id || "-");
+  if (a.type === "report") return "리포트 생성: " + (a.report_kind || "daily");
+  return a.type || "-";
+}
+
+function trgSyncActionFields() {
+  const t = ($("#trg-action") || {}).value || "run_workflow";
+  $("#trg-wf").hidden = t !== "run_workflow";
+  $("#trg-pb").hidden = t !== "run_playbook";
+  $("#trg-report").hidden = t !== "report";
+}
+$("#trg-action")?.addEventListener("change", trgSyncActionFields);
+trgSyncActionFields();
+
+async function loadTriggers() {
+  const el = $("#trg-list");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const [d, wfs, pbs] = await Promise.all([
+      api("/triggers"),
+      loadWorkflows().catch(() => []),
+      api("/playbooks").catch(() => ({items: []})),
+    ]);
+    const wfSel = $("#trg-wf"), pbSel = $("#trg-pb");
+    if (wfSel) wfSel.innerHTML =
+      (wfs.length ? wfs : [{key: "dev_review"}])
+        .map(w => `<option value="${esc(w.key)}">${esc(w.key)}</option>`).join("");
+    if (pbSel) pbSel.innerHTML =
+      (pbs.items || []).length
+        ? pbs.items.map(p =>
+            `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join("")
+        : '<option value="">플레이북 없음</option>';
+    const items = d.items || [];
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">등록된 트리거가 없습니다</div>';
+      return;
+    }
+    el.innerHTML = items.map(t => {
+      const en = t.enabled !== false;
+      return `<div class="list-row" data-tid="${esc(t.id)}">
+        <div class="grow">
+          <b>IF</b> ${esc(trgMatchText(t.match))}
+          <span class="card-meta"> → </span>
+          <b>THEN</b> ${esc(trgActionText(t.action))}
+          <div class="card-meta">마지막 발동: ${esc(officeFmtTs(t.last_fired_at))}` +
+          `${t.last_error
+            ? ` · <span style="color:var(--err)">오류: ${esc(t.last_error)}</span>` : ""}` +
+          ` · 생성 ${esc(officeFmtTs(t.created_at))}</div>
+        </div>
+        <button class="secondary trg-toggle ${en ? "on" : "off"}">${en ? "중지" : "사용"}</button>
+        <button class="secondary trg-del">삭제</button>
+      </div>`;
+    }).join("");
+    el.querySelectorAll(".trg-toggle").forEach(b =>
+      b.addEventListener("click", async () => {
+        try {
+          await api(`/triggers/${encodeURIComponent(b.closest(".list-row").dataset.tid)}/toggle`,
+            {method: "POST"});
+          loadTriggers();
+        } catch (err) { alert(err.message); }
+      }));
+    el.querySelectorAll(".trg-del").forEach(b =>
+      b.addEventListener("click", async () => {
+        const row = b.closest(".list-row");
+        if (!confirm("이 트리거를 삭제할까요?")) return;
+        try {
+          await api(`/triggers/${encodeURIComponent(row.dataset.tid)}`, {method: "DELETE"});
+          loadTriggers();
+        } catch (err) { alert(err.message); }
+      }));
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+$("#trg-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const st = $("#trg-status");
+  const match = {};
+  const tool = ($("#trg-tool") || {}).value || "";
+  const project = ($("#trg-project") || {}).value.trim();
+  const state = ($("#trg-state") || {}).value || "";
+  if (tool) match.tool = tool;
+  if (project) match.project = project;
+  if (state) match.state = state;
+  const type = ($("#trg-action") || {}).value || "run_workflow";
+  const action = {type};
+  if (type === "run_workflow") {
+    action.workflow = ($("#trg-wf") || {}).value || "";
+    if (!action.workflow) { st.textContent = "워크플로를 선택하세요"; st.className = "status-line err"; return; }
+  } else if (type === "run_playbook") {
+    action.playbook_id = ($("#trg-pb") || {}).value || "";
+    if (!action.playbook_id) { st.textContent = "플레이북을 선택하세요"; st.className = "status-line err"; return; }
+  } else if (type === "report") {
+    action.report_kind = ($("#trg-report") || {}).value || "daily";
+  }
+  st.textContent = "추가 중…"; st.className = "status-line";
+  try {
+    await api("/triggers", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({match, action})});
+    st.textContent = "추가했습니다";
+    $("#trg-project").value = "";
+    loadTriggers();
+  } catch (err) {
+    st.textContent = err.message; st.className = "status-line err";
+  }
+});
+
+/* ── 워크플로 빌더 (/workflows/custom) ── */
+const WF_TEMPLATE = {
+  key: "my_flow",
+  version: "0.1.0",
+  description: "커스텀 워크플로 예시",
+  entry: "analyze",
+  stages: [
+    {key: "analyze", kind: "llm", agent: "analysis",
+     description: "입력 분석"},
+    {key: "review", kind: "llm", agent: "qa",
+     description: "결과 검수"},
+    {key: "done", kind: "human", description: "사람 확인"},
+  ],
+  branches: {},
+};
+
+function wfStatus(msg, isErr) {
+  const st = $("#wf-status");
+  if (st) { st.textContent = msg; st.className = "status-line" + (isErr ? " err" : ""); }
+}
+
+async function loadCustomWorkflows() {
+  const el = $("#wf-custom-list");
+  if (!el) return;
+  try {
+    const d = await api("/workflows/custom");
+    const items = d.items || [];
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">커스텀 워크플로가 없습니다</div>';
+      return;
+    }
+    el.innerHTML = items.map(w => `
+      <div class="list-row">
+        <div class="grow mono" style="font-size:12px;overflow-wrap:anywhere">${esc(w.name)}</div>
+        <button class="secondary wf-load" data-name="${esc(w.name)}">불러오기</button>
+        <button class="secondary wf-del" data-name="${esc(w.name)}">삭제</button>
+      </div>`).join("");
+    el.querySelectorAll(".wf-load").forEach(b =>
+      b.addEventListener("click", () => {
+        const w = items.find(x => x.name === b.dataset.name);
+        if (!w) return;
+        const spec = typeof w.spec === "string" ? w.spec : JSON.stringify(w.spec, null, 2);
+        $("#wf-spec").value = spec;
+        $("#wf-name").value = w.name || "";
+        wfStatus("불러왔습니다: " + w.name);
+      }));
+    el.querySelectorAll(".wf-del").forEach(b =>
+      b.addEventListener("click", async () => {
+        if (!confirm(`'${b.dataset.name}' 워크플로를 삭제할까요?`)) return;
+        try {
+          await api("/workflows/custom/" + encodeURIComponent(b.dataset.name),
+            {method: "DELETE"});
+          loadCustomWorkflows();
+        } catch (err) { alert(err.message); }
+      }));
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+$("#wf-template")?.addEventListener("click", () => {
+  $("#wf-spec").value = JSON.stringify(WF_TEMPLATE, null, 2);
+  if (!$("#wf-name").value) $("#wf-name").value = WF_TEMPLATE.key;
+});
+
+function wfParseSpec() {
+  const raw = ($("#wf-spec") || {}).value || "";
+  if (!raw.trim()) throw new Error("스펙 JSON을 입력하세요");
+  const spec = JSON.parse(raw); // SyntaxError → 호출부에서 캐치
+  if (!spec || typeof spec !== "object" || Array.isArray(spec))
+    throw new Error("스펙은 JSON 객체여야 합니다");
+  return spec;
+}
+
+$("#wf-save")?.addEventListener("click", async () => {
+  let spec;
+  try { spec = wfParseSpec(); }
+  catch (e) { wfStatus("JSON 오류: " + e.message, true); return; }
+  const name = ($("#wf-name") || {}).value.trim() || spec.key || "";
+  if (!name) { wfStatus("워크플로 이름(key)을 입력하세요", true); return; }
+  if (!spec.key) spec.key = name;
+  if (!spec.version) spec.version = "0.1.0";
+  wfStatus("저장 중…");
+  try {
+    await api("/workflows/custom", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name, spec})});
+    wfStatus("저장했습니다: " + name);
+    loadCustomWorkflows();
+  } catch (e) { wfStatus(e.message, true); }
+});
+
+$("#wf-run")?.addEventListener("click", async () => {
+  let spec;
+  try { spec = wfParseSpec(); }
+  catch (e) { wfStatus("JSON 오류: " + e.message, true); return; }
+  const name = ($("#wf-name") || {}).value.trim() || spec.key || "";
+  if (!name) { wfStatus("워크플로 이름(key)을 입력하세요", true); return; }
+  const task = ($("#wf-task") || {}).value.trim() || "custom workflow run";
+  wfStatus("실행 중…");
+  try {
+    const r = await api("/runs", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({workflow: name, task,
+        input: {task}})});
+    const rid = r.id || r.run_id || "";
+    wfStatus("실행 시작: " + (rid || name));
+    document.querySelector('.nav-item[data-view="runs"]')?.click();
+    if (rid) setTimeout(() => showDetail(rid), 400);
+  } catch (e) { wfStatus(e.message, true); }
+});
+
+async function loadBuilder() {
+  loadCustomWorkflows();
+}
+
+/* ── 팀 (/team) ── */
+async function loadTeam() {
+  const tb = $("#team-body");
+  if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="5" class="empty">로딩…</td></tr>';
+  try {
+    const me = await jmMe();
+    const meEmail = (me.email || "").toLowerCase();
+    const d = await api("/team");
+    const items = d.items || [];
+    if (!items.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="empty">팀 멤버가 없습니다</td></tr>';
+      return;
+    }
+    tb.innerHTML = items.map(u => {
+      const isMe = meEmail && (u.email || "").toLowerCase() === meEmail;
+      const role = u.role === "admin"
+        ? '<span class="badge failed">admin</span>'
+        : badge(u.role || "member");
+      return `<tr${isMe ? ' class="me-row"' : ""}>` +
+        `<td>${esc(u.email || "-")}${isMe ? ' <span class="badge">나</span>' : ""}</td>` +
+        `<td>${esc(u.name || "-")}</td><td>${role}</td>` +
+        `<td>${esc(u.run_count ?? 0)}</td>` +
+        `<td class="card-meta">${esc(officeFmtTs(u.last_active_at))}</td></tr>`;
+    }).join("");
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+/* ── 감사 로그 (/audit, admin only) ── */
+async function loadAudit() {
+  const tb = $("#audit-body");
+  if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="5" class="empty">로딩…</td></tr>';
+  try {
+    const d = await api("/audit?limit=200");
+    const items = (d.items || [])
+      .slice()
+      .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+    if (!items.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="empty">감사 로그가 없습니다</td></tr>';
+      return;
+    }
+    tb.innerHTML = items.map(a => `<tr>` +
+      `<td class="card-meta" style="white-space:nowrap">${esc(officeFmtTs(a.ts))}</td>` +
+      `<td>${esc(a.actor_email || "-")}</td>` +
+      `<td>${esc(a.action || "-")}</td>` +
+      `<td class="mono" style="font-size:12px">${esc(a.target || "-")}</td>` +
+      `<td class="card-meta" style="max-width:280px;overflow-wrap:anywhere">` +
+      `${esc(typeof a.detail === "string" ? a.detail : JSON.stringify(a.detail || ""))}</td>` +
+      `</tr>`).join("");
+  } catch (e) {
+    const msg = String(e.message || "");
+    if (/403|권한|forbidden|permission|admin/i.test(msg)) {
+      tb.innerHTML = '<tr><td colspan="5" class="empty">' +
+        '감사 로그는 admin 전용입니다</td></tr>';
+      const nav = $("#nav-audit");
+      if (nav) nav.hidden = true;
+    } else {
+      tb.innerHTML = `<tr><td colspan="5" class="empty">${esc(msg)}</td></tr>`;
+    }
+  }
+}
+
+// 신규 뷰 nav → 로더 연결 (매 클릭마다 갱신 — system 뷰와 동일 패턴)
+const NEW_VIEW_LOADERS = {
+  playbooks: loadPlaybooks, connectors: loadConnectors,
+  triggers: loadTriggers, builder: loadBuilder,
+  team: loadTeam, audit: loadAudit,
+};
+Object.entries(NEW_VIEW_LOADERS).forEach(([v, fn]) => {
+  document.querySelector(`.nav-item[data-view="${v}"]`)
+    ?.addEventListener("click", fn);
+});
+
+/* ── 실행 댓글 (/runs/{id}/comments) ── */
+let _rcRunId = null; // 상세 전환 레이스 방지 — 최신 선택 run의 댓글만 렌더
+async function loadRunComments(runId) {
+  const box = document.getElementById("run-comments");
+  if (!box) return;
+  _rcRunId = runId;
+  try {
+    const d = await api("/runs/" + encodeURIComponent(runId) + "/comments");
+    if (_rcRunId !== runId || !box.isConnected) return; // 다른 run으로 전환됨
+    const items = d.items || [];
+    box.innerHTML =
+      `<h3 style="margin:16px 0 8px;font-size:14px">댓글 ` +
+      `<span class="badge">${items.length}</span></h3>` +
+      (items.length
+        ? `<ul style="margin:0 0 8px;padding-left:18px">` + items.map(c =>
+            `<li style="margin:4px 0">` +
+            `<b>${esc(c.email || c.user_id || "-")}</b> ` +
+            `<span class="card-body" style="display:inline">${esc(c.body || "")}</span> ` +
+            `<span class="card-meta">${esc(officeFmtTs(c.created_at))}</span></li>`).join("") +
+          `</ul>`
+        : '<div class="card-meta" style="margin-bottom:8px">댓글이 없습니다</div>') +
+      `<form id="rc-form" class="mini-form">` +
+      `<input id="rc-body" placeholder="댓글 작성…" autocomplete="off" ` +
+      `style="flex:1;min-width:160px">` +
+      `<button type="submit" class="secondary" style="padding:6px 12px;font-size:13px">등록</button>` +
+      `<span class="status-line" id="rc-status" role="status"></span></form>`;
+    $("#rc-form")?.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const body = ($("#rc-body") || {}).value.trim();
+      const st = $("#rc-status");
+      if (!body) return;
+      st.textContent = "등록 중…"; st.className = "status-line";
+      try {
+        await api("/runs/" + encodeURIComponent(runId) + "/comments",
+          {method: "POST",
+           headers: {"Content-Type": "application/json"},
+           body: JSON.stringify({body})});
+        loadRunComments(runId);
+      } catch (err) {
+        st.textContent = err.message; st.className = "status-line err";
+      }
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="card-meta" style="margin-top:10px">` +
+      `댓글: ${esc(e.message)}</div>`;
+  }
+}
+
+/* ── 내보내기 (/export) + 공유 (/share) — 아카이브 뷰 ── */
+$("#exp-dl")?.addEventListener("click", async () => {
+  const kind = ($("#exp-kind") || {}).value || "runs";
+  const format = ($("#exp-format") || {}).value || "csv";
+  const days = ($("#exp-days") || {}).value || "30";
+  const q = `kind=${encodeURIComponent(kind)}&format=${encodeURIComponent(format)}` +
+            `&days=${encodeURIComponent(days)}`;
+  // fetch+blob — X-API-Key 헤더 인증도 지원 (location.href는 헤더를 못 보냄)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch(API + "/export?" + q, {headers: apiHeaders()});
+      if (r.status === 401 && attempt === 0) {
+        const k = await askApiKey();
+        if (k) continue;
+        alert("로그인이 필요합니다");
+        return;
+      }
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        alert(j.error ? j.error.message : ("내보내기 실패: " + r.status));
+        return;
+      }
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `jobmate-${kind}-${days}d.${format === "json" ? "json" : "csv"}`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      return;
+    } catch (e) { alert(e.message); return; }
+  }
+});
+
+$("#share-open")?.addEventListener("click", () => $("#share-dialog")?.showModal());
+$("#share-close")?.addEventListener("click", () => $("#share-dialog")?.close());
+$("#share-dialog")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();
+});
+$("#share-create")?.addEventListener("click", async () => {
+  const out = $("#share-result");
+  const kind = ($("#share-kind") || {}).value || "run";
+  const ref = ($("#share-ref") || {}).value.trim();
+  out.innerHTML = '<span class="card-meta">생성 중…</span>';
+  try {
+    const body = {kind};
+    if (ref) body.ref_id = ref;
+    const d = await api("/share", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)});
+    const path = d.url || "";
+    const abs = path.startsWith("http") ? path : location.origin + path;
+    out.innerHTML =
+      `<div class="mini-form" style="margin-top:6px">` +
+      `<input readonly value="${esc(abs)}" onclick="this.select()" ` +
+      `style="flex:1;min-width:200px;font-family:ui-monospace,monospace;font-size:12px">` +
+      `<button type="button" class="secondary" id="share-copy"
+        style="padding:6px 12px;font-size:13px">복사</button>` +
+      `<a class="secondary" href="${esc(path)}" target="_blank" rel="noopener"
+        style="padding:6px 12px;font-size:13px;text-decoration:none;border:1px solid var(--accent);border-radius:10px;color:var(--accent)">열기</a>` +
+      `</div>`;
+    $("#share-copy")?.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(abs); }
+      catch (e) { $("#share-copy").textContent = "복사 실패"; }
+    });
+  } catch (e) {
+    out.innerHTML = `<span class="card-meta" style="color:var(--err)">${esc(e.message)}</span>`;
+  }
+});
+
+/* ── 커스텀 카드 (/cards) — 알림 뷰 위젯 ── */
+async function loadCards() {
+  const el = $("#cards-list");
+  if (!el) return;
+  try {
+    const d = await api("/cards");
+    const items = d.items || d.cards || [];
+    if (!items.length) {
+      el.innerHTML = '<span class="empty">등록된 카드가 없습니다</span>';
+      return;
+    }
+    el.innerHTML = items.map(c => `
+      <div class="card" data-card="${esc(c.id)}" style="margin-bottom:10px">
+        <div class="card-top">
+          <b>${esc(c.title || "(제목 없음)")}</b>
+          ${c.enabled === false
+            ? '<span class="badge failed">중지</span>'
+            : '<span class="badge succeeded">사용</span>'}
+        </div>
+        <div class="card-meta mono" style="font-size:11px">${esc(c.url || "")}` +
+        `${c.json_path ? " · " + esc(c.json_path) : ""}</div>
+        <div class="card-val" data-val>…</div>
+        <div class="mini-form" style="margin-top:8px">
+          <button class="secondary card-toggle" style="padding:3px 10px;font-size:12px">${c.enabled === false ? "사용" : "중지"}</button>
+          <button class="secondary card-refresh" style="padding:3px 10px;font-size:12px">새로고침</button>
+          <button class="secondary card-del" style="padding:3px 10px;font-size:12px">삭제</button>
+          <span class="status-line card-msg" role="status"></span>
+        </div>
+      </div>`).join("");
+    el.querySelectorAll("[data-card]").forEach(node => {
+      const id = node.dataset.card;
+      const val = node.querySelector("[data-val]");
+      const msg = () => node.querySelector(".card-msg");
+      const fetchVal = async () => {
+        if (val) { val.textContent = "…"; val.style.color = ""; }
+        try {
+          const vd = await api(`/cards/${encodeURIComponent(id)}/data`);
+          const v = vd && vd.value !== undefined ? vd.value : vd;
+          if (val) val.textContent =
+            (v && typeof v === "object") ? JSON.stringify(v) : String(v ?? "-");
+        } catch (err) {
+          if (val) { val.textContent = "오류: " + err.message; val.style.color = "var(--err)"; }
+        }
+      };
+      fetchVal();
+      node.querySelector(".card-refresh")?.addEventListener("click", fetchVal);
+      node.querySelector(".card-toggle")?.addEventListener("click", async () => {
+        try {
+          await api(`/cards/${encodeURIComponent(id)}/toggle`, {method: "POST"});
+          loadCards();
+        } catch (err) { msg().textContent = err.message; }
+      });
+      node.querySelector(".card-del")?.addEventListener("click", async () => {
+        if (!confirm("이 카드를 삭제할까요?")) return;
+        try {
+          await api(`/cards/${encodeURIComponent(id)}`, {method: "DELETE"});
+          loadCards();
+        } catch (err) { alert(err.message); }
+      });
+    });
+  } catch (e) {
+    el.innerHTML = `<span class="empty">${esc(e.message)}</span>`;
+  }
+}
+
+$("#card-add-btn")?.addEventListener("click", () => {
+  const f = $("#card-form");
+  if (f) { f.hidden = !f.hidden; $("#card-title")?.focus(); }
+});
+$("#card-cancel")?.addEventListener("click", () => {
+  $("#card-form").hidden = true;
+  $("#card-status").textContent = "";
+});
+$("#card-save")?.addEventListener("click", async () => {
+  const st = $("#card-status");
+  const title = ($("#card-title") || {}).value.trim();
+  const url = ($("#card-url") || {}).value.trim();
+  const jsonPath = ($("#card-jsonpath") || {}).value.trim();
+  if (!title || !url) {
+    st.textContent = "제목과 URL을 입력하세요"; st.className = "status-line err"; return;
+  }
+  st.textContent = "저장 중…"; st.className = "status-line";
+  try {
+    const body = {title, url,
+      enabled: !!($("#card-enabled") || {}).checked};
+    if (jsonPath) body.json_path = jsonPath;
+    await api("/cards", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)});
+    st.textContent = "저장했습니다";
+    $("#card-title").value = ""; $("#card-url").value = "";
+    $("#card-jsonpath").value = "";
+    $("#card-form").hidden = true;
+    loadCards();
+  } catch (e) {
+    st.textContent = e.message; st.className = "status-line err";
+  }
+});
+
+// 카드 값 60초 자동 갱신 — 알림 뷰가 보일 때만
+setInterval(() => {
+  if (!document.getElementById("view-inbox")?.hidden)
+    document.querySelectorAll("#cards-list [data-card]").forEach(async node => {
+      const val = node.querySelector("[data-val]");
+      if (!val) return;
+      try {
+        const vd = await api(`/cards/${encodeURIComponent(node.dataset.card)}/data`);
+        const v = vd && vd.value !== undefined ? vd.value : vd;
+        val.textContent = (v && typeof v === "object") ? JSON.stringify(v) : String(v ?? "-");
+        val.style.color = "";
+      } catch (e) { /* 개별 카드 오류는 표시 유지 */ }
+    });
+}, 60000);
+
+/* ── 모바일 요약 바 (≤820px) ── */
+async function mobRefresh() {
+  const bar = $("#mob-bar");
+  if (!bar) return;
+  const overlay = $("#auth-overlay"), needed = $("#auth-needed");
+  const blocked = (overlay && !overlay.hidden) || (needed && !needed.hidden);
+  bar.style.display = blocked ? "none" : "";
+  if (blocked) return;
+  const [runsR, sessR, usageR] = await Promise.allSettled([
+    api("/runs?limit=50"),
+    api("/agent-sessions?limit=50"),
+    api("/usage/summary?days=30"),
+  ]);
+  if (runsR.status === "fulfilled") {
+    const runs = Array.isArray(runsR.value) ? runsR.value : [];
+    const today = new Date().toISOString().slice(0, 10);
+    const appr = runs.filter(r => r.status === "waiting_approval").length;
+    const todayN = runs.filter(r => String(r.created_at || "").slice(0, 10) === today).length;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set("mob-approval", appr);
+    set("mob-runs", todayN);
+  }
+  if (sessR.status === "fulfilled") {
+    const list = _sessionListFrom(sessR.value);
+    const active = list.filter(s => s.status !== "ended").length;
+    const el = document.getElementById("mob-sessions");
+    if (el) el.textContent = active;
+  }
+  if (usageR.status === "fulfilled") {
+    const el = document.getElementById("mob-cost");
+    if (el) el.textContent = usd((usageR.value || {}).total_cost_usd);
+  }
+}
+
+document.querySelectorAll("#mob-bar [data-mob]").forEach(b =>
+  b.addEventListener("click", () => {
+    const v = b.dataset.mob;
+    if (v === "office-sessions") {
+      document.querySelector('.nav-item[data-view="office"]')?.click();
+      setTimeout(() =>
+        document.querySelector('.office-tab-btn[data-office-tab="sessions"]')?.click(), 300);
+      return;
+    }
+    document.querySelector(`.nav-item[data-view="${v}"]`)?.click();
+  }));
+
+// 모바일에서만 폴링 (데스크톱에서는 API 호출 생략)
+const _mobMq = window.matchMedia("(max-width: 820px)");
+function _mobTick() { if (_mobMq.matches) mobRefresh(); }
+_mobMq.addEventListener?.("change", _mobTick);
+setInterval(_mobTick, 60000);
+if (_mobMq.matches) mobRefresh();
+
+/* ── 감사 로그 nav — admin에게만 표시 (/auth/me role 확인) ── */
+jmMe().then(me => {
+  if ((me || {}).role === "admin") {
+    const nav = $("#nav-audit");
+    if (nav) nav.hidden = false;
+  }
+});
 
 /* ── iOS '홈 화면에 추가' 안내 배너 ── */
 (() => {

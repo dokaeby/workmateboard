@@ -276,9 +276,9 @@
       items.push({ x, bottom: top - 4, w, h: kind === "ask" ? fs + 6 : fs + 11, text, kind, color, fs });
     };
     for (const p of L.people.values()) {
-      // 승인 대기 또는 질문(ask)이 있으면 머리 위에 짧은 ask 표시 — 40자쯤에서 자른다
+      // 승인 대기 또는 질문(ask)이 있으면 머리 위에 짧은 ask 표시 — 60자쯤에서 자른다
       const ask = p.status === "decision" || p.ask ? JMO_I18N.ask(p.ask, true) || t("needs") : "";
-      if (ask) add(p, OfficeLife.cut(ask, 40), "ask", p.color);
+      if (ask) add(p, OfficeLife.cut(ask, 60), "ask", p.color);
       if (p.bubble) add(p, p.bubble.text, p.bubble.kind, p.color);
     }
     for (const m of L.minis.values()) if (m.bubble) add(m, m.bubble.text, m.bubble.kind, L.people.get(m.owner)?.color);

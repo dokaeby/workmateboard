@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -25,7 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .. import messenger
+from .. import messenger, webutil
 from ..adapters import LoggingNotifier, WebPushNotifier
 from ..config import (
     Settings,
@@ -35,7 +36,7 @@ from ..config import (
     get_settings,
 )
 from ..llm import CompositeLLM, MeteredLLM
-from ..models import RunStatus, StageStatus
+from ..models import RunStatus, StageStatus, WorkflowSpec
 from ..pricing import cost_usd
 from ..radar import GitHubAPI
 from ..sensors import (
@@ -188,6 +189,45 @@ class ReportGenerateRequest(BaseModel):
     kind: Literal["daily", "weekly"] = "daily"
 
 
+class CommentCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class PlaybookCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    workflow: str = Field(min_length=1, max_length=120)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorCreateRequest(BaseModel):
+    type: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=120)
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class TriggerCreateRequest(BaseModel):
+    match: dict[str, Any] = Field(default_factory=dict)
+    action: dict[str, Any] = Field(default_factory=dict)
+
+
+class CustomWorkflowRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    spec: dict[str, Any] | str
+
+
+class CardCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    url: str = Field(min_length=1, max_length=2000)
+    json_path: str = Field(default="", max_length=500)
+    enabled: bool = True
+
+
+class ShareCreateRequest(BaseModel):
+    kind: Literal["run", "report", "insights"]
+    ref_id: str = Field(default="", max_length=200)
+
+
 def _token_path_for(kind: str, settings: Settings) -> str | None:
     """Google 토큰 파일 경로 해석.
 
@@ -241,6 +281,364 @@ def _default_adapters(settings: Settings, store: Store) -> dict[str, Any]:
     return adapters
 
 
+# ---------- custom workflow registry ----------
+# 내장 WORKFLOWS는 모듈 상수 — custom_workflows 테이블 내용을 여기에 동기화해
+# POST /runs·플레이북·스케줄·트리거 등 모든 해석 경로가 커스텀 spec을 쓰게 한다.
+_BUILTIN_WF_KEYS = set(WORKFLOWS)
+_CUSTOM_WF_KEYS: set[str] = set()
+
+
+def _sync_workflow_registry(store: Store) -> int:
+    """custom_workflows 테이블 → WORKFLOWS dict 동기화 (앱 시작/등록·삭제 후).
+
+    이전에 주입한 커스텀 키는 제거 후 재등록 — 앱 재시작 시 테이블에서 복원되므로
+    별도 영속 레지스트리 없이도 해석이 유지된다. 내장 키와 충돌하는 spec은 스킵."""
+    global _CUSTOM_WF_KEYS
+    for key in _CUSTOM_WF_KEYS:
+        WORKFLOWS.pop(key, None)
+    _CUSTOM_WF_KEYS = set()
+    for row in store.list_custom_workflows():
+        name = str(row.get("name") or "")
+        try:
+            spec = WorkflowSpec.model_validate(row.get("spec"))
+        except Exception as e:
+            logger.warning("custom workflow %s spec invalid: %s", name, str(e)[:120])
+            continue
+        if spec.key in _BUILTIN_WF_KEYS:
+            logger.warning("custom workflow %s collides with builtin — skipped", name)
+            continue
+        WORKFLOWS[spec.key] = spec
+        _CUSTOM_WF_KEYS.add(spec.key)
+    return len(_CUSTOM_WF_KEYS)
+
+
+# ---------- connector config 비밀값 암호화 ----------
+_SECRET_FIELD_RE = re.compile(
+    r"(?i)(token|secret|password|api[_-]?key|private[_-]?key|credential|authorization)"
+)
+
+
+def _config_has_secret(config: dict[str, Any]) -> bool:
+    """config에 비밀로 취급할 비어있지 않은 문자열 필드가 있는지."""
+
+    def walk(v: Any, key_hint: str = "") -> bool:
+        if isinstance(v, dict):
+            return any(walk(x, str(k)) for k, x in v.items())
+        if isinstance(v, list):
+            return any(walk(x, key_hint) for x in v)
+        return isinstance(v, str) and bool(v) and bool(_SECRET_FIELD_RE.search(key_hint))
+
+    return walk(config)
+
+
+def _encrypt_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    """비밀 필드(token/secret/password/api_key 등) 값만 Fernet 암호화한 config 사본."""
+    from ..security import encrypt_str
+
+    def walk(v: Any, key_hint: str = "") -> Any:
+        if isinstance(v, dict):
+            return {k: walk(x, str(k)) for k, x in v.items()}
+        if isinstance(v, list):
+            return [walk(x, key_hint) for x in v]
+        if (
+            isinstance(v, str)
+            and v
+            and _SECRET_FIELD_RE.search(key_hint)
+            and not v.startswith("enc:v1:")
+        ):
+            return encrypt_str(v)
+        return v
+
+    return walk(config)
+
+
+def _decrypt_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    """저장된 config의 enc:v1: 값을 복호화한 사본 — fetch 직전 사용."""
+    from ..security import decrypt_str
+
+    def walk(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [walk(x) for x in v]
+        if isinstance(v, str) and v.startswith("enc:v1:"):
+            return decrypt_str(v)
+        return v
+
+    return walk(config)
+
+
+def _connector_token(cfg: dict[str, Any]) -> str:
+    """복호화된 config에서 bearer token 후보를 찾는다."""
+    for key in ("token", "access_token", "api_key", "apikey", "secret", "password"):
+        v = cfg.get(key)
+        if isinstance(v, str) and v:
+            return v
+    return ""
+
+
+def _fetch_connector_items(connector: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    """커넥터 라이브 fetch — github는 전용 API, 나머지는 config.url JSON fetch.
+
+    jira/notion/linear는 config.url(+선택적 token/json_path/fields)만으로 동작하는
+    generic JSON fetch로 지원한다. 실패는 FetchError/ValueError로 전파."""
+    ctype = str(connector.get("type") or "")
+    cfg = _decrypt_config_secrets(dict(connector.get("config") or {}))
+    headers = {"Accept": "application/json", "User-Agent": "jobmate-connector"}
+    token = _connector_token(cfg)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    if ctype == "github":
+        owner = str(cfg.get("owner") or "").strip()
+        repo = str(cfg.get("repo") or cfg.get("repository") or "").strip()
+        if not owner or not repo:
+            raise ValueError("github connector requires config.owner and config.repo")
+        state = str(cfg.get("state") or "all")
+        url = (
+            f"https://api.github.com/repos/{owner}/{repo}/issues"
+            f"?state={state}&per_page={min(limit, 100)}&sort=updated"
+        )
+        gh_headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "jobmate-connector",
+        }
+        if token:
+            gh_headers["Authorization"] = f"Bearer {token}"
+        data = webutil.fetch_json(url, headers=gh_headers, timeout=10.0)
+        items = []
+        for it in data if isinstance(data, list) else []:
+            user = it.get("user") if isinstance(it.get("user"), dict) else {}
+            items.append(
+                {
+                    "id": str(it.get("number") or it.get("id") or ""),
+                    "title": str(it.get("title") or ""),
+                    "url": str(it.get("html_url") or ""),
+                    "state": str(it.get("state") or ""),
+                    "updated_at": str(it.get("updated_at") or ""),
+                    "author": str(user.get("login") or ""),
+                }
+            )
+        return items[:limit]
+
+    url = str(cfg.get("url") or "").strip()
+    if not url:
+        raise ValueError(f"{ctype or 'connector'} requires config.url")
+    for k, v in (cfg.get("headers") or {}).items():
+        if isinstance(k, str) and isinstance(v, str):
+            headers[k] = v
+    data = webutil.fetch_json(url, headers=headers, timeout=10.0)
+    path = str(cfg.get("json_path") or cfg.get("items_path") or "")
+    raw = webutil.find_item_list(data, path)
+    fields = cfg.get("fields") if isinstance(cfg.get("fields"), dict) else None
+    return webutil.normalize_items(raw, fields)[:limit]
+
+
+# connector items 60초 인메모리 캐시 (connector_id → (fetched_at, items))
+_CONNECTOR_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_CONNECTOR_CACHE_TTL = 60.0
+
+
+# ---------- triggers (세션 상태 전이 자동화) ----------
+_TRIGGER_STATE_KEY = "trigger_session_states"
+_TRIGGER_MIN_INTERVAL = 45.0
+_TRIGGER_LAST_CHECK = 0.0
+
+
+def _trigger_match(match: dict[str, Any], sess: dict[str, Any]) -> bool:
+    """match {tool?,project?,state?} — 지정된 키만 정확 일치 비교."""
+    tool = match.get("tool")
+    if tool and sess.get("tool") != tool:
+        return False
+    project = match.get("project")
+    if project and sess.get("project") != project:
+        return False
+    state = match.get("state")
+    if state and (sess.get("status") or "") != state:
+        return False
+    return True
+
+
+def _session_transition_fp(sess: dict[str, Any], state: str) -> str:
+    """전이 지문 — 같은 상태 재진입도 새 이벤트면 다른 fp가 되도록
+    last_event_at/updated_at을 포함한다."""
+    return f"{state}:{sess.get('last_event_at') or sess.get('updated_at') or ''}"
+
+
+def _evaluate_triggers(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
+) -> int:
+    """현재 agent_sessions 스냅샷 vs 이전 스냅샷(automation_state) 비교.
+
+    세션이 match 조건을 '만족하는 상태로 전이'할 때 enabled trigger를 발사한다.
+    첫 관측(이전 스냅샷에 없는 세션)은 시드만 하고 발사하지 않아 기동 직후
+    기존 세션에 대한 폭주를 막는다. 발사 멱등은 trigger_fires UNIQUE가 보장.
+    반환: 이번 평가에서 발사된 trigger 수."""
+    triggers = store.list_triggers(enabled_only=True)
+    sessions = store.list_agent_sessions(limit=200, include_ended=True)
+    prev = store.get_state(_TRIGGER_STATE_KEY, {})
+    if not isinstance(prev, dict):
+        prev = {}
+    new_prev: dict[str, str] = {}
+    fired = 0
+    for sess in sessions:
+        tool = str(sess.get("tool") or "")
+        skey = str(sess.get("session_key") or "")
+        if not tool or not skey:
+            continue
+        ident = f"{tool}\x1f{skey}"
+        cur = str(sess.get("status") or "")
+        new_prev[ident] = cur
+        if ident not in prev or prev.get(ident) == cur:
+            continue  # 첫 관측 또는 상태 변화 없음 — 전이 아님
+        for trig in triggers:
+            match = trig.get("match") or {}
+            action = trig.get("action") or {}
+            if not _trigger_match(match, sess):
+                continue
+            fp = _session_transition_fp(sess, cur)
+            if not store.claim_trigger_fire(trig["id"], tool, skey, cur, fp):
+                continue  # 동일 전이 재평가 — 이미 발사됨
+            try:
+                _fire_trigger_action(store, settings, llm, adapters, trig, sess, defer)
+            except Exception as e:
+                store.mark_trigger_error(trig["id"], str(e)[:200])
+                worker_logger.warning("trigger %s fire failed: %s", trig["id"], str(e)[:200])
+                continue
+            store.mark_trigger_fired(trig["id"])
+            store.audit(
+                "",
+                "trigger",
+                f"trigger_fire:{trig['id']}",
+                ident,
+                {"action": str(action.get("type") or ""), "state": cur},
+            )
+            fired += 1
+            worker_logger.info(
+                "trigger %s fired session=%s state=%s action=%s",
+                trig["id"],
+                ident,
+                cur,
+                action.get("type"),
+            )
+    store.set_state(_TRIGGER_STATE_KEY, new_prev)
+    return fired
+
+
+def _fire_trigger_action(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    trig: dict[str, Any],
+    sess: dict[str, Any],
+    defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None,
+) -> None:
+    """trigger action 실행 — run_workflow/run_playbook/report.
+
+    run input/audit에는 세션 식별자(tool/session_key/project/status)만 넣고
+    doing/ask/ended_summary 등 세션 본문은 절대 포함하지 않는다."""
+    from ..reports import build_report
+
+    action = trig.get("action") or {}
+    atype = str(action.get("type") or "")
+    tid = str(trig.get("id") or "")
+    tool = str(sess.get("tool") or "")
+    skey = str(sess.get("session_key") or "")
+    sess_ref = {
+        "tool": tool,
+        "session_key": skey,
+        "project": sess.get("project"),
+        "status": sess.get("status"),
+    }
+    trigger_meta = {"id": tid, "session": sess_ref}
+
+    def _launch(workflow: str, payload: dict[str, Any]) -> None:
+        if workflow not in WORKFLOWS:
+            raise ValueError(f"unknown workflow {workflow}")
+        run = store.create_run(
+            workflow,
+            WORKFLOWS[workflow].version,
+            payload,
+            trace_id=uuid.uuid4().hex,
+            created_by=f"trigger:{tid}",
+        )
+        job = (run.id, workflow, {"task": payload.get("task", "")}, None)
+        if defer is not None:
+            defer.append(job)
+        else:
+            threading.Thread(
+                target=_execute_run_job,
+                args=(store, settings, llm, adapters, *job),
+                daemon=True,
+            ).start()
+        worker_logger.info("trigger %s launched run=%s workflow=%s", tid, run.id, workflow)
+
+    if atype == "run_workflow":
+        _launch(
+            str(action.get("workflow") or ""),
+            {
+                "task": f"trigger {tid}: {tool}/{skey[:12]}",
+                "trigger": trigger_meta,
+            },
+        )
+    elif atype == "run_playbook":
+        pb = store.get_playbook(str(action.get("playbook_id") or ""))
+        if pb is None:
+            raise ValueError("playbook not found")
+        payload = dict(pb.get("input") or {})
+        payload.setdefault("task", f"trigger {tid}: {pb.get('name') or pb['id']}")
+        payload["trigger"] = {**trigger_meta, "playbook_id": pb["id"]}
+        _launch(str(pb.get("workflow") or ""), payload)
+    elif atype == "report":
+        kind = str(action.get("report_kind") or "daily")
+        if kind not in ("daily", "weekly"):
+            kind = "daily"
+        content = build_report(store, kind, settings)
+        rid = store.save_report(kind, content)
+        store.upsert_inbox_item(
+            "report",
+            f"{kind} 리포트 (트리거)",
+            body=(
+                f"runs={content['runs']['total']} failed={content['runs']['failed']} "
+                f"pending={content['approvals']['pending']}"
+            ),
+            link="/?view=reports",
+            dedupe_key=f"trigger-report:{tid}:{tool}:{skey}:{sess.get('status')}",
+        )
+        try:
+            messenger.notify(f"jobMate {kind} 리포트(트리거): run {content['runs']['total']}건")
+        except Exception:
+            worker_logger.debug("messenger notify after trigger report failed", exc_info=True)
+        worker_logger.info("trigger %s generated report id=%s kind=%s", tid, rid, kind)
+    else:
+        raise ValueError(f"unknown trigger action type {atype}")
+
+
+def _maybe_check_triggers(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
+) -> None:
+    """45초 스로틀로 trigger 평가 — automation loop(2s)와 cron tick 공용."""
+    global _TRIGGER_LAST_CHECK
+    now = time.time()
+    if now - _TRIGGER_LAST_CHECK < _TRIGGER_MIN_INTERVAL:
+        return
+    _TRIGGER_LAST_CHECK = now
+    try:
+        _evaluate_triggers(store, settings, llm, adapters, defer=defer)
+    except Exception:
+        worker_logger.exception("trigger evaluation error")
+
+
 def create_app(
     settings: Settings | None = None,
     store: Store | None = None,
@@ -270,6 +668,8 @@ def create_app(
         )
     llm = MeteredLLM(llm or CompositeLLM(), store)
     adapters = adapters if adapters is not None else _default_adapters(settings, store)
+    # custom_workflows 테이블 → WORKFLOWS 동기화 (재시작 후에도 /runs에서 해석 가능)
+    _sync_workflow_registry(store)
     stop_event = threading.Event()
 
     @asynccontextmanager
@@ -318,7 +718,9 @@ def create_app(
                 "/api/v1/auth/",
             )
         ):
-            if not (authorized(request) or _session_user(request)):
+            # 공개 공유 스냅샷 — GET만 인증 예외(POST /share는 세션 필요)
+            public_share = path.startswith("/api/v1/share/") and request.method == "GET"
+            if not public_share and not (authorized(request) or _session_user(request)):
                 logger.warning("api auth failed: %s", path)
                 return err(401, "unauthorized", "invalid or missing API key", request)
         response = await call_next(request)
@@ -420,9 +822,14 @@ def create_app(
         task: str,
         ctx: dict[str, Any] | None = None,
         defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
+        created_by: str = "",
     ) -> str:
         run = store.create_run(
-            workflow, WORKFLOWS[workflow].version, {"task": task}, trace_id=uuid.uuid4().hex
+            workflow,
+            WORKFLOWS[workflow].version,
+            {"task": task},
+            trace_id=uuid.uuid4().hex,
+            created_by=created_by,
         )
         job = (run.id, workflow, {"task": task}, ctx)
         if defer is not None:
@@ -528,6 +935,7 @@ def create_app(
             WORKFLOWS[body.workflow].version,
             {"task": body.task, **({"meta": body.metadata} if body.metadata else {})},
             trace_id=uuid.uuid4().hex,
+            created_by=_actor_label(request),
         )
         logger.info("run created id=%s workflow=%s", run.id, body.workflow)
         _schedule_run_jobs([(run.id, body.workflow, {"task": body.task}, None)], background_tasks)
@@ -557,7 +965,7 @@ def create_app(
             return err(404, "not_found", "run not found", request)
         return JSONResponse(content=d)
 
-    def _do_approve(run_id: str, decision: str, comment: str) -> dict[str, Any]:
+    def _do_approve(run_id: str, decision: str, comment: str, actor: str = "api") -> dict[str, Any]:
         """승인/거절 공통 경로 — API 엔드포인트와 메신저 커맨드가 공유.
         반환: {"ok": True, "run": detail} 또는 {"ok": False, "status": int, "error": str}."""
         run = store.get_run(run_id)
@@ -578,12 +986,13 @@ def create_app(
             logger.warning("run %s resume failed: %s", run_id, str(e)[:200])
             return {"ok": False, "status": 500, "error": str(e)[:300]}
         store.mark_inbox_read_dedupe(f"approval:{run_id}")
-        logger.info("run %s resume decision=%s", run_id, decision)
+        store.audit(run_id, actor, f"run_{decision}", run_id, {"comment": comment[:200]})
+        logger.info("run %s resume decision=%s actor=%s", run_id, decision, actor)
         return {"ok": True, "run": run_detail(run_id) or {}}
 
     @app.post("/api/v1/runs/{run_id}/approve")
     def approve(run_id: str, body: ApprovalRequest, request: Request) -> JSONResponse:
-        result = _do_approve(run_id, body.decision, body.comment)
+        result = _do_approve(run_id, body.decision, body.comment, actor=_actor_label(request))
         if not result["ok"]:
             code = (
                 "not_found"
@@ -1211,7 +1620,7 @@ def create_app(
             if not target:
                 _messenger_reply(provider, chat_id, "승인 대기 중인 run이 없습니다.")
                 return True
-            res = _do_approve(target, "approve", "messenger")
+            res = _do_approve(target, "approve", "messenger", actor="messenger")
             if res["ok"]:
                 _messenger_reply(provider, chat_id, f"run {target} 승인을 재개했습니다.")
             else:
@@ -1377,6 +1786,9 @@ def create_app(
         radar_jobs: list = []
         _maybe_daily_radar(store, settings, llm, adapters, defer=radar_jobs)
         _schedule_run_jobs(radar_jobs, background_tasks)
+        trigger_jobs: list = []
+        _maybe_check_triggers(store, settings, llm, adapters, defer=trigger_jobs)
+        _schedule_run_jobs(trigger_jobs, background_tasks)
         _maybe_generate_reports(store, settings, adapters)
         logger.info("cron tick cycle completed")
         return JSONResponse(content={"ok": True})
@@ -1587,6 +1999,7 @@ def create_app(
             p["dashboard_widgets"] = cleaned_widgets
         store.set_state(PREFS_KEY, p)
         cronjob = _sync_cronjob(settings, store, p)
+        _audit_api(request, "settings_update", "prefs", {"keys": sorted(body.keys())})
         return JSONResponse(content={"ok": True, "prefs": p, "cronjob": cronjob})
 
     @app.post("/api/v1/messages/{provider}/{source_id}/retry")
@@ -2047,6 +2460,13 @@ def create_app(
         try:
             if len(store.list_users()) == 1:
                 store.set_user_role(user["id"], "admin")
+                store.audit(
+                    "",
+                    "system",
+                    "user_role",
+                    user["id"],
+                    {"role": "admin", "reason": "first_user"},
+                )
         except Exception as e:
             logger.warning("first-user admin promotion failed: %s", str(e)[:200])
 
@@ -2101,6 +2521,7 @@ def create_app(
         if user is None:
             return err(409, "email_taken", "이미 가입된 이메일입니다", request)
         _maybe_first_user_admin(user)
+        store.audit("", user["email"], "auth_signup", user["id"], {})
         logger.info("auth signup: user=%s", user["id"])
         resp = JSONResponse({"user": _pub_user(user)}, status_code=201)
         _set_session(resp, request, user["id"])
@@ -2119,6 +2540,7 @@ def create_app(
         row = store.get_user_password_hash(email)
         if row is None or not row[1] or not verify_password(password, row[1]):
             _login_record(key, ok=False)
+            store.audit("", email or "-", "auth_login_failed", "", {})
             logger.info("login failed: %s", email)
             return err(
                 401, "invalid_credentials", "이메일 또는 비밀번호가 올바르지 않습니다", request
@@ -2127,6 +2549,7 @@ def create_app(
             return err(403, "email_not_allowed", "허용되지 않은 이메일입니다", request)
         _login_record(key, ok=True)
         user = store.get_user_by_id(row[0])
+        store.audit("", email, "auth_login", row[0], {})
         logger.info("auth login: user=%s", row[0])
         resp = JSONResponse({"user": _pub_user(user) if user else {}})
         _set_session(resp, request, row[0])
@@ -2251,6 +2674,7 @@ def create_app(
                 return back("signup_failed")
             _maybe_first_user_admin(user)
             logger.info("auth signup via google: user=%s", user["id"])
+        store.audit("", email, "auth_login_google", user["id"], {})
         logger.info("auth login via google: user=%s", user["id"])
         resp = RedirectResponse("/", status_code=302)
         _set_session(resp, request, user["id"])
@@ -2286,6 +2710,523 @@ def create_app(
     def developer_status_endpoint() -> dict[str, Any]:
         """개발자 뷰 — 연동/인증 구성 상태 (값이 아닌 bool/노트만)."""
         return developer_status(store, settings, adapters)
+
+    # ==================== 대시보드 확장 기능 (playbooks/comments/connectors/
+    # custom workflows/triggers/team/audit/export/share/cards) ====================
+
+    def _actor_label(request: Request) -> str:
+        """run.created_by / audit actor용 행위자 라벨 — 세션 email 우선."""
+        from ..security import api_key, authorized
+
+        user = _session_user(request)
+        if user is not None:
+            return str(user.get("email") or user.get("id") or "user")
+        if api_key() and authorized(request):
+            return "api-key"
+        return "local"
+
+    def _audit_api(
+        request: Request, action: str, target: str = "", detail: dict[str, Any] | None = None
+    ) -> None:
+        """관리자/비즈니스 감사 이벤트 — detail에 비밀값 금지(호출자 책임)."""
+        try:
+            store.audit("", _actor_label(request), action, target, detail or {})
+        except Exception:
+            logger.debug("audit emit failed action=%s", action, exc_info=True)
+
+    # ---- 1. PLAYBOOKS ----
+    @app.get("/api/v1/playbooks")
+    def list_playbooks() -> dict[str, Any]:
+        return {"items": store.list_playbooks()}
+
+    @app.post("/api/v1/playbooks", status_code=201)
+    def create_playbook(body: PlaybookCreateRequest, request: Request) -> JSONResponse:
+        if body.workflow not in WORKFLOWS:
+            return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
+        name = body.name.strip()
+        if not name:
+            return err(422, "validation", "name must not be blank", request)
+        item = store.create_playbook(name, body.workflow, body.input, _actor_label(request))
+        _audit_api(
+            request, "playbook_create", item["id"], {"name": name, "workflow": body.workflow}
+        )
+        logger.info("playbook created id=%s workflow=%s", item["id"], body.workflow)
+        return JSONResponse(status_code=201, content=item)
+
+    @app.delete("/api/v1/playbooks/{playbook_id}")
+    def delete_playbook(playbook_id: str, request: Request) -> JSONResponse:
+        if not store.delete_playbook(playbook_id):
+            return err(404, "not_found", "playbook not found", request)
+        _audit_api(request, "playbook_delete", playbook_id, {})
+        logger.info("playbook deleted id=%s", playbook_id)
+        return JSONResponse(content={"ok": True})
+
+    @app.post("/api/v1/playbooks/{playbook_id}/run", status_code=202)
+    def run_playbook(
+        playbook_id: str, request: Request, background_tasks: BackgroundTasks
+    ) -> JSONResponse:
+        """플레이북 input으로 run 생성 — POST /runs와 동일한 생성/실행 경로."""
+        pb = store.get_playbook(playbook_id)
+        if pb is None:
+            return err(404, "not_found", "playbook not found", request)
+        wf = str(pb.get("workflow") or "")
+        if wf not in WORKFLOWS:
+            return err(409, "workflow_unavailable", f"workflow '{wf}' is not registered", request)
+        payload = dict(pb.get("input") or {})
+        payload.setdefault("task", str(pb.get("name") or pb["id"]))
+        payload["playbook_id"] = pb["id"]
+        run = store.create_run(
+            wf,
+            WORKFLOWS[wf].version,
+            payload,
+            trace_id=uuid.uuid4().hex,
+            created_by=_actor_label(request),
+        )
+        _audit_api(request, "playbook_run", pb["id"], {"run_id": run.id, "workflow": wf})
+        logger.info("playbook run created playbook=%s run=%s workflow=%s", pb["id"], run.id, wf)
+        _schedule_run_jobs([(run.id, wf, {"task": payload["task"]}, None)], background_tasks)
+        return JSONResponse(
+            status_code=202,
+            content={"run_id": run.id, "status": run.status.value, "workflow": wf},
+        )
+
+    # ---- 2. RUN COMMENTS ----
+    @app.get("/api/v1/runs/{run_id}/comments")
+    def list_run_comments(run_id: str, request: Request) -> JSONResponse:
+        if store.get_run(run_id) is None:
+            return err(404, "not_found", "run not found", request)
+        return JSONResponse(content={"items": store.list_run_comments(run_id)})
+
+    @app.post("/api/v1/runs/{run_id}/comments", status_code=201)
+    def add_run_comment(run_id: str, body: CommentCreateRequest, request: Request) -> JSONResponse:
+        if store.get_run(run_id) is None:
+            return err(404, "not_found", "run not found", request)
+        text = body.body.strip()
+        if not text:
+            return err(422, "validation", "comment body must not be blank", request)
+        if len(text) > 4000:
+            return err(422, "validation", "comment body exceeds 4000 chars", request)
+        user = _session_user(request)
+        item = store.add_run_comment(
+            run_id,
+            user_id=str(user["id"]) if user else "",
+            email=str(user["email"]) if user else _actor_label(request),
+            body=text,
+        )
+        logger.info("run comment added run=%s", run_id)
+        return JSONResponse(status_code=201, content=item)
+
+    # ---- 3. CONNECTORS ----
+    _CONNECTOR_TYPES = {"github", "jira", "notion", "linear", "webhook", "json"}
+
+    @app.get("/api/v1/connectors")
+    def list_connectors() -> dict[str, Any]:
+        return {"items": store.list_connectors()}
+
+    @app.post("/api/v1/connectors", status_code=201)
+    def create_connector(body: ConnectorCreateRequest, request: Request) -> JSONResponse:
+        ctype = body.type.strip().lower()
+        if ctype not in _CONNECTOR_TYPES:
+            return err(
+                422,
+                "validation",
+                f"type must be one of {sorted(_CONNECTOR_TYPES)}",
+                request,
+            )
+        name = body.name.strip()
+        if not name:
+            return err(422, "validation", "name must not be blank", request)
+        enc_config = _encrypt_config_secrets(body.config)
+        has_token = _config_has_secret(body.config)
+        item = store.create_connector(ctype, name, enc_config, body.enabled, has_token)
+        _audit_api(request, "connector_create", item["id"], {"type": ctype, "name": name})
+        logger.info("connector created id=%s type=%s", item["id"], ctype)
+        return JSONResponse(status_code=201, content=item)
+
+    @app.delete("/api/v1/connectors/{connector_id}")
+    def delete_connector(connector_id: str, request: Request) -> JSONResponse:
+        if not store.delete_connector(connector_id):
+            return err(404, "not_found", "connector not found", request)
+        _CONNECTOR_CACHE.pop(connector_id, None)
+        _audit_api(request, "connector_delete", connector_id, {})
+        logger.info("connector deleted id=%s", connector_id)
+        return JSONResponse(content={"ok": True})
+
+    @app.post("/api/v1/connectors/{connector_id}/toggle")
+    def toggle_connector(
+        connector_id: str, body: ScheduleToggleRequest, request: Request
+    ) -> JSONResponse:
+        conn = store.set_connector_enabled(connector_id, body.enabled)
+        if conn is None:
+            return err(404, "not_found", "connector not found", request)
+        conn.pop("config", None)  # toggle 응답에도 config 비노출
+        _audit_api(request, "connector_toggle", connector_id, {"enabled": body.enabled})
+        logger.info("connector %s toggled enabled=%s", connector_id, body.enabled)
+        return JSONResponse(content=conn)
+
+    @app.get("/api/v1/connectors/{connector_id}/items")
+    def connector_items(connector_id: str, request: Request, limit: int = 50) -> JSONResponse:
+        """외부 API에서 live fetch (60초 인메모리 캐시)."""
+        conn = store.get_connector(connector_id)
+        if conn is None:
+            return err(404, "not_found", "connector not found", request)
+        if not conn.get("enabled"):
+            return err(409, "connector_disabled", "connector is disabled", request)
+        limit = max(1, min(limit, 200))
+        cached = _CONNECTOR_CACHE.get(connector_id)
+        if cached and time.time() - cached[0] < _CONNECTOR_CACHE_TTL:
+            return JSONResponse(content={"items": cached[1], "cached": True})
+        try:
+            items = _fetch_connector_items(conn, limit)
+        except Exception as e:
+            store.mark_connector_fetch(connector_id, error=str(e)[:200])
+            logger.warning(
+                "connector fetch failed id=%s type=%s: %s",
+                connector_id,
+                conn.get("type"),
+                str(e)[:200],
+            )
+            return err(502, "fetch_failed", str(e)[:200], request)
+        store.mark_connector_fetch(connector_id)
+        _CONNECTOR_CACHE[connector_id] = (time.time(), items)
+        if len(_CONNECTOR_CACHE) > 200:
+            _CONNECTOR_CACHE.clear()
+        return JSONResponse(content={"items": items, "cached": False})
+
+    # ---- 4. CUSTOM WORKFLOWS ----
+    @app.get("/api/v1/workflows/custom")
+    def list_custom_workflows() -> dict[str, Any]:
+        return {
+            "items": [{"name": r["name"], "spec": r["spec"]} for r in store.list_custom_workflows()]
+        }
+
+    @app.post("/api/v1/workflows/custom", status_code=201)
+    def create_custom_workflow(body: CustomWorkflowRequest, request: Request) -> JSONResponse:
+        name = body.name
+        if name in _BUILTIN_WF_KEYS:
+            return err(409, "conflict", f"'{name}' is a builtin workflow", request)
+        spec_dict = body.spec
+        try:
+            spec = (
+                WorkflowSpec.model_validate_json(spec_dict)
+                if isinstance(spec_dict, str)
+                else WorkflowSpec.model_validate(spec_dict)
+            )
+        except Exception as e:
+            return err(
+                422,
+                "invalid_spec",
+                f"spec is not a valid WorkflowSpec: {str(e)[:200]}",
+                request,
+            )
+        if spec.key != name:
+            return err(422, "invalid_spec", "spec.key must equal the workflow name", request)
+        store.upsert_custom_workflow(name, spec.model_dump(mode="json"))
+        _sync_workflow_registry(store)
+        _audit_api(request, "custom_workflow_save", name, {"version": spec.version})
+        logger.info("custom workflow saved name=%s version=%s", name, spec.version)
+        return JSONResponse(
+            status_code=201, content={"name": name, "spec": spec.model_dump(mode="json")}
+        )
+
+    @app.delete("/api/v1/workflows/custom/{name}")
+    def delete_custom_workflow(name: str, request: Request) -> JSONResponse:
+        if name in _BUILTIN_WF_KEYS:
+            return err(400, "validation", "cannot delete a builtin workflow", request)
+        if not store.delete_custom_workflow(name):
+            return err(404, "not_found", "custom workflow not found", request)
+        _sync_workflow_registry(store)
+        _audit_api(request, "custom_workflow_delete", name, {})
+        logger.info("custom workflow deleted name=%s", name)
+        return JSONResponse(content={"ok": True})
+
+    # ---- 5. TRIGGERS ----
+    _TRIGGER_MATCH_KEYS = {"tool", "project", "state"}
+    _TRIGGER_STATES = {"working", "decision", "rest", "ended"}
+    _TRIGGER_ACTION_TYPES = {"run_workflow", "run_playbook", "report"}
+
+    def _validate_trigger(body: TriggerCreateRequest, request: Request) -> JSONResponse | None:
+        match = body.match or {}
+        action = body.action or {}
+        if not isinstance(match, dict) or not isinstance(action, dict):
+            return err(422, "validation", "match/action must be objects", request)
+        unknown = set(match) - _TRIGGER_MATCH_KEYS
+        if unknown:
+            return err(422, "validation", f"unknown match keys: {sorted(unknown)}", request)
+        state = match.get("state")
+        if state is not None and str(state) not in _TRIGGER_STATES:
+            return err(
+                422,
+                "validation",
+                f"state must be one of {sorted(_TRIGGER_STATES)}",
+                request,
+            )
+        for k in ("tool", "project"):
+            if match.get(k) is not None and not isinstance(match[k], str):
+                return err(422, "validation", f"match.{k} must be a string", request)
+        atype = str(action.get("type") or "")
+        if atype not in _TRIGGER_ACTION_TYPES:
+            return err(
+                422,
+                "validation",
+                f"action.type must be one of {sorted(_TRIGGER_ACTION_TYPES)}",
+                request,
+            )
+        if atype == "run_workflow" and str(action.get("workflow") or "") not in WORKFLOWS:
+            return err(404, "unknown_workflow", "action.workflow not found", request)
+        if (
+            atype == "run_playbook"
+            and store.get_playbook(str(action.get("playbook_id") or "")) is None
+        ):
+            return err(404, "not_found", "action.playbook_id not found", request)
+        if atype == "report":
+            rk = str(action.get("report_kind") or "daily")
+            if rk not in ("daily", "weekly"):
+                return err(422, "validation", "report_kind must be daily|weekly", request)
+        return None
+
+    @app.get("/api/v1/triggers")
+    def list_triggers() -> dict[str, Any]:
+        return {"items": store.list_triggers()}
+
+    @app.post("/api/v1/triggers", status_code=201)
+    def create_trigger(body: TriggerCreateRequest, request: Request) -> JSONResponse:
+        bad = _validate_trigger(body, request)
+        if bad is not None:
+            return bad
+        item = store.create_trigger(body.match or {}, body.action or {})
+        _audit_api(
+            request,
+            "trigger_create",
+            item["id"],
+            {"action": (body.action or {}).get("type")},
+        )
+        logger.info("trigger created id=%s", item["id"])
+        return JSONResponse(status_code=201, content=item)
+
+    @app.delete("/api/v1/triggers/{trigger_id}")
+    def delete_trigger(trigger_id: str, request: Request) -> JSONResponse:
+        if not store.delete_trigger(trigger_id):
+            return err(404, "not_found", "trigger not found", request)
+        _audit_api(request, "trigger_delete", trigger_id, {})
+        logger.info("trigger deleted id=%s", trigger_id)
+        return JSONResponse(content={"ok": True})
+
+    @app.post("/api/v1/triggers/{trigger_id}/toggle")
+    def toggle_trigger(
+        trigger_id: str, body: ScheduleToggleRequest, request: Request
+    ) -> JSONResponse:
+        trig = store.set_trigger_enabled(trigger_id, body.enabled)
+        if trig is None:
+            return err(404, "not_found", "trigger not found", request)
+        _audit_api(request, "trigger_toggle", trigger_id, {"enabled": body.enabled})
+        logger.info("trigger %s toggled enabled=%s", trigger_id, body.enabled)
+        return JSONResponse(content=trig)
+
+    # ---- 6. TEAM VIEW ----
+    @app.get("/api/v1/team")
+    def team_view() -> dict[str, Any]:
+        return {"items": store.team_activity()}
+
+    # ---- 7. AUDIT LOG VIEW (admin only) ----
+    @app.get("/api/v1/audit")
+    def audit_log(request: Request, limit: int = 200) -> JSONResponse:
+        if _admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
+        items = [
+            {
+                "ts": e["ts"],
+                "actor_email": e["actor"],
+                "action": e["action"],
+                "target": e["target"],
+                "detail": e["detail"],
+                "run_id": e["run_id"],
+            }
+            for e in store.list_audit(limit)
+        ]
+        return JSONResponse(content={"items": items})
+
+    # ---- 8. EXPORT & SHARE ----
+    @app.get("/api/v1/export")
+    def export_data(
+        request: Request, kind: str = "runs", format: str = "json", days: int = 30
+    ) -> Any:
+        """runs|sessions|usage|reports × csv|json 다운로드."""
+        from fastapi.responses import Response
+
+        if kind not in ("runs", "sessions", "usage", "reports"):
+            return err(422, "validation", "kind must be runs|sessions|usage|reports", request)
+        if format not in ("csv", "json"):
+            return err(422, "validation", "format must be csv|json", request)
+        days = max(1, min(days, 365))
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        if kind == "runs":
+            rows = store.export_runs(cutoff)
+        elif kind == "sessions":
+            rows = store.export_sessions(cutoff)
+        elif kind == "usage":
+            rows = store.llm_usage_rows(cutoff)
+        else:
+            rows = store.export_reports(cutoff)
+        fname = f"jobmate-{kind}-{datetime.now(UTC).date().isoformat()}.{format}"
+        if format == "json":
+            payload = {
+                "kind": kind,
+                "days": days,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "rows": rows,
+            }
+            return Response(
+                content=json.dumps(payload, ensure_ascii=False, default=str),
+                media_type="application/json",
+                headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+            )
+        import csv
+        import io
+
+        cols: list[str] = []
+        for r in rows:
+            for k in r:
+                if k not in cols:
+                    cols.append(k)
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(
+                {
+                    k: (
+                        json.dumps(v, ensure_ascii=False, default=str)
+                        if isinstance(v, (dict, list))
+                        else v
+                    )
+                    for k, v in r.items()
+                }
+            )
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.post("/api/v1/share", status_code=201)
+    def share_create(body: ShareCreateRequest, request: Request) -> JSONResponse:
+        """run/report/insights 스냅샷을 토큰 링크로 공유 (+30일 만료)."""
+        kind = body.kind
+        ref = body.ref_id.strip()
+        if kind == "run":
+            if not ref:
+                return err(422, "validation", "ref_id required for kind=run", request)
+            payload = run_detail(ref)
+            if payload is None:
+                return err(404, "not_found", "run not found", request)
+        elif kind == "report":
+            rep = store.get_report(ref) if ref else store.latest_report("daily")
+            if rep is None:
+                return err(404, "not_found", "report not found", request)
+            payload = rep
+        else:
+            payload = insights_summary(store, sorted(WORKFLOWS), 30)
+        token = secrets.token_urlsafe(24)
+        expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+        store.create_share_link(token, kind, ref, payload, _actor_label(request), expires_at)
+        _audit_api(request, "share_create", f"{kind}:{ref or '-'}", {})
+        logger.info("share link created kind=%s ref=%s", kind, ref or "-")
+        return JSONResponse(
+            status_code=201,
+            content={
+                "url": f"/share/{token}",
+                "token": token,
+                "expires_at": expires_at,
+            },
+        )
+
+    @app.get("/api/v1/share/{token}")
+    def share_get(token: str, request: Request) -> JSONResponse:
+        """공개 공유 스냅샷 — 미들웨어에서 GET만 인증 예외."""
+        link = store.get_share_link(token)
+        if link is None:
+            return err(404, "not_found", "share link not found", request)
+        exp = link.get("expires_at") or ""
+        exp_dt = _parse_session_ts(exp)
+        if exp_dt is not None and exp_dt <= datetime.now(UTC):
+            return err(410, "gone", "share link expired", request)
+        return JSONResponse(
+            content={
+                "kind": link["kind"],
+                "created_at": link["created_at"],
+                "payload": link["payload"],
+            }
+        )
+
+    @app.get("/share/{token}")
+    def share_redirect(token: str) -> RedirectResponse:
+        """POST /share 응답의 /share/<token> URL → API 엔드포인트로 리다이렉트."""
+        return RedirectResponse(f"/api/v1/share/{token}", status_code=302)
+
+    # ---- 9. CUSTOM DASHBOARD CARDS ----
+    @app.get("/api/v1/cards")
+    def list_cards() -> dict[str, Any]:
+        return {"items": store.list_cards()}
+
+    @app.post("/api/v1/cards", status_code=201)
+    def create_card(body: CardCreateRequest, request: Request) -> JSONResponse:
+        url = body.url.strip()
+        if not webutil.is_safe_fetch_url(url):
+            return err(422, "url_not_allowed", "http(s) 공인 URL만 허용됩니다", request)
+        item = store.create_card(
+            body.title.strip(), url, body.json_path.strip(), body.enabled, _actor_label(request)
+        )
+        _audit_api(request, "card_create", item["id"], {"title": item["title"][:80]})
+        logger.info("dashboard card created id=%s", item["id"])
+        return JSONResponse(status_code=201, content=item)
+
+    @app.delete("/api/v1/cards/{card_id}")
+    def delete_card(card_id: str, request: Request) -> JSONResponse:
+        if not store.delete_card(card_id):
+            return err(404, "not_found", "card not found", request)
+        _audit_api(request, "card_delete", card_id, {})
+        logger.info("dashboard card deleted id=%s", card_id)
+        return JSONResponse(content={"ok": True})
+
+    @app.post("/api/v1/cards/{card_id}/toggle")
+    def toggle_card(card_id: str, body: ScheduleToggleRequest, request: Request) -> JSONResponse:
+        card = store.set_card_enabled(card_id, body.enabled)
+        if card is None:
+            return err(404, "not_found", "card not found", request)
+        _audit_api(request, "card_toggle", card_id, {"enabled": body.enabled})
+        logger.info("dashboard card %s toggled enabled=%s", card_id, body.enabled)
+        return JSONResponse(content=card)
+
+    @app.get("/api/v1/cards/{card_id}/data")
+    def card_data(card_id: str, request: Request) -> JSONResponse:
+        """카드 URL을 서버에서 fetch(8s/256KB) 후 json_path로 값 추출."""
+        card = store.get_card(card_id)
+        if card is None:
+            return err(404, "not_found", "card not found", request)
+        if not card.get("enabled"):
+            return err(409, "card_disabled", "card is disabled", request)
+        url = str(card.get("url") or "")
+        if not webutil.is_safe_fetch_url(url):
+            return err(422, "url_not_allowed", "URL이 허용되지 않습니다", request)
+        try:
+            body_bytes = webutil.fetch_bytes(url, timeout=8.0)
+        except webutil.FetchError as e:
+            logger.warning("card fetch failed id=%s host=%s: %s", card_id, webutil.host_of(url), e)
+            return err(502, "fetch_failed", str(e)[:200], request)
+        path = str(card.get("json_path") or "").strip()
+        if not path:
+            try:
+                value: Any = json.loads(body_bytes.decode("utf-8", errors="replace"))
+            except ValueError:
+                value = body_bytes.decode("utf-8", errors="replace")[:4000]
+            return JSONResponse(content={"value": value})
+        try:
+            data = json.loads(body_bytes.decode("utf-8", errors="replace"))
+        except ValueError:
+            logger.warning("card fetch non-json id=%s", card_id)
+            return err(502, "invalid_json", "response is not JSON", request)
+        return JSONResponse(content={"value": webutil.extract_json_path(data, path)})
 
     return app
 
@@ -2345,7 +3286,11 @@ def _process_due_schedules(
             payload = dict(sched.get("input") or {})
             payload.setdefault("task", f"scheduled {workflow}")
             run = store.create_run(
-                workflow, WORKFLOWS[workflow].version, payload, trace_id=uuid.uuid4().hex
+                workflow,
+                WORKFLOWS[workflow].version,
+                payload,
+                trace_id=uuid.uuid4().hex,
+                created_by=f"schedule:{sid}",
             )
             store.mark_schedule_fired(sid, fired.isoformat(), nxt.isoformat())
             store.audit(
@@ -2603,6 +3548,7 @@ def _automation_loop(
             _check_waiting_approvals(store, adapters)
             _maybe_poll_gmail(store, settings, adapters)
             _maybe_daily_radar(store, settings, llm, adapters)
+            _maybe_check_triggers(store, settings, llm, adapters)
             _maybe_generate_reports(store, settings, adapters)
         except Exception:
             worker_logger.exception("automation loop error")
@@ -2671,7 +3617,11 @@ def _create_and_run(
     ctx: dict[str, Any] | None = None,
 ) -> str:
     run = store.create_run(
-        workflow, WORKFLOWS[workflow].version, {"task": task}, trace_id=uuid.uuid4().hex
+        workflow,
+        WORKFLOWS[workflow].version,
+        {"task": task},
+        trace_id=uuid.uuid4().hex,
+        created_by="system:intake",
     )
     runner = build_runner(workflow, store=store, llm=llm, settings=settings, adapters=adapters)
     runner.invoke(run.id, {"task": task}, gmail_ctx=ctx)
@@ -2800,6 +3750,7 @@ def _maybe_daily_radar(
                     WORKFLOWS["skill_radar"].version,
                     {"task": task},
                     trace_id=uuid.uuid4().hex,
+                    created_by="radar",
                 )
                 defer.append((run.id, "skill_radar", {"task": task}, ctx))
             else:

@@ -77,12 +77,12 @@
 .o-submore { color: var(--ink3); border-left-color: transparent !important; }
 
 /* 활동 로그 */
-.o-log { display: grid; grid-template-columns: auto auto auto 1fr; align-items: baseline; gap: 0 6px;
+.o-log { display: grid; grid-template-columns: auto auto minmax(64px, max-content) minmax(0, 1fr); align-items: baseline; gap: 0 6px;
   padding: 5px 2px; font-size: 12px; border-bottom: 1px solid #F0F2F1; cursor: pointer; }
 .o-log:hover { background: var(--soft); }
 .o-log time { font-family: var(--mono); font-size: 12px; color: var(--ink3); font-variant-numeric: tabular-nums; }
-.o-log b { font-weight: 600; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.o-log span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink2); }
+.o-log b { font-weight: 600; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-log span { color: var(--ink2); overflow-wrap: anywhere; }
 .o-log .o-ev { color: var(--ev); font-weight: 600; }
 .o-log.fresh { animation: o-log-in .6s ease-out; }
 @keyframes o-log-in { from { opacity: 0; transform: translateY(-6px); background: #E6F6EC; } to { opacity: 1; transform: none; } }
