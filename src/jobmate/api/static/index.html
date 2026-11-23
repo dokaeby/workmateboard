@@ -819,7 +819,6 @@
 
 <div class="app-body">
   <aside class="sidebar">
-    <span class="nav-label">메뉴</span>
     <nav>
       <button class="nav-item active" data-view="radar"><span class="ico">◈</span>Skill Radar</button>
       <button class="nav-item" data-view="gmail"><span class="ico">✉</span>Gmail Checker</button>
@@ -827,6 +826,12 @@
       <button class="nav-item" data-view="calendar"><span class="ico">▣</span>Calendar</button>
       <button class="nav-item" data-view="runs"><span class="ico">▶</span>실행 이력</button>
       <button class="nav-item" data-view="inbox"><span class="ico">🔔</span>알림<span class="nav-badge" id="nav-inbox-badge" hidden></span></button>
+      <button class="nav-item" data-view="insights"><span class="ico">📊</span>인사이트</button>
+      <button class="nav-item" data-view="automation"><span class="ico">⚙</span>자동화</button>
+      <button class="nav-item" data-view="system"><span class="ico">🖥</span>시스템</button>
+      <button class="nav-item" data-view="archive"><span class="ico">🗄</span>아카이브</button>
+      <button class="nav-item" data-view="cost"><span class="ico">💰</span>비용</button>
+      <button class="nav-item" data-view="developer"><span class="ico">🛠</span>개발자</button>
     </nav>
   </aside>
 
@@ -1174,6 +1179,95 @@
         <div id="rpt-body"><span class="empty">리포트를 불러오려면 버튼을 누르세요</span></div>
       </div>
     </section>
+
+    <!-- 인사이트 -->
+    <section id="view-insights" hidden>
+      <div class="page-head">
+        <h1 class="page-title">인사이트</h1>
+        <p class="page-desc">세션 · 실행 · 비용 통계</p>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+          <select id="ins-days" aria-label="통계 기간">
+            <option value="7">최근 7일</option>
+            <option value="30" selected>최근 30일</option>
+            <option value="90">최근 90일</option>
+          </select>
+          <button class="secondary" id="ins-reload"
+                  style="padding:4px 10px;font-size:12px">새로고침</button>
+        </div>
+      </div>
+      <div id="ins-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 자동화 (읽기 전용) -->
+    <section id="view-automation" hidden>
+      <div class="page-head">
+        <h1 class="page-title">자동화</h1>
+        <p class="page-desc">스케줄 · 알림 규칙 · 리포트 상태 — 관리는 Agent-Office/설정에서</p>
+      </div>
+      <div id="auto-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 시스템 -->
+    <section id="view-system" hidden>
+      <div class="page-head">
+        <h1 class="page-title">시스템</h1>
+        <p class="page-desc">서버 · DB · 에이전트 브리지 상태</p>
+        <button class="secondary" id="sys-reload"
+                style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
+      </div>
+      <div id="sys-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 아카이브 -->
+    <section id="view-archive" hidden>
+      <div class="page-head">
+        <h1 class="page-title">아카이브</h1>
+        <p class="page-desc">리포트 · 실행 · 세션 기록 검색</p>
+      </div>
+      <div class="card">
+        <form id="arch-form" style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="arch-q" placeholder="검색어" autocomplete="off"
+                 style="flex:1;min-width:180px">
+          <select id="arch-kind" aria-label="종류 필터">
+            <option value="">전체</option>
+            <option value="report">리포트</option>
+            <option value="run">실행</option>
+            <option value="session">세션</option>
+          </select>
+          <button type="submit">검색</button>
+        </form>
+      </div>
+      <div id="arch-body"><div class="empty">검색어를 입력하고 검색을 누르세요</div></div>
+    </section>
+
+    <!-- 비용 -->
+    <section id="view-cost" hidden>
+      <div class="page-head">
+        <h1 class="page-title">비용</h1>
+        <p class="page-desc">LLM/세션 비용 상세 — 월 예산은 설정에서 관리</p>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <select id="cost-days" aria-label="비용 기간">
+            <option value="7">최근 7일</option>
+            <option value="30" selected>최근 30일</option>
+            <option value="90">최근 90일</option>
+          </select>
+          <button class="secondary" id="cost-reload"
+                  style="padding:4px 10px;font-size:12px">새로고침</button>
+          <button class="secondary" id="cost-settings"
+                  style="padding:4px 10px;font-size:12px">예산 설정</button>
+        </div>
+      </div>
+      <div id="cost-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 개발자 (읽기 전용) -->
+    <section id="view-developer" hidden>
+      <div class="page-head">
+        <h1 class="page-title">개발자</h1>
+        <p class="page-desc">연동 · 인증 설정 상태</p>
+      </div>
+      <div id="dev-body"><div class="empty">로딩…</div></div>
+    </section>
   </main>
 </div>
 
@@ -1410,7 +1504,10 @@ const VIEWS = { gmail: loadGmail,
                 office: () => { officeApplyProvider(); officeRefresh(); loadOffice(); },
                 calendar: loadCalendar,
                 radar: () => window.loadRadar && window.loadRadar(), runs: loadRuns,
-                inbox: loadInbox };
+                inbox: loadInbox,
+                insights: loadInsights, automation: loadAutomation,
+                system: () => {}, archive: () => {},
+                cost: loadCostView, developer: loadDeveloper };
 const loaded = {};
 document.querySelectorAll(".nav-item").forEach(b =>
   b.addEventListener("click", () => {
@@ -4541,6 +4638,322 @@ async function loadInbox() {
   loadUsageSummary();
   loadReport();
   getPrefs().then(applyDashboardWidgets).catch(() => {});
+}
+
+/* ── 뷰 공통 헬퍼 (신규 뷰) ── */
+const _daysSel = id => (document.getElementById(id) || {}).value || "30";
+const _miniTable = (heads, rows, colspan) =>
+  `<div class="table-scroll"><table><thead><tr>` +
+  heads.map(h => `<th>${esc(h)}</th>`).join("") + `</tr></thead>` +
+  `<tbody>${rows || `<tr><td colspan="${colspan || heads.length}" class="empty">데이터 없음</td></tr>`}</tbody></table></div>`;
+// success_rate는 0~1 또는 0~100 모두 올 수 있어 정규화
+const _pct = v => v == null ? "-" :
+  (v <= 1 ? Math.round(v * 100) + "%" : Math.round(v) + "%");
+const _ynBadge = v => v
+  ? '<span class="badge succeeded">설정됨</span>'
+  : '<span class="badge failed">미설정</span>';
+
+/* ── 인사이트 (GET /insights) ── */
+async function loadInsights() {
+  const el = $("#ins-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const d = await api("/insights?days=" + encodeURIComponent(_daysSel("ins-days")));
+    const s = d.sessions || {}, r = d.runs || {}, cst = d.cost || {};
+    const num = (k, v) => `<div class="usage-num"><b>${esc(v ?? 0)}</b><span>${esc(k)}</span></div>`;
+    const toolRows = (s.by_tool || []).map(t =>
+      `<tr><td class="mono">${esc(t.tool || "-")}</td><td>${esc(t.sessions ?? 0)}</td>` +
+      `<td>${esc(Math.round((t.working_seconds || 0) / 60))}</td>` +
+      `<td>${esc(t.decisions ?? 0)}</td></tr>`).join("");
+    const projRows = (s.by_project || []).map(p =>
+      `<tr><td class="mono">${esc(p.project || "-")}</td><td>${esc(p.sessions ?? 0)}</td>` +
+      `<td>${esc(Math.round((p.working_seconds || 0) / 60))}</td></tr>`).join("");
+    const wfRows = (r.by_workflow || []).map(w =>
+      `<tr><td class="mono">${esc(w.workflow || "-")}</td><td>${esc(w.runs ?? 0)}</td>` +
+      `<td>${esc(_pct(w.success_rate))}</td></tr>`).join("");
+    const failRows = (d.top_failures || []).map(f =>
+      `<div class="office-kv"><span class="mono">${esc(f.stage_key || "-")}</span>` +
+      `<b style="color:var(--err)">${esc(f.count ?? 0)}회</b></div>`).join("");
+    const h3 = t => `<h3 style="margin:0 0 8px;font-size:15px">${esc(t)}</h3>`;
+    const lbl = t => `<div style="font-size:12px;font-weight:700;color:var(--muted);margin:10px 0 4px">${esc(t)}</div>`;
+    el.innerHTML =
+      `<div class="card">${h3("세션")}` +
+      `<div class="usage-nums">` +
+      num("총 세션", s.total_sessions ?? 0) +
+      num("총 작업 시간", officeFmtSecs(s.total_working_seconds || 0)) +
+      `</div>` + lbl("툴별") +
+      _miniTable(["툴", "세션", "작업(분)", "결정"], toolRows) +
+      lbl("프로젝트별") +
+      _miniTable(["프로젝트", "세션", "작업(분)"], projRows) + `</div>` +
+      `<div class="card">${h3("실행")}` +
+      `<div class="usage-nums">` +
+      num("총 실행", r.total ?? 0) + num("성공", r.succeeded ?? 0) +
+      num("실패", r.failed ?? 0) + num("진행 중", r.running ?? 0) + `</div>` +
+      `<div class="usage-nums">` +
+      num("성공률", _pct(r.success_rate)) +
+      num("평균 소요", officeFmtSecs(r.avg_duration_s || 0)) + `</div>` +
+      lbl("워크플로별") +
+      _miniTable(["워크플로", "실행", "성공률"], wfRows) + `</div>` +
+      `<div class="card">${h3("비용")}` +
+      `<div class="usage-nums">` +
+      num("총 비용", usd(cst.total_cost_usd)) +
+      num("입력 토큰", Number(cst.llm_tokens_in || 0).toLocaleString()) +
+      num("출력 토큰", Number(cst.llm_tokens_out || 0).toLocaleString()) +
+      `</div>` +
+      (failRows ? lbl("실패 상위 단계") + failRows : "") + `</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+$("#ins-days")?.addEventListener("change", loadInsights);
+$("#ins-reload")?.addEventListener("click", loadInsights);
+
+/* ── 자동화 개요 (GET /automation/overview, 읽기 전용) ── */
+async function loadAutomation() {
+  const el = $("#auto-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const d = await api("/automation/overview");
+    const sch = Array.isArray(d.schedules) ? d.schedules : [];
+    const schRows = sch.map(s =>
+      `<tr><td class="mono">${esc(s.workflow || "-")}</td>` +
+      `<td>${esc(s.interval_minutes ?? "-")}분</td>` +
+      `<td>${s.enabled
+        ? '<span class="badge succeeded">사용</span>'
+        : '<span class="badge failed">중지</span>'}</td>` +
+      `<td class="card-meta">${esc(officeFmtTs(s.next_run_at))}</td>` +
+      `<td class="card-meta">${esc(officeFmtTs(s.last_run_at))}</td>` +
+      `<td class="card-meta" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">` +
+      `${esc(s.input && Object.keys(s.input).length
+        ? JSON.stringify(s.input).slice(0, 120) : "-")}</td></tr>`).join("");
+    const rules = Array.isArray(d.notify_rules) ? d.notify_rules : [];
+    const ruleHtml = rules.length ? rules.map(rw => {
+      const parts = [rw.tool, rw.project, rw.statuses].filter(Boolean);
+      const txt = parts.length
+        ? parts.map(p => esc(Array.isArray(p) ? p.join("/") : p)).join(" · ")
+        : esc(JSON.stringify(rw).slice(0, 200));
+      return `<div class="office-kv"><span>규칙</span><b>${txt}</b></div>`;
+    }).join("") : '<span class="card-meta">규칙 없음</span>';
+    const m = d.messenger || {}, rep = d.reports || {};
+    const onOff = v => v
+      ? '<span class="badge succeeded">연결됨</span>'
+      : '<span class="badge failed">미연결</span>';
+    el.innerHTML =
+      `<div class="card"><div class="card-top" style="justify-content:space-between">` +
+      `<h3 style="margin:0;font-size:15px">스케줄</h3>` +
+      `<button class="secondary" id="auto-office-btn" ` +
+      `style="padding:4px 10px;font-size:12px">오피스에서 관리</button></div>` +
+      _miniTable(["워크플로", "간격", "상태", "다음 실행", "마지막 실행", "입력"], schRows) +
+      `</div>` +
+      `<div class="card"><h3 style="margin:0 0 8px;font-size:15px">알림 규칙</h3>${ruleHtml}</div>` +
+      `<div class="card"><h3 style="margin:0 0 8px;font-size:15px">시스템</h3>` +
+      `<div class="office-kv"><span>크론 마지막 틱</span>` +
+      `<b>${esc(officeFmtTs((d.cron || {}).last_tick_at))}</b></div>` +
+      `<div class="office-kv"><span>Slack</span><b>${onOff(m.slack)}</b></div>` +
+      `<div class="office-kv"><span>Telegram</span><b>${onOff(m.telegram)}</b></div>` +
+      `<div class="office-kv"><span>최근 일일 리포트</span>` +
+      `<b>${esc(officeFmtTs(rep.last_daily))}</b></div>` +
+      `<div class="office-kv"><span>최근 주간 리포트</span>` +
+      `<b>${esc(officeFmtTs(rep.last_weekly))}</b></div>` +
+      `<div class="office-kv"><span>갱신 시각</span>` +
+      `<b>${esc(officeFmtTs(d.generated_at))}</b></div></div>`;
+    $("#auto-office-btn")?.addEventListener("click", () =>
+      document.querySelector('.nav-item[data-view="office"]')?.click());
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+/* ── 시스템 상태 (GET /health/detail, 진입마다 갱신) ── */
+async function loadSystemView() {
+  const el = $("#sys-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const h = await api("/health/detail");
+    const apiUptime = h.api && h.api.uptime_s != null
+      ? officeFmtSecs(h.api.uptime_s) : "-";
+    const db = h.db || {};
+    const dbTxt = Object.keys(db).length
+      ? JSON.stringify(db).slice(0, 300) : "-";
+    const machines = Array.isArray((h.bridge || {}).machines)
+      ? h.bridge.machines : [];
+    const mCards = machines.map(mc => {
+      const last = mc.last_push_at || "";
+      const ts = Date.parse(last);
+      const stale = !isNaN(ts) && (Date.now() - ts) > 10 * 60 * 1000;
+      return `<div class="card" style="margin-bottom:8px">` +
+        `<div class="card-top"><b>${esc(mc.machine || "-")}</b>` +
+        (stale
+          ? ' <span class="badge failed">10분+ 지연</span>'
+          : ' <span class="badge succeeded">정상</span>') + `</div>` +
+        `<div class="office-kv"><span>마지막 push</span>` +
+        `<b>${esc(officeFmtTs(last))}</b></div>` +
+        `<div class="office-kv"><span>세션 수</span>` +
+        `<b>${esc(mc.sessions ?? 0)}</b></div></div>`;
+    }).join("");
+    const lastPush = (h.bridge || {}).last_push_at || "";
+    el.innerHTML =
+      `<div class="card">` +
+      officeKv("API 가동시간", apiUptime) +
+      officeKv("DB", dbTxt) +
+      officeKv("크론 마지막 틱", officeFmtTs((h.cron || {}).last_tick_at)) +
+      officeKv("생성 시각", officeFmtTs(h.generated_at)) + `</div>` +
+      (machines.length
+        ? `<div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">브리지 머신</div>` + mCards
+        : `<div class="card">` +
+          officeKv("브리지 머신", "-") +
+          officeKv("브리지 마지막 push", officeFmtTs(lastPush)) + `</div>`);
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+$("#sys-reload")?.addEventListener("click", loadSystemView);
+// 시스템 뷰는 진입할 때마다 갱신 — VIEWS.system은 noop이고 여기서 로드
+document.querySelector('.nav-item[data-view="system"]')
+  ?.addEventListener("click", loadSystemView);
+
+/* ── 아카이브 검색 (GET /archive) ── */
+const ARCH_KINDS = {report: "리포트", run: "실행", session: "세션"};
+function archiveGo(link) {
+  if (!link) return;
+  const s = String(link).trim();
+  let v = "";
+  const qi = s.indexOf("?");
+  if (qi >= 0) v = new URLSearchParams(s.slice(qi + 1)).get("view") || "";
+  if (!v) {
+    const m = /(?:^|[/?&])view=([^&#]+)/.exec(s);
+    if (m) v = decodeURIComponent(m[1]);
+  }
+  if (!v) v = s.replace(/^[/?]+/, "").split(/[?#]/)[0];
+  const nav = document.querySelector(`.nav-item[data-view="${CSS.escape(v)}"]`);
+  if (nav) { nav.click(); return; }
+  if (/^(https?:)?\//.test(s)) location.href = s;
+}
+async function loadArchive() {
+  const el = $("#arch-body");
+  if (!el) return;
+  const q = (($("#arch-q") || {}).value || "").trim();
+  const kind = (($("#arch-kind") || {}).value || "");
+  el.innerHTML = '<div class="empty">검색 중…</div>';
+  try {
+    const d = await api("/archive?q=" + encodeURIComponent(q) +
+      "&kind=" + encodeURIComponent(kind) + "&limit=50");
+    const items = Array.isArray(d.items) ? d.items : [];
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">검색 결과가 없습니다</div>';
+      return;
+    }
+    el.innerHTML = items.map(it => {
+      const k = ARCH_KINDS[it.kind] || it.kind || "-";
+      const dt = (it.created_at || "").slice(0, 16).replace("T", " ");
+      return `<div class="card arch-item" style="cursor:pointer;margin-bottom:8px" ` +
+        `data-arch-link="${esc(it.link || "")}">` +
+        `<div class="card-top"><span class="badge">${esc(k)}</span>` +
+        `<span class="card-meta" style="margin-left:auto">${esc(dt)}</span></div>` +
+        `<div class="card-title">${esc(it.title || "(제목 없음)")}</div>` +
+        (it.snippet ? `<div class="card-body">${esc(it.snippet)}</div>` : "") +
+        `</div>`;
+    }).join("");
+    el.querySelectorAll(".arch-item").forEach(n =>
+      n.addEventListener("click", () => archiveGo(n.dataset.archLink)));
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+$("#arch-form")?.addEventListener("submit", (e) => {
+  e.preventDefault();
+  loadArchive();
+});
+
+/* ── 비용 상세 (GET /usage/summary?days=) ── */
+async function loadCostView() {
+  const el = $("#cost-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const days = _daysSel("cost-days");
+    const d = await api("/usage/summary?days=" + encodeURIComponent(days));
+    const exceeded = d.budget_exceeded;
+    const budgetTxt = d.budget_usd != null ? ` · 예산 ${usd(d.budget_usd)}` : "";
+    const warn = exceeded
+      ? `<div class="office-err-box"><b>월 예산 초과</b> — ` +
+        `예산 ${usd(d.budget_usd)} / 사용 ${usd(d.total_cost_usd)}</div>` : "";
+    const bm = Array.isArray(d.by_model) ? d.by_model : [];
+    const bmRows = bm.map(m =>
+      `<tr><td class="mono">${esc(m.model || "-")}</td>` +
+      `<td>${esc(usd(m.cost_usd))}</td>` +
+      `<td>${esc(Number(m.tokens || 0).toLocaleString())}</td></tr>`).join("");
+    const bd = Array.isArray(d.by_day) ? d.by_day : [];
+    const dMax = Math.max(1, ...bd.map(x => Number(x.cost_usd) || 0));
+    const spark = bd.length
+      ? `<div class="office-spark">` + bd.map(x => {
+          const h = Math.max(4, Math.round((Number(x.cost_usd) || 0) / dMax * 100));
+          return `<div style="height:${h}%" title="${esc(x.date)} · ` +
+            `${usd(x.cost_usd)} · 토큰 ${esc(Number(x.tokens || 0).toLocaleString())}"></div>`;
+        }).join("") + `</div>` +
+        `<div class="card-meta" style="display:flex;justify-content:space-between">` +
+        `<span>${esc(bd[0].date)}</span><span>${esc(bd[bd.length - 1].date)}</span></div>`
+      : "";
+    const ts = Array.isArray(d.top_sessions) ? d.top_sessions : [];
+    const tsRows = ts.slice(0, 8).map(s =>
+      `<div class="office-kv"><span>${esc(s.tool || "-")}</span>` +
+      `<b style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(s.session_key || "-")}</b>` +
+      `<span class="card-meta" style="flex:none">${usd(s.cost_usd)}</span></div>`).join("");
+    el.innerHTML = warn +
+      `<div class="usage-nums">` +
+      `<div class="usage-num"><b>${usd(d.total_cost_usd)}</b>` +
+      `<span>총 비용 (${esc(days)}일)${esc(budgetTxt)}</span></div>` +
+      `<div class="usage-num"><b>${esc(Number(d.total_tokens_in || 0).toLocaleString())}</b><span>입력 토큰</span></div>` +
+      `<div class="usage-num"><b>${esc(Number(d.total_tokens_out || 0).toLocaleString())}</b><span>출력 토큰</span></div>` +
+      `</div>` +
+      (bmRows
+        ? `<div class="table-scroll" style="margin-bottom:10px"><table>` +
+          `<thead><tr><th>모델</th><th>비용</th><th>토큰</th></tr></thead>` +
+          `<tbody>${bmRows}</tbody></table></div>` : "") +
+      (spark ? `<div style="font-size:12px;color:var(--muted);margin-bottom:4px">일별 비용</div>` + spark : "") +
+      (tsRows ? `<div style="margin-top:10px;font-size:12px;font-weight:700;color:var(--muted)">비용 상위 세션</div>` + tsRows : "") +
+      `<div class="card-meta" style="margin-top:12px">월 예산(monthly_budget_usd)은 ` +
+      `설정 → '월 예산 (USD)'에서 변경할 수 있습니다.</div>`;
+  } catch (e) {
+    el.innerHTML = `<span class="empty">${esc(e.message)}</span>`;
+  }
+}
+$("#cost-days")?.addEventListener("change", loadCostView);
+$("#cost-reload")?.addEventListener("click", loadCostView);
+$("#cost-settings")?.addEventListener("click", () =>
+  $("#settings-open")?.click());
+
+/* ── 개발자 상태 (GET /developer/status, 읽기 전용) ── */
+async function loadDeveloper() {
+  const el = $("#dev-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const d = await api("/developer/status");
+    const ints = Array.isArray(d.integrations) ? d.integrations : [];
+    const iRows = ints.map(i =>
+      `<tr><td>${esc(i.name || "-")}</td>` +
+      `<td>${i.configured
+        ? '<span class="badge succeeded">설정됨</span>'
+        : '<span class="badge failed">미설정</span>'}</td>` +
+      `<td class="card-meta">${esc(i.note || "-")}</td></tr>`).join("");
+    const a = d.auth || {};
+    const kv = (k, v) => `<div class="office-kv"><span>${esc(k)}</span><b>${v}</b></div>`;
+    el.innerHTML =
+      `<div class="card"><h3 style="margin:0 0 8px;font-size:15px">연동</h3>` +
+      _miniTable(["이름", "상태", "메모"], iRows) + `</div>` +
+      `<div class="card"><h3 style="margin:0 0 8px;font-size:15px">인증</h3>` +
+      kv("Google 로그인", _ynBadge(a.google)) +
+      kv("비밀번호 로그인", _ynBadge(a.password)) +
+      kv("API 키", _ynBadge(a.api_key)) +
+      kv("관리자 이메일 설정", _ynBadge(a.admin_emails_configured)) +
+      officeKv("생성 시각", officeFmtTs(d.generated_at)) + `</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
 }
 
 /* ── iOS '홈 화면에 추가' 안내 배너 ── */

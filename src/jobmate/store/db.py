@@ -2179,6 +2179,105 @@ class Store:
             }
         return out
 
+    def session_work_seconds(self, since_iso: str) -> dict[str, Any]:
+        """since 이후 윈도우의 tool/project별 세션 통계 (인사이트 뷰용).
+
+        agent_session_events를 (tool, session_key)별로 시간순 정렬해
+        agent_session_stats와 동일한 간격 추정으로 working_seconds를 계산한다
+        (working 이벤트 → 다음 이벤트, 최대 _WORKING_GAP_CAP_SECONDS 캡,
+        마지막 working 이벤트는 현재 시각까지). 윈도우 이전 이벤트는 로드하지
+        않으므로 경계에서 시작된 working 구간은 누락될 수 있다(단순화).
+
+        반환:
+          tools:    {tool: {sessions, working_seconds, decisions}}
+          projects: {project: {sessions, working_seconds}}
+          total_sessions: 윈도우 내 이벤트가 있는 고유 (tool, session_key) 수
+        project는 이벤트 값 우선, 없으면 agent_sessions의 현재 project,
+        둘 다 없으면 "(no project)". 세션 수는 tool/project별 고유
+        session_key 수 — 프로젝트를 오간 세션은 각 버킷에 모두 집계된다."""
+        rows = [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT tool,session_key,project,status,event_at,created_at"
+                " FROM agent_session_events WHERE created_at >= ?"
+                " ORDER BY tool, session_key, created_at, id",
+                (since_iso,),
+            ).fetchall()
+        ]
+        sess_project = {
+            (r["tool"], r["session_key"]): r["project"]
+            for r in self._conn.execute(
+                "SELECT tool,session_key,project FROM agent_sessions"
+            ).fetchall()
+        }
+
+        def project_of(tool: str, session_key: str, event_project: Any) -> str:
+            return str(event_project or sess_project.get((tool, session_key)) or "(no project)")
+
+        tools: dict[str, dict[str, Any]] = {}
+        projects: dict[str, dict[str, Any]] = {}
+        tool_sessions: dict[str, set[str]] = {}
+        proj_sessions: dict[str, set[str]] = {}
+        all_sessions: set[tuple[str, str]] = set()
+
+        def t_bucket(tool: str) -> dict[str, Any]:
+            return tools.setdefault(tool, {"sessions": 0, "working_seconds": 0.0, "decisions": 0})
+
+        def p_bucket(project: str) -> dict[str, Any]:
+            return projects.setdefault(project, {"sessions": 0, "working_seconds": 0.0})
+
+        def add_work(tool: str, project: str, seconds: float) -> None:
+            t_bucket(tool)["working_seconds"] += seconds
+            p_bucket(project)["working_seconds"] += seconds
+
+        now_dt = _now()
+        prev_key: tuple[str, str] | None = None
+        prev_t: datetime | None = None
+        prev_status = ""
+        prev_project = ""
+        last_working: dict[tuple[str, str], tuple[datetime, str, str]] = {}
+        for r in rows:
+            tool = str(r["tool"])
+            skey = str(r["session_key"])
+            key = (tool, skey)
+            project = project_of(tool, skey, r["project"])
+            st = str(r["status"] or "")
+            all_sessions.add(key)
+            tool_sessions.setdefault(tool, set()).add(skey)
+            proj_sessions.setdefault(project, set()).add(skey)
+            if st == "decision":
+                t_bucket(tool)["decisions"] += 1
+            t = _dt(r["event_at"]) or _dt(r["created_at"])
+            if t is not None and t.tzinfo is None:
+                t = t.replace(tzinfo=UTC)
+            if prev_key == key and prev_status == "working" and t and prev_t:
+                gap = (t - prev_t).total_seconds()
+                if gap > 0:
+                    add_work(tool, prev_project, min(gap, self._WORKING_GAP_CAP_SECONDS))
+            prev_key, prev_t, prev_status, prev_project = key, t, st, project
+            if t is not None:
+                if st == "working":
+                    last_working[key] = (t, tool, project)
+                else:
+                    last_working.pop(key, None)
+        # 마지막 이벤트가 working인 세션은 현재 시각까지의 간격을 추정에 포함
+        for _key, (t, tool, project) in last_working.items():
+            gap = (now_dt - t).total_seconds()
+            if gap > 0:
+                add_work(tool, project, min(gap, self._WORKING_GAP_CAP_SECONDS))
+
+        for tool, b in tools.items():
+            b["sessions"] = len(tool_sessions.get(tool, ()))
+            b["working_seconds"] = int(b["working_seconds"])
+        for project, b in projects.items():
+            b["sessions"] = len(proj_sessions.get(project, ()))
+            b["working_seconds"] = int(b["working_seconds"])
+        return {
+            "tools": tools,
+            "projects": projects,
+            "total_sessions": len(all_sessions),
+        }
+
     def agent_session_hourly(self, day: str) -> list[dict[str, Any]]:
         """로컬 날짜(YYYY-MM-DD)의 시간대별 working/decision 초 — 24개 버킷.
 

@@ -2257,6 +2257,36 @@ def create_app(
         resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
         return resp
 
+    # ---- 사이드바 뷰 집계 (읽기 전용) — 인증은 /api/* 미들웨어와 동일 ----
+    from ..insights import (
+        archive_search,
+        automation_overview,
+        developer_status,
+        insights_summary,
+    )
+
+    @app.get("/api/v1/insights")
+    def insights(days: int = 30) -> dict[str, Any]:
+        """인사이트 뷰 — 세션/런/비용/실패 집계 (최대 365일)."""
+        return insights_summary(store, sorted(WORKFLOWS), max(1, min(days, 365)))
+
+    @app.get("/api/v1/automation/overview")
+    def automation_overview_endpoint() -> dict[str, Any]:
+        """자동화 허브 뷰 — 스케줄/알림 규칙/cron/메신저/리포트 상태."""
+        return automation_overview(store, _prefs().get("notify_rules", []), _last_cron_tick_at())
+
+    @app.get("/api/v1/archive")
+    def archive(request: Request, q: str = "", kind: str = "", limit: int = 50) -> Any:
+        """지식/아카이브 검색 — 리포트·run·종료 세션 통합."""
+        if kind and kind not in ("report", "run", "session"):
+            return err(422, "validation_error", "kind must be report|run|session", request)
+        return archive_search(store, q, kind, limit)
+
+    @app.get("/api/v1/developer/status")
+    def developer_status_endpoint() -> dict[str, Any]:
+        """개발자 뷰 — 연동/인증 구성 상태 (값이 아닌 bool/노트만)."""
+        return developer_status(store, settings, adapters)
+
     return app
 
 
