@@ -292,6 +292,9 @@ def test_office_sprite_mode_shows_characters(page: Page, ui_server: SimpleNamesp
 
 def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: SimpleNamespace) -> None:
     """세션 탭: agent-bridge가 push한 세션이 스프라이트 사무실 캐릭터로 표시된다."""
+    page.evaluate("localStorage.setItem('jobmate.officeDemo','0')")
+    page.reload()
+    page.wait_for_selector(".nav-item")
     store = ui_server.store
     store.upsert_agent_session(
         "claude",
@@ -336,6 +339,47 @@ def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: Simpl
     # 워크플로 탭으로 복귀하면 기존 보드가 보인다
     page.click('.office-tab-btn[data-office-tab="workflow"]')
     page.wait_for_selector("#office-stage", state="visible", timeout=5000)
+
+
+def test_office_sessions_demo_mode(page: Page, ui_server: SimpleNamespace) -> None:
+    """데모 토글: 기본 ON — 실제 세션 없이도 가상 캐스트 7명이 보이고,
+    OFF로 끄면 데모 사람만 사라지고 실제 세션은 남는다."""
+    ui_server.store.upsert_agent_session(
+        "codex",
+        "demo-real-1",
+        "working",
+        project="jobmate-demo",
+        doing="실제 작업 중",
+        event_at="2026-11-22T01:00:00+00:00",
+    )
+    page.click('.nav-item[data-view="office"]')
+    page.click('.office-tab-btn[data-office-tab="sessions"]')
+    page.wait_for_selector("#jmo-canvas", state="visible", timeout=15000)
+    # 데모 기본 ON → 가상 캐스트 + 실제 세션
+    page.wait_for_function(
+        "window.officeDebug && "
+        "window.officeDebug().filter(p => p.id.startsWith('/demo/')).length === 7",
+        timeout=15000,
+    )
+    people = page.evaluate("window.officeDebug()")
+    assert any(p["id"] == "codex:demo-real-1" for p in people)
+    demo_statuses = {p["status"] for p in people if p["id"].startswith("/demo/")}
+    assert demo_statuses <= {"working", "decision", "rest"}
+    # 데모 OFF → 사이드 패널(프로바이더 데이터 기준)에서 가상 캐스트 7명만 사라진다.
+    # 스프라이트는 퇴장 연출(걸어 나가기+페이드)로 officeDebug에 한동안 남으므로
+    # 패널 목록으로 검증한다. 모듈 스코프 서버를 공유하는 다른 테스트가 남긴
+    # 실제 세션이 있을 수 있어 절대 개수가 아니라 감소분으로 본다.
+    before = page.locator("#jmo-people li.o-person").count()
+    page.click("#office-demo-btn")
+    page.wait_for_function(
+        "n => document.querySelectorAll('#jmo-people li.o-person').length === n",
+        arg=before - 7,
+        timeout=15000,
+    )
+    names = page.eval_on_selector_all(
+        "#jmo-people li.o-person b", "els => els.map(e => e.textContent)"
+    )
+    assert "my-app" not in names
 
 
 def _seed_review_event(store: Store, event_id: str) -> None:
