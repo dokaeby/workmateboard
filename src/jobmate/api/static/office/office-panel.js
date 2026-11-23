@@ -14,6 +14,28 @@ const OfficePanel = (() => {
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function dot(color) { const d = el("i", "o-dot"); d.style.background = color; return d; }
 
+  // ---------- 알림 소리 버튼 — "사무실 사람들" 머리글 오른쪽. 상태는 localStorage 에 남는다 ----------
+  let muteBtn = null;
+  function paintMute() {
+    if (!muteBtn) return;
+    const m = OfficeLife.soundMuted();
+    muteBtn.textContent = m ? "🔇" : "🔊";
+    muteBtn.setAttribute("aria-pressed", m ? "true" : "false");
+    const label = t(m ? "sound.off" : "sound.on");
+    muteBtn.title = label;
+    muteBtn.setAttribute("aria-label", label);
+  }
+  function ensureMute() {
+    if (muteBtn) { paintMute(); return; }
+    const h2 = $("jmo-count")?.closest("h2");
+    if (!h2) return;
+    muteBtn = el("button", "o-mute");
+    muteBtn.type = "button";
+    muteBtn.onclick = () => { OfficeLife.setSoundMuted(!OfficeLife.soundMuted()); paintMute(); };
+    h2.append(muteBtn);
+    paintMute();
+  }
+
   // ---------- 사람 목록 ----------
   function what(d, open) {
     const mode = modeOf(d);
@@ -78,6 +100,7 @@ const OfficePanel = (() => {
     else if (r.bottom > b.bottom) box.scrollTop += Math.min(r.top - b.top - 4, r.bottom - b.bottom + 4);
   }
   function render(people, sel, o = {}) {
+    ensureMute();
     P.people = people || [];
     P.sel = sel || null;
     const list = $("jmo-people");
@@ -144,6 +167,7 @@ const OfficePanel = (() => {
   }
   // 언어가 바뀌면 지금 있는 글을 전부 새 언어로
   function relabel() {
+    paintMute();
     $("jmo-log").replaceChildren(...P.items.map(e => row(e, true)));
     render(P.people, P.sel);
   }

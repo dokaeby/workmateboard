@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -32,7 +32,7 @@ from ..config import (
     database_dsn,
     get_settings,
 )
-from ..llm import CompositeLLM
+from ..llm import CompositeLLM, MeteredLLM
 from ..models import RunStatus
 from ..radar import GitHubAPI
 from ..sensors import (
@@ -90,6 +90,10 @@ class AgentSessionRequest(BaseModel):
     doing: str | None = Field(default=None, max_length=500)
     ask: str | None = Field(default=None, max_length=500)
     event_at: str | None = Field(default=None, max_length=64)
+    ended_summary: str | None = Field(default=None, max_length=500)
+    artifacts: list[Annotated[str, Field(max_length=300)]] | None = Field(
+        default=None, max_length=10
+    )
 
 
 def _token_path_for(kind: str, settings: Settings) -> str | None:
@@ -172,7 +176,7 @@ def create_app(
             "VERCEL without postgres DSN — sqlite db is ephemeral per-invocation; "
             "set JOBMATE_DATABASE_URL or POSTGRES_URL"
         )
-    llm = llm or CompositeLLM()
+    llm = MeteredLLM(llm or CompositeLLM(), store)
     adapters = adapters if adapters is not None else _default_adapters(settings, store)
     stop_event = threading.Event()
 
@@ -443,6 +447,21 @@ def create_app(
         return [x.model_dump(mode="json") for x in store.list_links(limit)]
 
     # ---- agent-sessions: 로컬 에이전트 브릿지 push/pull ----
+    _attention_ts: dict[str, float] = {}
+
+    def _push_attention(key: str, title: str, body: str) -> None:
+        """어텐션 웹 푸시 — 키(세션/런)당 10분 레이트리밋."""
+        now = time.time()
+        if now - _attention_ts.get(key, 0.0) < 600:
+            return
+        if len(_attention_ts) > 1000:
+            _attention_ts.clear()
+        _attention_ts[key] = now
+        from ..engine.functions import send_web_push_text
+
+        send_web_push_text(adapters, title, body, "/?view=office")
+        logger.info("attention push sent key=%s", key)
+
     @app.post("/api/v1/agent-sessions")
     def push_agent_session(body: AgentSessionRequest, request: Request) -> JSONResponse:
         """머신 push 전용 — API 키 인증만 허용. 세션 쿠키만으로는 거부."""
@@ -455,6 +474,7 @@ def create_app(
         session_key = body.session_key.strip()
         if not tool or not session_key:
             return err(422, "validation_error", "tool/session_key must not be blank", request)
+        prev = store.get_agent_session(tool, session_key)
         store.upsert_agent_session(
             tool,
             session_key,
@@ -464,12 +484,45 @@ def create_app(
             doing=body.doing,
             ask=body.ask,
             event_at=body.event_at,
+            ended_summary=body.ended_summary,
+            artifacts=body.artifacts,
         )
+        # decision 진입(또는 ask 설정) '전이' 시에만 푸시 — 반복 poll은 무시
+        attention = body.status == "decision" or bool((body.ask or "").strip())
+        prev_attention = prev is not None and (
+            prev.get("status") == "decision" or bool((prev.get("ask") or "").strip())
+        )
+        if attention and not prev_attention:
+            who = body.project or session_key[:12]
+            detail = (body.ask or body.doing or body.title or "").strip()[:200]
+            _push_attention(
+                f"agent:{tool}:{session_key}",
+                f"승인 필요: {tool} · {who}",
+                detail,
+            )
         return JSONResponse(content={"ok": True})
 
     @app.get("/api/v1/agent-sessions")
-    def list_agent_sessions(limit: int = 50) -> list[dict[str, Any]]:
-        return store.list_agent_sessions(limit=limit)
+    def list_agent_sessions(limit: int = 50, include_ended: bool = False) -> list[dict[str, Any]]:
+        return store.list_agent_sessions(limit=limit, include_ended=include_ended)
+
+    @app.get("/api/v1/agent-sessions/stats")
+    def agent_session_stats(since: str | None = None) -> dict[str, Any]:
+        """tool별 세션 통계 — working 시간은 이벤트 간격 기반 추정."""
+        return {"tools": store.agent_session_stats(since=since)}
+
+    @app.get("/api/v1/agent-sessions/{tool}/{session_key}/history")
+    def agent_session_history(tool: str, session_key: str, limit: int = 100) -> dict[str, Any]:
+        """세션 상태 전이 이력 (시간순)."""
+        return {
+            "events": store.agent_session_history(tool, session_key, limit=min(max(limit, 1), 500))
+        }
+
+    @app.get("/api/v1/usage/llm")
+    def llm_usage(days: int = 7) -> dict[str, Any]:
+        """LLM 토큰 사용량 요약 — 모델별 합계 + 일별 시계열."""
+        days = max(1, min(days, 90))
+        return {"days": days, **store.llm_usage_summary(days=days)}
 
     @app.get("/api/v1/gmail-calendar")
     def gmail_status() -> dict[str, Any]:
@@ -625,6 +678,7 @@ def create_app(
             return err(401, "unauthorized", "invalid cron credentials", request)
         _process_pending_messages(store, settings, llm, adapters)
         _process_due_notification_jobs(store, adapters)
+        _check_waiting_approvals(store, adapters)
         _maybe_poll_gmail(store, settings, adapters)
         radar_jobs: list = []
         _maybe_daily_radar(store, settings, llm, adapters, defer=radar_jobs)
@@ -1442,6 +1496,35 @@ def create_app(
 
 # ---------- automation worker ----------
 
+# run_id → waiting_approval 진입 시점의 updated_at 지문 (재전이 감지용)
+_WAITING_APPROVAL_FP: dict[str, str] = {}
+
+
+def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
+    """dev_review run이 waiting_approval에 '전이'할 때만 웹 푸시.
+
+    updated_at 지문으로 동일 대기 상태의 반복 감지를 막고, 승인을 거쳐
+    다시 대기에 들어오면(지문 변경) 새로 알린다."""
+    from ..engine.functions import send_web_push_text
+
+    waiting: dict[str, Any] = {}
+    for run in store.list_runs(limit=100):
+        if run.status == RunStatus.WAITING_APPROVAL:
+            waiting[run.id] = run
+    for rid in list(_WAITING_APPROVAL_FP):
+        if rid not in waiting:
+            _WAITING_APPROVAL_FP.pop(rid, None)
+    for run in waiting.values():
+        fp = run.updated_at.isoformat() if run.updated_at else run.id
+        if _WAITING_APPROVAL_FP.get(run.id) == fp:
+            continue
+        _WAITING_APPROVAL_FP[run.id] = fp
+        task = ""
+        if isinstance(run.input, dict):
+            task = str(run.input.get("task", ""))[:200]
+        send_web_push_text(adapters, f"승인 대기: {run.workflow_key}", task, "/?view=office")
+        logger.info("waiting_approval push sent run=%s", run.id)
+
 
 def _sync_cronjob(settings: Settings, store: Store, prefs: dict[str, Any]) -> dict[str, str]:
     """prefs를 cron-job.org 실제 스케줄에 반영. job id가 없고 API 키+
@@ -1555,6 +1638,7 @@ def _automation_loop(
         try:
             _process_pending_messages(store, settings, llm, adapters)
             _process_due_notification_jobs(store, adapters)
+            _check_waiting_approvals(store, adapters)
             _maybe_poll_gmail(store, settings, adapters)
             _maybe_daily_radar(store, settings, llm, adapters)
         except Exception:

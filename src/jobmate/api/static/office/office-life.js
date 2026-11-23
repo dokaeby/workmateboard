@@ -9,7 +9,7 @@ const OfficeLife = (() => {
   const SIT_DESK = 18, SIT_SOFA = 16;       // 의자 등받이·방석 점 → 앉은 그림의 발끝까지
   const L = {
     t: 0, people: new Map(), minis: new Map(), desks: new Map(), taken: new Map(), chats: new Set(),
-    greeted: new Map(), events: [], synced: false,
+    greeted: new Map(), events: [], synced: false, meetNext: new Map(),   // meetNext = project → 다음 회의 시각
   };
   const { dist, blocked, onFloor, nearest, route } = OfficePath;
   const { step, separate } = officeMotion(L, SIT_DESK);
@@ -36,6 +36,39 @@ const OfficeLife = (() => {
   // ---------- 말풍선 ----------
   function say(p, text, dur = 2.8, kind = "talk") {
     if (text) p.bubble = { text: cut(text, 26), until: L.t + dur, kind };
+  }
+
+  // ---------- 알림 소리 — 승인·질문이 새로 생기면 짧은 차임(WebAudio 진동자, 파일 없음) ----------
+  // mute 는 office-panel.js 스피커 버튼이 localStorage "jobmate.officeMute" 에 저장한다.
+  const MUTE_KEY = "jobmate.officeMute";
+  let muted = (() => { try { return localStorage.getItem(MUTE_KEY) === "1"; } catch { return false; } })();
+  let actx = null;
+  function audio() {
+    if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch { actx = null; } }
+    if (actx && actx.state === "suspended") actx.resume().catch(() => {});
+    return actx;
+  }
+  function chime() {
+    if (muted) return;
+    const ctx = audio();
+    if (!ctx) return;
+    const t0 = ctx.currentTime + 0.01;
+    for (const [f, d, v] of [[880, 0, 0.12], [1318.5, 0.1, 0.1]]) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sine"; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t0 + d);
+      g.gain.exponentialRampToValueAtTime(v, t0 + d + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.3);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(t0 + d); o.stop(t0 + d + 0.32);
+    }
+  }
+  // 첫 클릭 뒤 AudioContext 재개 — 브라우저 자동재생 정책 대비
+  function wakeAudio() { audio(); }
+  function soundMuted() { return muted; }
+  function setSoundMuted(v) {
+    muted = !!v;
+    try { localStorage.setItem(MUTE_KEY, muted ? "1" : "0"); } catch { /* 저장 못 해도 지금은 적용된다 */ }
   }
 
   // ---------- 할 일 = 단계 목록 ----------
@@ -142,6 +175,7 @@ const OfficeLife = (() => {
   function choose(p) {
     leaveChat(p);
     release(p);
+    p.meeting = false;                    // 회의 모임 중 다른 일을 고르면 모임은 끝 — 자리를 지킨 채 다시 일한다
     if (p.leaving) return;
     const home = homeOf(p);
     if (home && modeOf(p) === "work") {        // 서버실 랙 앞에 서서 일한다 — 가끔 생각·통화·만세
@@ -388,6 +422,41 @@ const OfficeLife = (() => {
     c.next = L.t + rnd(2.3, 3);
   }
 
+  // ---------- 회의 — 같은 프로젝트(project) 사람들이 잠깐 모여 이야기한다 ----------
+  // 일하는 중인 사람끼리만. 프로젝트별로 MEET_GAP 초마다 한 번, 회의실(OFFICE_MEETING.spots)에
+  // 모여 MEET_STAY 초 동안 서서 수다를 떨고, 단계가 끝나면 choose() 가 원래 일(책상)로 돌려보낸다.
+  // p.meeting = 모임 중 표시 — 모임 중에는 새 회의·수다에 끼지 않고, 상태가 바뀌면 choose() 가 해제한다.
+  const MEET_GAP = 55, MEET_STAY = 15;
+  function meetTick(t) {
+    const groups = new Map();
+    for (const p of L.people.values()) {
+      if (p.leaving || p.meeting || p.chat || p.status !== "working" || !p.project) continue;
+      if (!groups.has(p.project)) groups.set(p.project, []);
+      groups.get(p.project).push(p);
+    }
+    const used = new Set();                        // 이번 틱에 이미 간 자리 — 프로젝트끼리 자리를 나눠 쓴다
+    for (const [proj, members] of groups) {
+      if (members.length < 2) continue;
+      const next = L.meetNext.get(proj);
+      if (next === undefined) { L.meetNext.set(proj, t + rnd(20, 50)); continue; }   // 처음 본 프로젝트는 조금 뒤에
+      if (t < next) continue;
+      const idx = shuffle(OFFICE_MEETING.spots.map((_, i) => i)).filter(i => !used.has(i));
+      const ms = shuffle(members);
+      const n = Math.min(ms.length, idx.length);
+      if (n < 2) { L.meetNext.set(proj, t + 15); continue; }   // 자리가 모자라 둘이 못 모이면 잠시 뒤 다시
+      for (let k = 0; k < n; k++) {
+        const p = ms[k], spot = OFFICE_MEETING.spots[idx[k]];
+        used.add(idx[k]);
+        p.meeting = true;
+        run(p, [{ go: spot.at, via: spot.via },
+                { pose: "stand", dur: MEET_STAY, meet: true,
+                  face: spot.at[0] < OFFICE_MEETING.zone[0] ? 1 : -1,
+                  mix: [["talk", 0.4, 1.7], ["think", 0.15, 1.5], ["wave", 0.08, 1.1]] }]);
+      }
+      L.meetNext.set(proj, t + MEET_GAP + rnd(0, 25));
+    }
+  }
+
   // ---------- 서브에이전트(작은 캐릭터) ----------
   function slotOf(m) {
     const p = L.people.get(m.owner);
@@ -421,11 +490,13 @@ const OfficeLife = (() => {
               nextSay: L.t + rnd(3, 8), nextPart: 0 };
         L.people.set(d.id, p);
       }
-      const was = p.status, wasDoing = p.doing, back = p.leaving, wasMode = fresh ? null : modeOf(p);
+      // ask 열쇠 — decision 상태거나 ask 가 있으면 "decision|ask문구". 문구가 바뀌면 새 질문으로 친다
+      const was = p.status, wasAsk = (p.status === "decision" || p.ask) ? "d|" + (p.ask || "") : "",
+            wasDoing = p.doing, back = p.leaving, wasMode = fresh ? null : modeOf(p);
       const wasDesk = L.desks.get(p.id);
       Object.assign(p, { name: d.name, status: d.status, ask: d.ask || "", kid: !!d.kid, home: d.home || null,
                          doing: d.doing || "", subCount: d.subCount || 0, subs: d.subs || [], commits: d.commits,
-                         path0: d.path });
+                         path0: d.path, project: d.project || "" });
       if (fresh) {
         if (L.synced) {                              // 나중에 켠 세션 = 문으로 출근
           p.x = OFFICE_MAP_NODES.out[0]; p.y = OFFICE_MAP_NODES.out[1]; p.alpha = 0;
@@ -449,6 +520,9 @@ const OfficeLife = (() => {
       } else if (modeOf(p) === "work" && wasDesk >= 0 && !deskOk(wasDesk, p)) {
         choose(p);                                 // 서브에이전트가 생겼는데 옆자리가 막혔다 — 넓은 자리로 옮겨 앉는다
       }
+      // 승인·질문이 새로 생기거나 문구가 바뀌면 알림 — 첫 불러오기(L.synced 전)에는 울리지 않는다
+      const askKey = (p.status === "decision" || p.ask) ? "d|" + (p.ask || "") : "";
+      if (L.synced && askKey && askKey !== wasAsk) chime();
       if (modeOf(p) === "work" && p.doing && p.doing !== wasDoing) { say(p, p.doing, 4, "work"); p.nextSay = L.t + rnd(6, 10); }
       syncMinis(p, d);
     }
@@ -462,6 +536,9 @@ const OfficeLife = (() => {
       run(p, [{ go: OFFICE_MAP_NODES.out }]);
       for (const m of L.minis.values()) if (m.owner === p.id) miniLeave(m, 0);
     }
+    // 회의 예약표 청소 — 다 나간 프로젝트의 다음 회의 시각은 버린다
+    const projs = new Set([...L.people.values()].map(p => p.project).filter(Boolean));
+    for (const k of L.meetNext.keys()) if (!projs.has(k)) L.meetNext.delete(k);
     L.synced = true;
   }
 
@@ -517,9 +594,10 @@ const OfficeLife = (() => {
           }
         }
       }
-      // 말풍선 — 일하는 사람은 실제 하는 일, 쉬는 사람은 혼잣말
+      // 말풍선 — 일하는 사람은 실제 하는 일, 회의 중이면 수다, 쉬는 사람은 혼잣말
       if (t > p.nextSay && !p.chat) {
         if (p.act?.work) { say(p, p.doing || line("work"), 3.6, "work"); p.nextSay = t + rnd(6, 11); }
+        else if (p.act?.meet) { say(p, line("talk"), 2.4); p.nextSay = t + rnd(3.5, 6.5); }
         else if (!p.act?.hop) { if (Math.random() < 0.5) say(p, line("think"), 2.2, "think"); p.nextSay = t + rnd(10, 22); }
         else p.nextSay = t + 5;
       }
@@ -527,6 +605,7 @@ const OfficeLife = (() => {
     }
     for (const c of [...L.chats]) chatTick(c);
     greet(t);
+    meetTick(t);
     separate(dt);
     for (const m of [...L.minis.values()]) {
       const owner = L.people.get(m.owner);
@@ -588,5 +667,6 @@ const OfficeLife = (() => {
   }
 
   return { L, SIT_DESK, sync, update, cut, nearest, route, colorOf, speciesOf, modeOf, blocked, onFloor,
-           drainEvents: () => L.events.splice(0, L.events.length) };
+           drainEvents: () => L.events.splice(0, L.events.length),
+           soundMuted, setSoundMuted, wakeAudio };
 })();

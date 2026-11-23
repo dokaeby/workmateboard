@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -26,6 +27,7 @@ IDLE_SECONDS = 45.0
 ENDED_SECONDS = 600.0
 HEARTBEAT_SECONDS = 60.0
 HTTP_TIMEOUT = 10.0
+SUBAGENT_BUSY_SECONDS = 180.0
 
 _CLAUDE_TAIL_BYTES = 512 * 1024
 _CLAUDE_HEAD_BYTES = 128 * 1024
@@ -46,6 +48,8 @@ class SessionState:
     ask: str
     event_at: str  # ISO timestamp (파일 mtime 기준)
     path: str
+    ended_summary: str = ""  # 종료 시 수집한 repo 요약 (ended push 전용)
+    artifacts: list[str] | None = None  # 종료 시 수집한 산출물 짧은 문자열 목록
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +579,57 @@ def scan_gemini(root: Path, now: float) -> list[SessionState]:
     return states
 
 
+def _devin_subagent_titles(
+    con: sqlite3.Connection, session_ids: list[str]
+) -> dict[str, dict[str, str]]:
+    """sessions.db에서 session_id -> {agent_id: title} 맵을 만든다.
+
+    subagent_heads에는 제목이 없으므로, message_nodes의 spawn 결과
+    ("subagent started with agent_id=…", tool_call_id 포함)를 tool_call_state의
+    rawInput.title과 조인해 복원한다. 테이블/컬럼이 없는 구버전 DB는 빈 맵."""
+    out: dict[str, dict[str, str]] = {}
+    if not session_ids:
+        return out
+    rows: list[tuple[Any, ...]] = []
+    for sid in session_ids:
+        try:
+            rows.extend(
+                con.execute(
+                    "SELECT session_id, chat_message FROM message_nodes"
+                    " WHERE session_id=?"
+                    " AND chat_message LIKE '%subagent started with agent_id=%'",
+                    (sid,),
+                ).fetchall()
+            )
+        except sqlite3.Error:
+            return out
+    pending: list[tuple[str, str, str]] = []  # (session_id, agent_id, tool_call_id)
+    for sid, msg in rows:
+        if not isinstance(msg, str):
+            continue
+        m = re.search(r"subagent started with agent_id=([0-9a-f]{8})", msg)
+        t = re.search(r'"tool_call_id"\s*:\s*"(call_[^"]+)"', msg)
+        if m and t:
+            pending.append((sid, m.group(1), t.group(1)))
+    for sid, agent_id, call_id in pending:
+        title = ""
+        try:
+            r = con.execute(
+                "SELECT tool_call_json FROM tool_call_state WHERE session_id=? AND tool_call_id=?",
+                (sid, call_id),
+            ).fetchone()
+        except sqlite3.Error:
+            r = None
+        if r and r[0]:
+            try:
+                tj = json.loads(r[0])
+                title = str((tj.get("rawInput") or {}).get("title") or "")
+            except (json.JSONDecodeError, AttributeError):
+                title = ""
+        out.setdefault(sid, {})[agent_id] = _clip(title, 60)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Devin CLI: ~/.local/share/devin/cli (transcripts/*.json + session_locks/)
 # ---------------------------------------------------------------------------
@@ -649,6 +704,8 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
     # 최근 활동이 있는 세션을 잡고, transcript가 있으면 project/title을 채운다.
     by_key = {s.session_key: s for s in states}
     db_path = root / "sessions.db"
+    sub_heads: list[tuple[Any, ...]] = []
+    sub_titles: dict[str, dict[str, str]] = {}
     if db_path.is_file():
         try:
             con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
@@ -667,6 +724,13 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
                     ).fetchall()
                 else:
                     rows = []
+                if "subagent_heads" in tables:
+                    sub_heads = con.execute(
+                        "SELECT session_id, agent_id, updated_at FROM subagent_heads"
+                    ).fetchall()
+                    head_sids = sorted({str(h[0]) for h in sub_heads if h[0]})
+                    if head_sids:
+                        sub_titles = _devin_subagent_titles(con, head_sids)
             finally:
                 con.close()
         except sqlite3.Error as e:
@@ -702,12 +766,122 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
             )
             states.append(st)
             by_key[sid] = st
+
+    # subagent_heads — 백그라운드 서브에이전트를 가상 세션으로 노출하고,
+    # 활동 중인 서브에이전트가 있으면 부모 세션을 working으로 승격한다.
+    # session_key는 "<session>:sub:<agent_id>" — path param 안전 문자만 사용.
+    active_by_parent: dict[str, int] = {}
+    emitted: set[str] = set()
+    for h in sub_heads:
+        sid, agent_id, upd = h[0], h[1], h[2]
+        if not sid or not agent_id:
+            continue
+        try:
+            upd_f = float(upd or 0)
+        except (TypeError, ValueError):
+            continue
+        if upd_f <= 0 or (now - upd_f) > ENDED_SECONDS:
+            continue
+        parent = by_key.get(str(sid))
+        if parent is None:
+            continue
+        busy = (now - upd_f) <= SUBAGENT_BUSY_SECONDS
+        if busy:
+            active_by_parent[str(sid)] = active_by_parent.get(str(sid), 0) + 1
+        vkey = f"{sid}:sub:{agent_id}"
+        if vkey in emitted:
+            continue
+        emitted.add(vkey)
+        states.append(
+            SessionState(
+                tool="devin",
+                session_key=vkey,
+                project=parent.project,
+                title=(sub_titles.get(str(sid)) or {}).get(str(agent_id), "")
+                or f"subagent {agent_id}",
+                status="working" if busy else "rest",
+                doing="",
+                ask="",
+                event_at=_iso(upd_f),
+                path=str(db_path),
+            )
+        )
+    for sid, n in active_by_parent.items():
+        parent = by_key.get(sid)
+        if parent is not None and parent.status == "rest":
+            parent.status = "working"
+            parent.doing = _clip(f"{parent.doing} · sub×{n}" if parent.doing else f"sub×{n}", 80)
     return states
 
 
 # ---------------------------------------------------------------------------
 # Bridge
 # ---------------------------------------------------------------------------
+
+_GIT_TIMEOUT = 5.0
+
+
+def _default_repo_roots() -> list[Path]:
+    """project명(디렉터리 basename) → git repo 탐색 루트.
+
+    JOBMATE_REPO_ROOTS(경로 구분자=os.pathsep)로 override 가능."""
+    env = os.environ.get("JOBMATE_REPO_ROOTS", "")
+    if env:
+        return [Path(p).expanduser() for p in env.split(os.pathsep) if p.strip()]
+    home = Path.home()
+    return [home / d for d in ("Documents", "projects", "code", "src", "work", "dev")]
+
+
+def _git(repo: Path, *args: str) -> str:
+    """저비용 git 조회 — 실패/타임아웃 시 빈 문자열."""
+    git = shutil.which("git")
+    if not git:
+        return ""
+    try:
+        proc = subprocess.run(  # noqa: S603 - 고정 argv, 로컬 repo 경로만 전달
+            [git, "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("git %s failed in %s: %s", args[0] if args else "?", repo, e)
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _git_end_summary(repo: Path) -> tuple[str, list[str]]:
+    """종료 세션용 경량 repo 요약 — (ended_summary, artifacts).
+
+    마지막 커밋/미커밋 수/직전 커밋 diff stat만 수집한다(각 git 호출 5s 타임아웃)."""
+    artifacts: list[str] = []
+    head = _git(repo, "log", "-1", "--format=%h %s")
+    if head:
+        artifacts.append(_clip(f"commit {head}", 300))
+    status = _git(repo, "status", "--porcelain")
+    dirty = sum(1 for ln in status.splitlines() if ln.strip()) if status else 0
+    if dirty:
+        artifacts.append(f"uncommitted {dirty}")
+    diff = _git(repo, "diff", "--stat", "HEAD~1..HEAD")
+    diff_files = 0
+    diff_lines = ""
+    for ln in diff.splitlines():
+        if "|" in ln:
+            diff_files += 1
+        elif ln.strip() and diff_lines == "":
+            diff_lines = ln.strip()
+    if diff_files:
+        artifacts.append(f"diff~1 {diff_files} files")
+    parts = []
+    if head:
+        parts.append(f"HEAD {head}")
+    if dirty:
+        parts.append(f"uncommitted {dirty}")
+    if diff_files:
+        parts.append(f"diff~1 {diff_files} files")
+    if diff_lines:
+        parts.append(diff_lines)
+    return (_clip(" · ".join(parts), 500), artifacts[:10])
 
 
 class Bridge:
@@ -720,6 +894,7 @@ class Bridge:
         *,
         scanners: dict[str, Callable[[Path, float], list[SessionState]]] | None = None,
         roots: dict[str, Path] | None = None,
+        repo_roots: list[Path] | None = None,
         client: Any | None = None,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
         clock: Callable[[], float] = time.time,
@@ -744,6 +919,48 @@ class Bridge:
         self._last: dict[tuple[str, str], SessionState] = {}
         self._last_push: dict[tuple[str, str], float] = {}
         self._ended_sent: set[tuple[str, str]] = set()
+        self._repo_roots = repo_roots if repo_roots is not None else _default_repo_roots()
+        self._repo_cache: dict[str, Path | None] = {}
+        self._ended_cache: dict[tuple[str, str], tuple[str, list[str]]] = {}
+
+    def _repo_for(self, project: str) -> Path | None:
+        """project명(basename) → git repo 경로. 결과는 프로젝트별 캐시."""
+        if not project:
+            return None
+        if project in self._repo_cache:
+            return self._repo_cache[project]
+        found: Path | None = None
+        for root in self._repo_roots:
+            if not root.is_dir():
+                continue
+            # 깊이 3까지 탐색 — ~/Documents/python-projects/foo 같은 중첩 대응
+            for cand in (
+                root / project,
+                *root.glob(f"*/{project}"),
+                *root.glob(f"*/*/{project}"),
+            ):
+                if cand.is_dir() and (cand / ".git").exists():
+                    found = cand
+                    break
+            if found is not None:
+                break
+        self._repo_cache[project] = found
+        return found
+
+    def _ended_artifacts(self, state: SessionState) -> tuple[str, list[str]]:
+        """ended 전이 시 1회만 repo 요약 수집 (session_key별 캐시)."""
+        key = (state.tool, state.session_key)
+        if key in self._ended_cache:
+            return self._ended_cache[key]
+        result: tuple[str, list[str]] = ("", [])
+        repo = self._repo_for(state.project)
+        if repo is not None:
+            try:
+                result = _git_end_summary(repo)
+            except Exception as e:
+                logger.debug("ended summary failed %s/%s: %s", state.tool, key[1], e)
+        self._ended_cache[key] = result
+        return result
 
     def scan_all(self) -> dict[tuple[str, str], SessionState]:
         now = self._clock()
@@ -769,7 +986,7 @@ class Bridge:
             headers = {}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
-            body = {
+            body: dict[str, Any] = {
                 "tool": state.tool,
                 "session_key": state.session_key,
                 "project": state.project,
@@ -779,6 +996,10 @@ class Bridge:
                 "ask": state.ask,
                 "event_at": state.event_at,
             }
+            if state.ended_summary:
+                body["ended_summary"] = state.ended_summary
+            if state.artifacts:
+                body["artifacts"] = state.artifacts
             resp = client.post(f"{self.url}/api/v1/agent-sessions", json=body, headers=headers)
             resp.raise_for_status()
             return True
@@ -817,6 +1038,8 @@ class Bridge:
                 event_at=prev.event_at,
                 path=prev.path,
             )
+            # 종료 전이 시점에만 경량 repo 산출물 수집 (프로젝트→repo 매핑 실패 시 스킵)
+            ended.ended_summary, ended.artifacts = self._ended_artifacts(prev)
             if self._post(ended, post_client):
                 self._ended_sent.add(key)
                 counts["ended"] += 1

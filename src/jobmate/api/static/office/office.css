@@ -22,6 +22,10 @@
 
 /* ---------- 오른쪽 패널 ---------- */
 #jmo-side h2 small { font-weight: 500; }
+/* 알림 소리 버튼 — "사무실 사람들" 머리글 오른쪽 끝 */
+.o-mute { margin-left: auto; align-self: center; padding: 0 4px; font-size: 13px; line-height: 1;
+  background: none; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; color: var(--ink3); }
+.o-mute:hover { background: var(--soft); }
 .o-hint { margin: -4px 2px 0; font-size: 12px; color: var(--ink3); }
 .o-live { color: var(--live) !important; font-weight: 700 !important; animation: o-pulse 1.6s ease-in-out infinite; }
 @keyframes o-pulse { 50% { opacity: .45; } }

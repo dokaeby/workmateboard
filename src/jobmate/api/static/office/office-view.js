@@ -46,6 +46,7 @@
   const MINI = 0.5;              // 서브에이전트 = 주인 키의 50%
   const FRAME_MS = 1000 / 30, POLL_MS = 3000;
   const BG = "#EDEFF1";
+  const REDUCED = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
   const FONT = '-apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif';
   const Q = new URLSearchParams(location.search);
   const DEBUG = Q.has("debug") || Q.has("officedebug");
@@ -275,7 +276,9 @@
       items.push({ x, bottom: top - 4, w, h: kind === "ask" ? fs + 6 : fs + 11, text, kind, color, fs });
     };
     for (const p of L.people.values()) {
-      if (p.status === "decision") add(p, OfficeLife.cut(JMO_I18N.ask(p.ask, true) || t("needs"), 22), "ask", p.color);
+      // 승인 대기 또는 질문(ask)이 있으면 머리 위에 짧은 ask 표시 — 40자쯤에서 자른다
+      const ask = p.status === "decision" || p.ask ? JMO_I18N.ask(p.ask, true) || t("needs") : "";
+      if (ask) add(p, OfficeLife.cut(ask, 40), "ask", p.color);
       if (p.bubble) add(p, p.bubble.text, p.bubble.kind, p.color);
     }
     for (const m of L.minis.values()) if (m.bubble) add(m, m.bubble.text, m.bubble.kind, L.people.get(m.owner)?.color);
@@ -339,6 +342,7 @@
     ctx.setTransform(v.s * v.dpr, 0, 0, v.s * v.dpr, v.ox * v.dpr, v.oy * v.dpr);
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(st.imgs.floor, 0, 0, OFFICE_W, OFFICE_H);
+    drawMeetZone(ctx);
     drawRing(ctx, false);
     // 깊이 순서(발끝 y)대로 — 책상·회의실 의자 등받이도 끼워 넣는다: 앉은 사람(발끝 = 등받이 아래끝 - 2)보다 나중,
     // 의자 앞 통로를 지나는 사람보다 먼저. 그래서 앉은 사람은 허리 아래가 등받이에 가려진다.
@@ -364,6 +368,25 @@
         ctx.font = `700 12px ${FONT}`; ctx.fillStyle = "#1E2622"; ctx.fillText(`+${p.extra}`, mx, my);
       }
     }
+  }
+  // 회의 구역 표시 — 회의실 안 탁자 앞 빈 바닥에 옅은 점선 러그. 모임이 없어도 항상 보인다.
+  // 회의실 앞 유리벽이 비스듬히 내려와 가운데만 빈 바닥이 넓어 ellipse 는 zone 주변에 작게 그린다.
+  function drawMeetZone(ctx) {
+    const [zx, zy] = OFFICE_MEETING.zone;
+    const pulse = REDUCED ? 0.4 : 0.32 + Math.sin(L.t * 1.4) * 0.12;
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = "#8A9AA6";
+    ctx.strokeStyle = "#8A9AA6";
+    ctx.setLineDash([6, 5]);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(zx, zy, 62, 24, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = `600 11px ${FONT}`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = "#5A6B76";
+    ctx.fillText(t("meet.zone"), zx, zy + 34);
+    ctx.restore();
   }
   const CHAIRS = (A.chairs || []).map(c => ({ chair: c.box, y: c.seat[1] + OfficeLife.SIT_DESK + 1 }));
   function drawChair(ctx, c) {
@@ -425,8 +448,22 @@
   // Person(CONTRACT 4절) → 하루가 쓰는 모양. 활동(Act)은 지금 언어의 글로 바꿔 넘긴다.
   const norm = d => ({ ...d, id: String(d.id ?? d.path ?? d.name), name: String(d.name ?? d.id ?? "?"),
                        subs: Array.isArray(d.subs) ? d.subs : [], log: Array.isArray(d.log) ? d.log : [] });
+  // project 보강 — provider 가 project 를 안 주면 이름·id 에서 추정한다(회의 모임 grouping 용).
+  // 세션 provider 이름 형식은 "도구 · 프로젝트". 데모 캐스트는 이름으로 몇 팀으로 나눠 준다.
+  function guessProject(d) {
+    if (d.project) return d.project;
+    const m = String(d.name || "").match(/·\s*(.+)$/);
+    if (m) return m[1].trim();
+    if (String(d.id || "").startsWith("/demo/")) {
+      let h = 0;
+      for (const c of String(d.name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      return "demo-" + (h % 3);
+    }
+    return d.path || "";
+  }
   const toLife = d => ({
     id: d.id, name: d.name, status: d.status, ask: d.ask, kid: d.kid, home: d.home, commits: d.commits, path: d.path,
+    project: d.project || "",
     doing: JMO_I18N.act(d.doing), subCount: d.subCount || 0,
     subs: d.subs.map(s => ({ id: String(s.id), type: s.type || "", desc: s.desc || "", doing: JMO_I18N.act(s.doing) })),
   });
@@ -435,6 +472,7 @@
     try {
       const body = (await window.JM_OFFICE_PROVIDER?.()) || { people: [] };
       const people = (Array.isArray(body?.people) ? body.people : []).filter(d => d && (d.id || d.path || d.name)).map(norm);
+      for (const d of people) d.project = d.project || guessProject(d);
       st.people = people;
       st.meta = { hooks: body.hooks !== false, demo: !!body.demo };
       st.failNet = false;
@@ -523,6 +561,7 @@
     const cv = $("jmo-canvas");
     cv.addEventListener("click", ev => select(hit(ev)));
     cv.addEventListener("mousemove", ev => { cv.style.cursor = hit(ev) ? "pointer" : "default"; });
+    document.addEventListener("pointerdown", () => OfficeLife.wakeAudio(), { passive: true });
     new ResizeObserver(layout).observe($("jmo-box"));
     document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
     loadImages();

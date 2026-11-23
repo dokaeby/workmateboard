@@ -527,6 +527,151 @@ def test_scan_devin_sessions_db(tmp_path: Path) -> None:
     assert st.status == "working"
 
 
+def _devin_sessions_db(root: Path) -> sqlite3.Connection:
+    """subagent 탐색용 최소 sessions.db — sessions/subagent_heads/message_nodes/tool_call_state."""
+    con = sqlite3.connect(root / "sessions.db")
+    con.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT,"
+        " backend_type TEXT, model TEXT, agent_mode TEXT, created_at INTEGER,"
+        " last_activity_at INTEGER, title TEXT, main_chain_id INTEGER,"
+        " shell_last_seen_index INTEGER, cogs_json TEXT, workspace_dirs TEXT,"
+        " hidden INTEGER, metadata TEXT)"
+    )
+    con.execute(
+        "CREATE TABLE subagent_heads (session_id TEXT, agent_id TEXT,"
+        " chain_node_id INTEGER, updated_at REAL)"
+    )
+    con.execute(
+        "CREATE TABLE message_nodes (row_id INTEGER, session_id TEXT, node_id TEXT,"
+        " parent_node_id TEXT, chat_message TEXT, created_at REAL, metadata TEXT)"
+    )
+    con.execute(
+        "CREATE TABLE tool_call_state (session_id TEXT, tool_call_id TEXT,"
+        " tool_call_json TEXT, tool_call_update_json TEXT, source_node_ids TEXT)"
+    )
+    return con
+
+
+def test_scan_devin_subagents(tmp_path: Path) -> None:
+    """subagent_heads — 서브에이전트가 가상 세션으로 노출되고 부모 rest→working 승격."""
+    root = _devin_root(tmp_path)
+    t = root / "transcripts" / "camp-seat.json"
+    (root / "session_locks" / "camp-seat.lock").write_text("1234")
+    t.write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {"source": "user", "message": "작업해줘"},
+                    {"source": "agent", "message": "대기 중", "observation": {"results": []}},
+                ]
+            }
+        )
+    )
+    _touch(t, 300)  # 부모는 rest 판정
+
+    con = _devin_sessions_db(root)
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "camp-seat",
+            "/Users/sec/proj",
+            "local",
+            "m",
+            "a",
+            NOW - 400,
+            NOW - 300,
+            "부모 세션",
+            None,
+            0,
+            None,
+            None,
+            0,
+            None,
+        ),
+    )
+    con.execute(
+        "INSERT INTO subagent_heads VALUES (?,?,?,?)",
+        ("camp-seat", "abcd1234", 1, NOW - 10),
+    )
+    con.execute(
+        "INSERT INTO subagent_heads VALUES (?,?,?,?)",
+        ("camp-seat", "efgh5678", 2, NOW - 400),  # stale → rest 가상 세션
+    )
+    spawn = json.dumps(
+        {
+            "role": "tool",
+            "content": "Background subagent started with agent_id=abcd1234",
+            "tool_call_id": "call_x1",
+        }
+    )
+    con.execute(
+        "INSERT INTO message_nodes VALUES (?,?,?,?,?,?,?)",
+        (1, "camp-seat", "n1", None, spawn, NOW - 20, None),
+    )
+    con.execute(
+        "INSERT INTO tool_call_state VALUES (?,?,?,?,?)",
+        (
+            "camp-seat",
+            "call_x1",
+            json.dumps({"rawInput": {"title": "오피스 기능 구현"}}),
+            None,
+            None,
+        ),
+    )
+    con.commit()
+    con.close()
+
+    states = {s.session_key: s for s in ab.scan_devin(root, NOW)}
+    parent = states["camp-seat"]
+    assert parent.status == "working"
+    assert "sub×1" in parent.doing
+    sub = states["camp-seat:sub:abcd1234"]
+    assert sub.tool == "devin"
+    assert sub.status == "working"
+    assert sub.title == "오피스 기능 구현"
+    assert sub.project == "proj"
+    stale = states["camp-seat:sub:efgh5678"]
+    assert stale.status == "rest"
+    assert stale.title == "subagent efgh5678"
+
+
+def test_scan_devin_subagent_stale_ended(tmp_path: Path) -> None:
+    """ENDED_SECONDS보다 오래된 head는 가상 세션으로도 나오지 않는다."""
+    root = _devin_root(tmp_path)
+    t = root / "transcripts" / "camp-seat.json"
+    (root / "session_locks" / "camp-seat.lock").write_text("1234")
+    t.write_text(json.dumps({"steps": [{"source": "user", "message": "hi"}]}))
+    _touch(t, 5)
+    con = _devin_sessions_db(root)
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "camp-seat",
+            "/p",
+            "local",
+            "m",
+            "a",
+            NOW - 900,
+            NOW - 800,
+            "t",
+            None,
+            0,
+            None,
+            None,
+            0,
+            None,
+        ),
+    )
+    con.execute(
+        "INSERT INTO subagent_heads VALUES (?,?,?,?)",
+        ("camp-seat", "old12345", 1, NOW - 700),
+    )
+    con.commit()
+    con.close()
+    keys = {s.session_key for s in ab.scan_devin(root, NOW)}
+    assert "camp-seat:sub:old12345" not in keys
+
+
 # ---------------------------------------------------------------------------
 # Bridge diff / heartbeat / ended
 # ---------------------------------------------------------------------------

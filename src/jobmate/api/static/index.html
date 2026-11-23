@@ -239,6 +239,32 @@
     background: var(--accent); border-color: var(--accent); color: #fff;
   }
   .jmo-summary { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+  .office-attn {
+    display: inline-flex; align-items: center; gap: 4px; align-self: center;
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700;
+    color: #b45309; background: #fef3c7; border: 1px solid #fcd34d;
+  }
+  .office-attn[hidden] { display: none; }
+  .office-attn-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #d97706;
+    animation: office-attn-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes office-attn-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .35; transform: scale(.7); }
+  }
+  .jmo-session-detail {
+    flex-shrink: 0; max-height: 30%; overflow-y: auto;
+    padding: 8px 10px; font-size: 12px; color: var(--ink-2);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .jmo-session-detail[hidden] { display: none; }
+  .jmo-session-detail h3 { margin: 0 0 4px; font-size: 12px; color: var(--muted); }
+  .jmo-session-detail ul { margin: 0; padding-left: 16px; }
+  .jmo-session-detail li { margin: 2px 0; }
+  .jmo-session-detail .sd-time { color: var(--muted); font-family: monospace; }
+  .jmo-session-detail .sd-status { font-weight: 700; }
+  .jmo-session-detail .sd-ended { color: var(--muted); }
   #jmo-wrap {
     display: flex; flex-direction: column; min-height: 0;
     height: calc(100vh - 230px); min-height: 480px;
@@ -487,6 +513,19 @@
     background: var(--sr-chip); border: 1px solid var(--sr-sel-brd); color: var(--sr-ink);
     text-decoration: none; }
   .sr-gh-btn:hover { background: var(--sr-tab-on); }
+  .sr-run-wrap { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .sr-run-btn { display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 9px;
+    background: var(--sr-chip); border: 1px solid var(--sr-sel-brd); color: var(--sr-ink);
+    cursor: pointer; font-family: inherit; }
+  .sr-run-btn:hover:not(:disabled) { background: var(--sr-tab-on); }
+  .sr-run-btn:disabled { opacity: .55; cursor: default; }
+  .sr-run-msg { font-size: 11px; color: var(--sr-faint); white-space: nowrap; }
+  .sr-run-msg.sr-run-err { color: #f87171; white-space: normal; max-width: 220px; }
+  .sr-run-link { border: none; background: transparent; color: var(--sr-ink);
+    font-size: 11px; font-weight: 700; cursor: pointer; padding: 0;
+    text-decoration: underline; text-underline-offset: 2px; }
+  .sr-run-link:hover { color: #f08a63; }
   .sr-empty { text-align: center; padding: 80px 20px; }
   .sr-empty-icon { width: 56px; height: 56px; margin: 0 auto 16px; border-radius: 16px;
     background: var(--sr-chip); border: 1px solid var(--sr-sel-brd);
@@ -619,6 +658,8 @@
           <div class="office-mode" role="group" aria-label="Agent-Office 탭">
             <button class="office-mode-btn office-tab-btn" data-office-tab="workflow" aria-pressed="true">워크플로</button>
             <button class="office-mode-btn office-tab-btn" data-office-tab="sessions" aria-pressed="false">세션</button>
+            <span class="office-attn" id="office-attn" hidden
+                  title="승인 대기 중인 세션"><span class="office-attn-dot"></span>🔔<b id="office-attn-n">0</b></span>
           </div>
           <div class="office-mode" id="office-tool-filter" role="group" aria-label="세션 도구 필터" hidden>
             <button class="office-mode-btn office-tool-btn" data-office-tool="codex" aria-pressed="true">Codex</button>
@@ -644,6 +685,7 @@
       </div>
       <div id="jmo-wrap" hidden>
         <p id="jmo-summary" class="jmo-summary"></p>
+        <p id="jmo-stats" class="jmo-summary" hidden></p>
         <span id="jmo-demo" hidden></span>
         <div id="jmo-main">
           <div id="jmo-stage">
@@ -653,6 +695,7 @@
           <aside id="jmo-side">
             <h2>사무실 사람들 <small id="jmo-count"></small></h2>
             <ul id="jmo-people"></ul>
+            <div id="jmo-session-detail" class="jmo-session-detail" hidden></div>
             <h2>활동 로그 <small class="o-live">● LIVE</small></h2>
             <ol id="jmo-log"></ol>
           </aside>
@@ -801,6 +844,11 @@
       <div class="page-head">
         <h1 class="page-title">실행</h1>
         <p class="page-desc">워크플로 실행 및 상태 조회</p>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 12px;font-size:15px">LLM 사용량
+          <span class="card-meta">최근 7일</span></h3>
+        <div id="llm-usage-body"><span class="empty">로딩…</span></div>
       </div>
       <div class="card">
         <form id="run-form" class="grid-form">
@@ -1032,6 +1080,14 @@ document.querySelectorAll(".nav-item").forEach(b =>
     const v = b.dataset.view;
     if (!loaded[v]) { loaded[v] = true; VIEWS[v](); }
   }));
+// ?view=office 딥링크 — Web Push source_url 대응 (없는 뷰는 무시)
+(() => {
+  const v = new URLSearchParams(location.search).get("view");
+  if (v) {
+    const b = document.querySelector(`.nav-item[data-view="${v}"]`);
+    if (b) b.click();
+  }
+})();
 
 /* ── Gmail Checker ── */
 let digestLoaded = false;
@@ -1526,6 +1582,8 @@ function officeRenderLog() {
 }
 
 async function loadOffice() {
+  officeUpdateSessionBadge();
+  officeUpdateSessionStats();
   try {
     // workflow 필터로 다른 workflow의 활성 run이 limit 윈도우를
     // 밀어내 dev_review run을 놓치는 것을 방지한다
@@ -1603,6 +1661,106 @@ async function jmSessionProvider() {
   if (emptyEl) emptyEl.hidden = people.length > 0 || officeTab !== "sessions";
   if (officeDemo) people.push(...jmDemoPeople());
   return { people };
+}
+
+// ── 세션 어텐션 배지 + 통계 스트립 + 전이 이력 ──
+// loadOffice 폴링(3s)마다 갱신 — 세션 탭이 아니어도 배지는 최신 상태 유지
+async function officeUpdateSessionBadge() {
+  try {
+    const d = await api("/agent-sessions?limit=50");
+    const list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
+    const n = (Array.isArray(list) ? list : []).filter(
+      s => s.status === "decision" || (s.ask || "").trim()).length;
+    const badge = $("#office-attn");
+    badge.hidden = n === 0;
+    $("#office-attn-n").textContent = n;
+  } catch (e) { /* 일시적 폴링 실패는 무시 */ }
+}
+
+function _sessionArtifacts(s) {
+  let a = s && s.artifacts;
+  if (typeof a === "string") {
+    try { a = JSON.parse(a); } catch (e) { a = []; }
+  }
+  return Array.isArray(a) ? a : [];
+}
+
+function _localDateStr() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}` +
+    `-${String(n.getDate()).padStart(2, "0")}`;
+}
+
+async function officeUpdateSessionStats() {
+  const el = $("#jmo-stats");
+  if (!el) return;
+  try {
+    const [stats, ended] = await Promise.all([
+      api("/agent-sessions/stats?since=" + _localDateStr()),
+      api("/agent-sessions?limit=20&include_ended=true"),
+    ]);
+    const tools = (stats && stats.tools) || {};
+    let workSec = 0, decisions = 0, endedN = 0;
+    for (const t of Object.values(tools)) {
+      workSec += t.working_seconds || 0;
+      decisions += t.decisions || 0;
+      endedN += t.ended || 0;
+    }
+    const parts = [
+      `오늘 working ${Math.round(workSec / 60)}분`,
+      `decision ${decisions}회`,
+      `ended ${endedN}`,
+    ];
+    const list = ended.sessions || ended.agent_sessions ||
+      (Array.isArray(ended) ? ended : []);
+    const lastEnded = (Array.isArray(list) ? list : []).find(
+      s => s.status === "ended" &&
+        (s.ended_summary || _sessionArtifacts(s).length));
+    if (lastEnded) {
+      const summary = lastEnded.ended_summary ||
+        _sessionArtifacts(lastEnded).join(", ");
+      parts.push(
+        `최근 종료: ${lastEnded.project || lastEnded.session_key} — ${summary}`);
+    }
+    el.textContent = parts.join(" · ");
+    el.hidden = false;
+  } catch (e) { el.hidden = true; }
+}
+
+// 사람 클릭 → 해당 세션의 상태 전이 이력을 #jmo-session-detail에 표시
+$("#jmo-people").addEventListener("click", (ev) => {
+  const li = ev.target.closest("li[data-id]");
+  if (!li) return;
+  const id = li.dataset.id || "";
+  const sep = id.indexOf(":");
+  if (sep < 0) return;  // 데모 인물(/demo/...) 등 세션이 아닌 항목 무시
+  jmShowSessionHistory(id.slice(0, sep), id.slice(sep + 1));
+});
+
+async function jmShowSessionHistory(tool, key) {
+  const box = $("#jmo-session-detail");
+  box.hidden = false;
+  box.innerHTML = "<h3>세션 이력</h3><p>로딩…</p>";
+  try {
+    const d = await api(
+      `/agent-sessions/${encodeURIComponent(tool)}` +
+      `/${encodeURIComponent(key)}/history?limit=30`);
+    const events = (d && d.events) || [];
+    if (!events.length) {
+      box.innerHTML = `<h3>세션 이력</h3><p class="sd-ended">기록 없음</p>`;
+      return;
+    }
+    box.innerHTML = `<h3>세션 이력 · ${esc(tool)} · ${esc(key.slice(0, 18))}</h3><ul>` +
+      events.slice().reverse().map(e => {
+        const when = (e.event_at || e.created_at || "").slice(5, 16).replace("T", " ");
+        const what = [e.doing, e.ask].filter(Boolean).join(" — ");
+        return `<li><span class="sd-time">${esc(when)}</span> ` +
+          `<span class="sd-status">${esc(e.status || "")}</span>` +
+          (what ? ` ${esc(what)}` : "") + `</li>`;
+      }).join("") + "</ul>";
+  } catch (e2) {
+    box.innerHTML = `<h3>세션 이력</h3><p class="sd-ended">${esc(e2.message)}</p>`;
+  }
 }
 
 // ── 데모 사무실 (frog-office server/demo.mjs 포팅) ──
@@ -1898,7 +2056,7 @@ const $ = s => document.querySelector(s);
 const sr = {
   platform: "claude", lang: "ko", date: "", topic: null, topicPlatform: "all",
   period: "daily", taxFilter: "all", minStars: 0, view: "list",
-  lastItems: [], allTopics: [],
+  lastItems: [], allTopics: [], viewItems: [],
 };
 const grid = $("#sr-grid"), empty = $("#sr-empty"),
       emptyTitle = $("#sr-empty-title"), emptyDesc = $("#sr-empty-desc"),
@@ -2068,7 +2226,8 @@ function renderFiltered() {
     return;
   }
   empty.hidden = true;
-  grid.innerHTML = items.map(renderCard).join("");
+  sr.viewItems = items;
+  grid.innerHTML = items.map((item, i) => renderCard(item, i)).join("");
   bindCardClicks();
 }
 function passFilters(item) {
@@ -2116,7 +2275,7 @@ function escapeHtml(s) {
   const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   return String(s ?? "").replace(/[&<>"']/g, c => map[c]);
 }
-function renderCard(item) {
+function renderCard(item, idx) {
   const topics = (item.topics || []).slice(0, 4)
     .map(tp => `<span class="sr-chip-tag" data-topic="${escapeHtml(tp)}">#${escapeHtml(tp)}</span>`).join("");
   const delta = item.stars_today;
@@ -2131,6 +2290,9 @@ function renderCard(item) {
     ? `<p class="sr-desc">${escapeHtml(item.description)}</p>` : "";
   const repoName = item.repo_full_name || item.repo || "";
   const repoUrl = item.repo_url || item.url || "";
+  const runBtn = repoName
+    ? `<span class="sr-run-wrap"><button class="sr-run-btn" data-run-idx="${idx}">dev_review 실행</button><span class="sr-run-msg"></span></span>`
+    : "";
   return `
   <article class="sr-card sr-fade-up">
     <div class="sr-card-top">
@@ -2156,7 +2318,10 @@ function renderCard(item) {
     ${lines ? `<ul class="sr-summary">${lines}</ul>` : ""}
     <div class="sr-card-foot">
       <div class="sr-chips">${topics}</div>
-      <a class="sr-gh-btn" href="${escapeHtml(repoUrl)}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        ${runBtn}
+        <a class="sr-gh-btn" href="${escapeHtml(repoUrl)}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
+      </div>
     </div>
   </article>`;
 }
@@ -2169,6 +2334,62 @@ function bindCardClicks() {
       const found = sr.allTopics.find(x => x.topic === tp);
       selectTopic(tp, found ? found.count : 0);
     }));
+  grid.querySelectorAll(".sr-run-btn[data-run-idx]").forEach(b =>
+    b.addEventListener("click", e => {
+      e.preventDefault();
+      const item = sr.viewItems[Number(b.dataset.runIdx)];
+      const msg = b.parentElement && b.parentElement.querySelector(".sr-run-msg");
+      if (item) void submitDevReview(item, b, msg);
+    }));
+}
+
+/* ---- dev_review 실행 ---- */
+function devReviewTask(item) {
+  const name = item.repo_full_name || item.repo || item.name || "(unknown)";
+  const url = item.repo_url || item.url || "";
+  const meta = [];
+  if (item.platform) meta.push(`플랫폼 ${item.platform}`);
+  if (item.taxonomy) meta.push(`분류 ${item.taxonomy}`);
+  if (item.language) meta.push(`언어 ${item.language}`);
+  if (item.stars != null) meta.push(`스타 ${item.stars}`);
+  if (item.stars_today != null && item.stars_today !== 0)
+    meta.push(`오늘 스타 +${item.stars_today}`);
+  if (item.rank != null) meta.push(`일간 순위 ${item.rank}위`);
+  if ((item.topics || []).length) meta.push(`주제: ${item.topics.join(", ")}`);
+  if ((item.summary || []).length) meta.push(`요약: ${item.summary.join(" / ")}`);
+  const lines = ["Skill Radar에서 발견된 저장소를 분석하고 개선 작업을 검토해줘:", "",
+    `- 저장소: ${name}`];
+  if (url) lines.push(`- URL: ${url}`);
+  if (meta.length) lines.push(`- 정보: ${meta.join(" · ")}`);
+  if (item.description) lines.push(`- 설명: ${item.description}`);
+  lines.push("", "트렌딩에 오른 이유와 코드 품질·개선 포인트를 파악해줘.");
+  return lines.join("\n");
+}
+async function submitDevReview(item, btn, msg) {
+  const name = item.repo_full_name || item.repo || item.name || "";
+  if (!name || !btn || btn.disabled) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "실행 중…";
+  if (msg) { msg.textContent = ""; msg.className = "sr-run-msg"; }
+  try {
+    const r = await api("/runs", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({workflow: "dev_review", task: devReviewTask(item),
+        metadata: {source: "skill_radar", repo: name}})});
+    if (msg) {
+      msg.innerHTML = `실행됨 <button class="sr-run-link" data-office>Agent-Office</button>`;
+      const link = msg.querySelector("[data-office]");
+      if (link) link.addEventListener("click", () =>
+        document.querySelector('.nav-item[data-view="office"]').click());
+    }
+    btn.textContent = orig;
+    btn.disabled = false;
+  } catch (e) {
+    if (msg) { msg.textContent = e.message; msg.classList.add("sr-run-err"); }
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
 }
 function renderTopicRepos(data) {
   sr.lastItems = data.items ?? [];
@@ -2384,6 +2605,12 @@ async function loadRepoDetail() {
     const related = (it.related_topics ?? []).length
       ? `<div style="margin-top:20px"><h3 style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--sr-faint);margin:0 0 10px">${t("detailRelated")}</h3><div class="sr-related" style="margin-top:0">${it.related_topics.map(tp => `<button class="sr-rel-chip" data-topic="${escapeHtml(tp)}">#${escapeHtml(tp)}</button>`).join("")}</div></div>`
       : "";
+    const detailRepoName = it.repo_full_name || it.repo || currentRepo || "";
+    const detailActions = `
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        ${detailRepoName ? `<span class="sr-run-wrap"><button class="sr-run-btn" data-run-detail>dev_review 실행</button><span class="sr-run-msg"></span></span>` : ""}
+        <a class="sr-gh-btn" href="${escapeHtml(it.repo_url || it.url || "")}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
+      </div>`;
     repoView.innerHTML = `
       <button class="sr-topic-back" id="sr-repo-back" style="margin-bottom:12px">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
@@ -2396,7 +2623,7 @@ async function loadRepoDetail() {
             ${it.description ? `<p class="sr-desc" style="-webkit-line-clamp:3">${escapeHtml(it.description)}</p>` : ""}
             ${badgeMeta}
           </div>
-          <a class="sr-gh-btn" href="${escapeHtml(it.repo_url || it.url || "")}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
+          ${detailActions}
         </div>
         <div class="sr-detail-sum">
           <h3>${t("detailSummary")}</h3>
@@ -2413,6 +2640,11 @@ async function loadRepoDetail() {
       if (sr.topic) void loadTopicRepos();
       else if (sr.period === "daily") void loadTrending();
       else void loadRanking();
+    });
+    const runBtn = repoView.querySelector("[data-run-detail]");
+    if (runBtn) runBtn.addEventListener("click", () => {
+      const msg = runBtn.parentElement && runBtn.parentElement.querySelector(".sr-run-msg");
+      void submitDevReview(it, runBtn, msg);
     });
     repoView.querySelectorAll(".sr-lang-btn").forEach(b => {
       b.addEventListener("click", () => {
@@ -2468,7 +2700,39 @@ window.loadRadar = loadRadar;
 })();
 
 /* ── Runs ── */
-async function loadRuns() { refreshRuns(); }
+async function loadRuns() { refreshRuns(); loadLlmUsage(); }
+async function loadLlmUsage() {
+  const el = $("#llm-usage-body");
+  try {
+    const d = await api("/usage/llm?days=7");
+    const models = d.models || {};
+    const names = Object.keys(models);
+    const daily = d.daily || [];
+    if (!names.length && !daily.length) {
+      el.innerHTML = '<span class="empty">기록 없음</span>'; return;
+    }
+    const rows = names.map(n => {
+      const m = models[n];
+      return `<tr><td class="mono">${esc(n)}</td><td>${m.calls}</td>` +
+        `<td>${(m.tokens_in || 0).toLocaleString()}</td>` +
+        `<td>${(m.tokens_out || 0).toLocaleString()}</td></tr>`;
+    }).join("");
+    const maxTok = Math.max(1, ...daily.map(x => (x.tokens_in || 0) + (x.tokens_out || 0)));
+    const bars = daily.slice(-14).map(x => {
+      const tot = (x.tokens_in || 0) + (x.tokens_out || 0);
+      const w = Math.max(2, Math.round(tot / maxTok * 100));
+      return `<div class="office-kv"><span>${esc(x.date)}</span>` +
+        `<b style="flex:1"><span style="display:inline-block;height:8px;` +
+        `width:${w}%;background:var(--accent);border-radius:4px"></span></b>` +
+        `<b>${tot.toLocaleString()}</b></div>`;
+    }).join("");
+    el.innerHTML =
+      `<div class="table-scroll" style="margin-bottom:10px"><table>` +
+      `<thead><tr><th>모델</th><th>호출</th><th>입력 토큰</th><th>출력 토큰</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>` +
+      (bars ? `<div style="font-size:12px;color:var(--muted);margin-bottom:4px">일별 토큰</div>` + bars : "");
+  } catch (e) { el.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
+}
 async function refreshRuns() {
   try {
     const runs = await api("/runs?limit=30");

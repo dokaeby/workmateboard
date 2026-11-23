@@ -27,6 +27,7 @@ function jmOfficePeople() {
     const p = { id: n.code, name: n.code + " " + n.label,
                 status: "rest", ask: "", doing: "",
                 subs: [], subCount: 0, kid: false, home: null, commits: null,
+                project: run.id || "run",          // 같은 run 의 노드끼리 회의에 모인다
                 log: [] };
 
     if (n.code === "ORCH") {

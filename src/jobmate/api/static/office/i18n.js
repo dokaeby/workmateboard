@@ -37,6 +37,8 @@ const JMO_I18N = (() => {
       "ev.ask": "승인을 기다립니다 — {a}", "ev.subwork": "서브에이전트와 일하는 중", "ev.done": "일을 마쳤습니다",
       "ev.subIn": "서브에이전트 출근 — {a}", "ev.subOut": "서브에이전트 퇴근 — {a}",
       "ev.check": "확인 필요", "ev.task": "일 받음", "ev.end": "일 끝",
+      "sound.on": "알림 소리 켜기", "sound.off": "알림 소리 끄기",
+      "meet.zone": "회의",
     },
     en: {
       title: "3D Office",
@@ -68,6 +70,8 @@ const JMO_I18N = (() => {
       "ev.ask": "Needs you — {a}", "ev.subwork": "Working with subagents", "ev.done": "Finished",
       "ev.subIn": "Subagent joined — {a}", "ev.subOut": "Subagent done — {a}",
       "ev.check": "check needed", "ev.task": "new task", "ev.end": "done",
+      "sound.on": "Unmute notifications", "sound.off": "Mute notifications",
+      "meet.zone": "Meeting",
     },
   };
 
