@@ -156,3 +156,9 @@ def allowed_emails() -> set[str]:
 def email_allowed(email: str) -> bool:
     allowed = allowed_emails()
     return not allowed or email.strip().lower() in allowed
+
+
+def admin_emails() -> set[str]:
+    """JOBMATE_ADMIN_EMAILS(쉼표 구분) — 이 목록의 계정은 role과 무관하게 admin."""
+    raw = os.environ.get("JOBMATE_ADMIN_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}

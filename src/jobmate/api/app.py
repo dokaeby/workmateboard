@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .. import messenger
 from ..adapters import LoggingNotifier, WebPushNotifier
 from ..config import (
     Settings,
@@ -35,6 +36,7 @@ from ..config import (
 )
 from ..llm import CompositeLLM, MeteredLLM
 from ..models import RunStatus, StageStatus
+from ..pricing import cost_usd
 from ..radar import GitHubAPI
 from ..sensors import (
     allowed_identifier,
@@ -115,6 +117,19 @@ def _session_view(row: dict[str, Any]) -> dict[str, Any]:
     return {**row, "health": _session_health(row), "est_cost_usd": _session_est_cost_usd(row)}
 
 
+# 마지막 자동화 틱 시각 — /health/detail의 cron.last_tick_at (모듈 공유)
+_LAST_CRON_TICK_AT: str | None = None
+
+
+def _mark_cron_tick() -> None:
+    global _LAST_CRON_TICK_AT
+    _LAST_CRON_TICK_AT = datetime.now(UTC).isoformat()
+
+
+def _last_cron_tick_at() -> str | None:
+    return _LAST_CRON_TICK_AT
+
+
 class RunCreateRequest(BaseModel):
     workflow: str = "dev_review"
     task: str = Field(min_length=1, max_length=20_000)
@@ -163,6 +178,14 @@ class AgentSessionRequest(BaseModel):
     machine: str | None = Field(default=None, max_length=128)
     tokens_in: int | None = Field(default=None, ge=0)
     tokens_out: int | None = Field(default=None, ge=0)
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class ReportGenerateRequest(BaseModel):
+    kind: Literal["daily", "weekly"] = "daily"
 
 
 def _token_path_for(kind: str, settings: Settings) -> str | None:
@@ -263,6 +286,7 @@ def create_app(
         app.state.settings = settings
         app.state.llm = llm
         app.state.adapters = adapters
+        app.state.started_at = time.time()
         worker = None
         if not os.environ.get("VERCEL"):
             # 서버리스(Vercel)에서는 상주 스레드가 없으므로 cron tick 엔드포인트 사용
@@ -417,6 +441,32 @@ def create_app(
         user = store.get_session_user(hash_token(token))
         return user if user and email_allowed(user["email"]) else None
 
+    def _effective_role(user: dict[str, Any]) -> str:
+        """저장된 role + JOBMATE_ADMIN_EMAILS env 오버라이드."""
+        from ..security import admin_emails
+
+        if str(user.get("role") or "user") == "admin":
+            return "admin"
+        if (user.get("email") or "").strip().lower() in admin_emails():
+            return "admin"
+        return "user"
+
+    def _admin_user(request: Request) -> dict[str, Any] | None:
+        """관리자 판정 — 세션 사용자 role=admin, 유효 API 키(머신), 또는
+        인증이 비활성인 로컬 개발 모드(키·허용목록·VERCEL 모두 없음)일 때 허용."""
+        from ..security import allowed_emails, api_key, authorized
+
+        user = _session_user(request)
+        if user is not None:
+            if _effective_role(user) == "admin":
+                return {**user, "role": "admin"}
+            return None
+        if api_key() and authorized(request):
+            return {"id": "api-key", "email": "", "role": "admin"}
+        if not api_key() and not allowed_emails() and not os.environ.get("VERCEL"):
+            return {"id": "local", "email": "", "role": "admin"}
+        return None
+
     @app.get("/")
     def index() -> HTMLResponse:
         # 로그인제가 도입되어 API 키는 더 이상 페이지에 주입하지 않는다.
@@ -432,6 +482,19 @@ def create_app(
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/v1/health/detail")
+    def health_detail() -> dict[str, Any]:
+        """헬스 상세 — /health와 동일하게 인증 예외 경로(공개 수준 유지)."""
+        started = float(getattr(app.state, "started_at", time.time()))
+        bridge = store.agent_sessions_bridge_info()
+        return {
+            "api": {"uptime_s": round(time.time() - started, 1)},
+            "db": store.db_info(),
+            "bridge": bridge,
+            "cron": {"last_tick_at": _last_cron_tick_at()},
+            "version": "0.1.0",
+        }
 
     @app.get("/api/v1/workflows")
     def list_workflows() -> list[dict[str, Any]]:
@@ -494,29 +557,41 @@ def create_app(
             return err(404, "not_found", "run not found", request)
         return JSONResponse(content=d)
 
-    @app.post("/api/v1/runs/{run_id}/approve")
-    def approve(run_id: str, body: ApprovalRequest, request: Request) -> JSONResponse:
+    def _do_approve(run_id: str, decision: str, comment: str) -> dict[str, Any]:
+        """승인/거절 공통 경로 — API 엔드포인트와 메신저 커맨드가 공유.
+        반환: {"ok": True, "run": detail} 또는 {"ok": False, "status": int, "error": str}."""
         run = store.get_run(run_id)
         if run is None:
-            return err(404, "not_found", "run not found", request)
+            return {"ok": False, "status": 404, "error": "run not found"}
         if run.status != RunStatus.WAITING_APPROVAL:
-            return err(
-                409,
-                "invalid_state",
-                f"run status is {run.status.value}, not waiting_approval",
-                request,
-            )
+            return {
+                "ok": False,
+                "status": 409,
+                "error": f"run status is {run.status.value}, not waiting_approval",
+            }
         runner = build_runner(
             run.workflow_key, store=store, llm=llm, settings=settings, adapters=adapters
         )
         try:
-            runner.resume(run_id, {"decision": body.decision, "comment": body.comment})
+            runner.resume(run_id, {"decision": decision, "comment": comment})
         except Exception as e:
             logger.warning("run %s resume failed: %s", run_id, str(e)[:200])
-            return err(500, "resume_failed", str(e)[:300], request)
-        logger.info("run %s resume decision=%s", run_id, body.decision)
-        d = run_detail(run_id)
-        return JSONResponse(content=d or {})
+            return {"ok": False, "status": 500, "error": str(e)[:300]}
+        store.mark_inbox_read_dedupe(f"approval:{run_id}")
+        logger.info("run %s resume decision=%s", run_id, decision)
+        return {"ok": True, "run": run_detail(run_id) or {}}
+
+    @app.post("/api/v1/runs/{run_id}/approve")
+    def approve(run_id: str, body: ApprovalRequest, request: Request) -> JSONResponse:
+        result = _do_approve(run_id, body.decision, body.comment)
+        if not result["ok"]:
+            code = (
+                "not_found"
+                if result["status"] == 404
+                else ("invalid_state" if result["status"] == 409 else "resume_failed")
+            )
+            return err(result["status"], code, str(result["error"]), request)
+        return JSONResponse(content=result["run"])
 
     @app.get("/api/v1/runs/{run_id}/diff")
     def run_diff(run_id: str, request: Request) -> JSONResponse:
@@ -564,6 +639,8 @@ def create_app(
 
     @app.post("/api/v1/schedules", status_code=201)
     def create_schedule(body: ScheduleCreateRequest, request: Request) -> JSONResponse:
+        if _admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
         if body.workflow not in WORKFLOWS:
             return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
         sched = store.create_schedule(body.workflow, body.input, body.interval_minutes)
@@ -586,6 +663,8 @@ def create_app(
     def toggle_schedule(
         schedule_id: str, body: ScheduleToggleRequest, request: Request
     ) -> JSONResponse:
+        if _admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
         sched = store.set_schedule_enabled(schedule_id, body.enabled)
         if sched is None:
             return err(404, "not_found", "schedule not found", request)
@@ -595,6 +674,8 @@ def create_app(
 
     @app.delete("/api/v1/schedules/{schedule_id}")
     def delete_schedule(schedule_id: str, request: Request) -> JSONResponse:
+        if _admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
         if not store.delete_schedule(schedule_id):
             return err(404, "not_found", "schedule not found", request)
         store.audit("", "api", "schedule_delete", schedule_id, {})
@@ -604,6 +685,288 @@ def create_app(
     @app.get("/api/v1/notifications")
     def notifications(limit: int = 50) -> list[dict[str, Any]]:
         return [n.model_dump(mode="json") for n in store.list_notifications(limit)]
+
+    # ---- 통합 인박스 (알림 센터) ----
+    # notifications 테이블은 별도 유지 — GET /inbox 호출 시 dedupe_key=notif:{id}로
+    # inbox_items에 지연 미러링한다(멱등). 나머지 kind는 이벤트 발생 시 직접 insert.
+    @app.get("/api/v1/inbox")
+    def inbox(limit: int = 50, unread_only: bool = False) -> list[dict[str, Any]]:
+        store.sync_notifications_to_inbox()
+        return store.list_inbox(limit=min(max(limit, 1), 200), unread_only=unread_only)
+
+    @app.post("/api/v1/inbox/{item_id}/read")
+    def inbox_read(item_id: str, request: Request) -> JSONResponse:
+        if not store.mark_inbox_read(item_id):
+            return err(404, "not_found", "inbox item not found", request)
+        return JSONResponse(content={"ok": True})
+
+    @app.post("/api/v1/inbox/read-all")
+    def inbox_read_all() -> dict[str, Any]:
+        return {"ok": True, "updated": store.mark_all_inbox_read()}
+
+    @app.get("/api/v1/inbox/unread-count")
+    def inbox_unread_count() -> dict[str, int]:
+        return {"count": store.inbox_unread_count()}
+
+    # ---- 비용 대시보드 ----
+    @app.get("/api/v1/usage/summary")
+    def usage_summary(days: int = 30) -> dict[str, Any]:
+        """llm_usage 기반 비용/토큰 요약 + 에이전트 세션 추정 비용 top + 월 예산."""
+        days = max(1, min(days, 365))
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        rows = store.llm_usage_rows(cutoff)
+
+        by_model: dict[str, dict[str, Any]] = {}
+        by_day: dict[str, dict[str, Any]] = {}
+        total_cost = 0.0
+        total_in_i = total_out_i = 0
+        for r in rows:
+            model = str(r.get("model") or "")
+            tin = int(r.get("tokens_in") or 0)
+            tout = int(r.get("tokens_out") or 0)
+            cost = cost_usd(model, tin, tout)
+            total_cost += cost
+            total_in_i += tin
+            total_out_i += tout
+            m = by_model.setdefault(model, {"model": model, "cost_usd": 0.0, "tokens": 0})
+            m["cost_usd"] += cost
+            m["tokens"] += tin + tout
+            day = (str(r.get("created_at") or ""))[:10]
+            if day:
+                d = by_day.setdefault(day, {"date": day, "cost_usd": 0.0, "tokens": 0})
+                d["cost_usd"] += cost
+                d["tokens"] += tin + tout
+
+        # 에이전트 세션 추정 비용 — 상위 10개 (토큰 없으면 스킵)
+        top_sessions: list[dict[str, Any]] = []
+        for s in store.list_agent_sessions(limit=200, include_ended=True):
+            est = _session_est_cost_usd(s)
+            if est is None:
+                continue
+            top_sessions.append(
+                {
+                    "tool": s.get("tool") or "",
+                    "session_key": s.get("session_key") or "",
+                    "cost_usd": est,
+                }
+            )
+        top_sessions.sort(key=lambda x: x["cost_usd"], reverse=True)
+
+        prefs = _prefs()
+        budget_raw = prefs.get("monthly_budget_usd")
+        try:
+            budget = float(budget_raw) if budget_raw is not None else None
+        except (TypeError, ValueError):
+            budget = None
+        # 월초(UTC) 이후 llm_usage 비용 = month-to-date
+        month_start = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        mtd_cost = 0.0
+        for r in store.llm_usage_rows(month_start.isoformat()):
+            mtd_cost += cost_usd(
+                str(r.get("model") or ""),
+                int(r.get("tokens_in") or 0),
+                int(r.get("tokens_out") or 0),
+            )
+        budget_exceeded = budget is not None and mtd_cost > budget
+
+        return {
+            "total_cost_usd": round(total_cost, 6),
+            "total_tokens_in": total_in_i,
+            "total_tokens_out": total_out_i,
+            "by_model": [
+                {"model": m["model"], "cost_usd": round(m["cost_usd"], 6), "tokens": m["tokens"]}
+                for m in sorted(by_model.values(), key=lambda x: -x["cost_usd"])
+            ],
+            "by_day": [
+                {"date": d["date"], "cost_usd": round(d["cost_usd"], 6), "tokens": d["tokens"]}
+                for d in sorted(by_day.values(), key=lambda x: x["date"])
+            ],
+            "top_sessions": top_sessions[:10],
+            "budget_usd": budget,
+            "budget_exceeded": budget_exceeded,
+        }
+
+    # ---- 자연어 쿼리 (ask) ----
+    _ask_daily: dict[str, tuple[str, int]] = {}
+    _ASK_DAILY_LIMIT = 20
+    _ASK_TIMEOUT_S = 30.0
+
+    def _ask_key(request: Request) -> str:
+        user = _session_user(request)
+        if user and user.get("id"):
+            return f"u:{user['id']}"
+        return f"ip:{request.client.host if request.client else '-'}"
+
+    @app.post("/api/v1/ask")
+    def ask(body: AskRequest, request: Request) -> JSONResponse:
+        """자연어 질문 → LLM 답변(한국어). LLM 실패/타임아웃 시 503 + error 필드.
+        사용자/IP당 하루 20회 인메모리 레이트리밋."""
+        from concurrent.futures import TimeoutError as FutureTimeout
+
+        question = body.question.strip()
+        if not question:
+            return err(422, "validation_error", "question must not be blank", request)
+        key = _ask_key(request)
+        today = datetime.now(UTC).date().isoformat()
+        day, count = _ask_daily.get(key, ("", 0))
+        if day != today:
+            day, count = today, 0
+        if count >= _ASK_DAILY_LIMIT:
+            return err(429, "rate_limited", "daily ask limit reached", request)
+        _ask_daily[key] = (day, count + 1)
+        if len(_ask_daily) > 1000:
+            _ask_daily.clear()
+
+        # 컴팩트 컨텍스트 — 비밀값/프롬프트 원문 없이 집계만
+        try:
+            stats = store.run_stats(None, 7)
+            sessions = store.agent_session_stats(
+                since=(datetime.now(UTC) - timedelta(days=7)).isoformat()
+            )
+            usage = store.llm_usage_summary(days=7)
+            context = {
+                "runs_7d": {
+                    k: stats.get(k)
+                    for k in ("runs", "succeeded", "failed", "running", "waiting_approval")
+                },
+                "tokens_7d": {
+                    "in": stats.get("total_tokens_in"),
+                    "out": stats.get("total_tokens_out"),
+                },
+                "stage_failures": stats.get("stage_failures"),
+                "sessions": sessions,
+                "llm_models": usage.get("models"),
+            }
+        except Exception as e:
+            logger.warning("ask context build failed: %s", str(e)[:200])
+            context = {}
+        ctx_text = json.dumps(context, ensure_ascii=False, default=str)[:6000]
+        system = (
+            "너는 jobMate 대시보드의 운영 어시스턴트다. 제공된 집계 컨텍스트만 근거로 "
+            "한국어로 간결하게 답한다(3~6문장). 모르는 내용은 추측하지 말고 "
+            "데이터가 없다고 답한다. 비밀번호·토큰 등 비밀값은 절대 언급하지 않는다."
+        )
+        model = settings.model_for("_ask", "default")
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            fut = pool.submit(
+                llm.complete,
+                model=model,
+                system=system,
+                user=f"컨텍스트:\n{ctx_text}\n\n질문: {question}",
+            )
+            out, _usage = fut.result(timeout=_ASK_TIMEOUT_S)
+        except FutureTimeout:
+            logger.warning("ask llm timeout")
+            return JSONResponse(status_code=503, content={"answer": "", "error": "llm_unavailable"})
+        except Exception as e:
+            logger.warning("ask llm failed: %s", str(e)[:200])
+            return JSONResponse(status_code=503, content={"answer": "", "error": "llm_unavailable"})
+        finally:
+            pool.shutdown(wait=False)
+        answer = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+        return JSONResponse(content={"answer": answer})
+
+    # ---- 리포트 ----
+    from ..reports import build_report
+
+    @app.get("/api/v1/reports")
+    def get_report(kind: str = "daily") -> JSONResponse:
+        """온디맨드 리포트 — 저장 없이 즉시 생성."""
+        if kind not in ("daily", "weekly"):
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "validation", "message": "kind must be daily|weekly"}},
+            )
+        try:
+            content = build_report(store, kind, settings)
+        except Exception as e:
+            logger.warning("report build failed kind=%s: %s", kind, str(e)[:200])
+            return JSONResponse(
+                status_code=500,
+                content={"error": {"code": "report_failed", "message": str(e)[:200]}},
+            )
+        return JSONResponse(content=content)
+
+    @app.get("/api/v1/reports/latest")
+    def latest_report(request: Request, kind: str = "daily") -> JSONResponse:
+        """저장된 최신 리포트. 없으면 온디맨드 생성 결과를 반환(404 없음)."""
+        if kind not in ("daily", "weekly"):
+            return err(422, "validation", "kind must be daily|weekly", request)
+        rep = store.latest_report(kind)
+        if rep is None:
+            try:
+                rep = {
+                    "id": "",
+                    "kind": kind,
+                    "content": build_report(store, kind, settings),
+                    "created_at": datetime.now(UTC).isoformat(),
+                }
+            except Exception as e:
+                logger.warning("report build failed kind=%s: %s", kind, str(e)[:200])
+                return err(500, "report_failed", str(e)[:200], request)
+        return JSONResponse(content=rep)
+
+    @app.post("/api/v1/reports/generate", status_code=201)
+    def generate_report(body: ReportGenerateRequest, request: Request) -> JSONResponse:
+        """리포트 생성·저장 + 인박스 알림 + 메신저 알림 (관리자 전용)."""
+        if _admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
+        try:
+            content = build_report(store, body.kind, settings)
+        except Exception as e:
+            logger.warning("report build failed kind=%s: %s", body.kind, str(e)[:200])
+            return err(500, "report_failed", str(e)[:200], request)
+        rid = store.save_report(body.kind, content)
+        store.upsert_inbox_item(
+            "report",
+            f"{body.kind} 리포트 생성됨",
+            body=f"runs={content['runs']['total']} failed={content['runs']['failed']}",
+            link="/?view=reports",
+            dedupe_key=f"report:{rid}",
+        )
+        store.audit("", "api", "report_generate", rid, {"kind": body.kind})
+        logger.info("report generated id=%s kind=%s", rid, body.kind)
+        try:
+            messenger.notify(
+                f"jobMate {body.kind} 리포트: run {content['runs']['total']}건 "
+                f"(실패 {content['runs']['failed']}), 승인 대기 {content['approvals']['pending']}"
+            )
+        except Exception:
+            logger.debug("messenger notify after report failed", exc_info=True)
+        return JSONResponse(
+            status_code=201,
+            content={"id": rid, "kind": body.kind, "content": content},
+        )
+
+    # ---- PWA 뱃지 ----
+    @app.get("/api/v1/badge/count")
+    def badge_count() -> dict[str, int]:
+        """앱 뱃지 = 미읽음 인박스 + 승인 대기 run."""
+        waiting = sum(
+            1 for r in store.list_runs(limit=100) if r.status == RunStatus.WAITING_APPROVAL
+        )
+        return {"count": store.inbox_unread_count() + waiting}
+
+    # ---- 멀티유저 역할 ----
+    @app.get("/api/v1/users")
+    def list_users(request: Request) -> JSONResponse:
+        """사용자 목록 (관리자 전용) — 비밀번호 해시 제외."""
+        admin = _admin_user(request)
+        if admin is None:
+            return err(403, "forbidden", "admin role required", request)
+        users = []
+        for u in store.list_users():
+            users.append(
+                {
+                    "id": u["id"],
+                    "email": u["email"],
+                    "display_name": u.get("display_name", ""),
+                    "role": _effective_role(u),
+                    "created_at": u.get("created_at"),
+                }
+            )
+        return JSONResponse(content={"users": users})
 
     @app.get("/api/v1/event-links")
     def event_links(limit: int = 50) -> list[dict[str, Any]]:
@@ -679,12 +1042,30 @@ def create_app(
             tokens_in=body.tokens_in,
             tokens_out=body.tokens_out,
         )
+        # 활동 녹화 — status/doing 변경 또는 60초 경과 시에만 insert(스토어 스로틀)
+        try:
+            store.record_session_activity(
+                tool, session_key, body.status, doing=body.doing, project=body.project
+            )
+        except Exception as e:
+            logger.warning("session activity record failed: %s", str(e)[:200])
         # decision 진입(또는 ask 설정) '전이' 시에만 푸시 — 반복 poll은 무시
         attention = body.status == "decision" or bool((body.ask or "").strip())
         prev_attention = prev is not None and (
             prev.get("status") == "decision" or bool((prev.get("ask") or "").strip())
         )
         if attention and not prev_attention:
+            # 통합 인박스 — 세션당 1건 dedupe
+            try:
+                store.upsert_inbox_item(
+                    "session_attention",
+                    f"승인 필요: {tool} · {body.project or session_key[:12]}",
+                    body=((body.ask or body.doing or body.title or "").strip())[:300],
+                    link="/?view=office",
+                    dedupe_key=f"session:{tool}:{session_key}",
+                )
+            except Exception as e:
+                logger.warning("inbox session_attention failed: %s", str(e)[:200])
             if _session_push_allowed(tool, body.project, body.status, body.ask):
                 who = body.project or session_key[:12]
                 detail = (body.ask or body.doing or body.title or "").strip()[:200]
@@ -725,6 +1106,13 @@ def create_app(
             "events": store.agent_session_history(tool, session_key, limit=min(max(limit, 1), 500))
         }
 
+    @app.get("/api/v1/agent-sessions/{tool}/{session_key}/activity")
+    def agent_session_activity(tool: str, session_key: str, limit: int = 200) -> dict[str, Any]:
+        """세션 활동 스냅샷 (시간순, 최대 200) — doing/status/프로젝트."""
+        return {
+            "activity": store.session_activity(tool, session_key, limit=min(max(limit, 1), 500))
+        }
+
     @app.get("/api/v1/usage/llm")
     def llm_usage(days: int = 7) -> dict[str, Any]:
         """LLM 토큰 사용량 요약 — 모델별 합계 + 일별 시계열."""
@@ -758,9 +1146,98 @@ def create_app(
         ingested = _poll_gmail(store, settings, gmail)
         return JSONResponse(status_code=202, content={"status": "accepted", "ingested": ingested})
 
+    # ---- 메신저 커맨드 (Slack/Telegram 양방향) ----
+    def _status_summary_text() -> str:
+        """현황 커맨드용 컴팩트 요약 (한국어)."""
+        try:
+            stats = store.run_stats(None, 7)
+            sess = store.agent_session_stats()
+        except Exception as e:
+            logger.warning("status summary failed: %s", str(e)[:200])
+            return "jobMate 현황을 가져오지 못했습니다."
+        lines = [
+            f"최근 7일 run: 총 {stats.get('runs', 0)}건 "
+            f"(성공 {stats.get('succeeded', 0)}, 실패 {stats.get('failed', 0)}, "
+            f"승인 대기 {stats.get('waiting_approval', 0)})"
+        ]
+        if sess:
+            top = sorted(sess.items(), key=lambda kv: -int(kv[1].get("working_seconds") or 0))[:3]
+            lines.append(
+                "세션: "
+                + ", ".join(
+                    f"{t}(세션 {v.get('sessions', 0)}, "
+                    f"작업 {int(v.get('working_seconds') or 0) // 60}분)"
+                    for t, v in top
+                )
+            )
+        return "\n".join(lines)
+
+    def _messenger_reply(provider: str, chat_id: str, text: str) -> None:
+        """수신 채널로 답장 — best-effort, 실패는 debug 로그만."""
+        try:
+            if provider == "slack":
+                url = os.environ.get("JOBMATE_SLACK_WEBHOOK_URL", "")
+                if url:
+                    messenger.send_slack(url, text)
+            elif provider == "telegram":
+                token = os.environ.get("JOBMATE_TELEGRAM_BOT_TOKEN", "")
+                if token:
+                    messenger.send_telegram(token, chat_id, text)
+        except Exception:
+            logger.debug("messenger reply failed provider=%s", provider, exc_info=True)
+
+    def _messenger_handle(
+        provider: str,
+        chat_id: str,
+        text: str,
+        background_tasks: BackgroundTasks,
+    ) -> bool:
+        """수신 텍스트를 커맨드로 파싱·실행 후 답장. 인식 못 하면 False."""
+        cmd = messenger.parse_command(text)
+        if cmd is None:
+            return False
+        action = str(cmd.get("action") or "")
+        if action == "help":
+            _messenger_reply(provider, chat_id, messenger.HELP_TEXT)
+        elif action == "status":
+            _messenger_reply(provider, chat_id, _status_summary_text())
+        elif action == "approve":
+            target = str(cmd.get("run_id") or "")
+            if not target:
+                for r in store.list_runs(limit=100):
+                    if r.status == RunStatus.WAITING_APPROVAL:
+                        target = r.id
+                        break
+            if not target:
+                _messenger_reply(provider, chat_id, "승인 대기 중인 run이 없습니다.")
+                return True
+            res = _do_approve(target, "approve", "messenger")
+            if res["ok"]:
+                _messenger_reply(provider, chat_id, f"run {target} 승인을 재개했습니다.")
+            else:
+                _messenger_reply(
+                    provider, chat_id, f"승인 실패({res['status']}): {str(res['error'])[:200]}"
+                )
+        elif action == "start":
+            wf = str(cmd.get("workflow") or "")
+            task = str(cmd.get("task") or "")
+            if wf not in WORKFLOWS:
+                _messenger_reply(
+                    provider,
+                    chat_id,
+                    f"알 수 없는 workflow: {wf}\n사용 가능: {', '.join(sorted(WORKFLOWS))}",
+                )
+                return True
+            jobs: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] = []
+            rid = submit_run(wf, task, defer=jobs)
+            _schedule_run_jobs(jobs, background_tasks)
+            _messenger_reply(provider, chat_id, f"run 생성: {rid} ({wf})")
+            logger.info("messenger start run=%s workflow=%s provider=%s", rid, wf, provider)
+        return True
+
     # ---- calendar-agent: 멀티채널 웹훅·수신함·이벤트·알림예약 ----
     @app.post("/api/v1/webhooks/slack")
-    async def slack_webhook(request: Request) -> JSONResponse:
+    async def slack_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
         body = await request.body()
         if not verify_slack_signature(
             body,
@@ -792,6 +1269,9 @@ def create_app(
         ts = event.get("ts", "")
         source_id = f"{team}:{channel}:{ts}"
         text = event.get("text", "")
+        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
+        if _messenger_handle("slack", channel, text, background_tasks):
+            return JSONResponse(content={"status": "command"})
         created = store.save_message_extraction(
             "slack", source_id, event.get("thread_ts") or ts, {}, "pending", source_text=text[:8000]
         )
@@ -800,7 +1280,7 @@ def create_app(
         )
 
     @app.post("/api/v1/webhooks/telegram")
-    async def telegram_webhook(request: Request) -> JSONResponse:
+    async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
         if not verify_telegram_secret(
             request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""),
             settings.telegram_webhook_secret,
@@ -820,6 +1300,9 @@ def create_app(
         if not text.strip() or not allowed_identifier(chat_id, settings.telegram_chat_ids):
             return JSONResponse(content={"status": "ignored"})
         source_id = f"{chat_id}:{msg.get('message_id', '')}"
+        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
+        if _messenger_handle("telegram", chat_id, text, background_tasks):
+            return JSONResponse(content={"status": "command"})
         created = store.save_message_extraction(
             "telegram",
             source_id,
@@ -883,6 +1366,7 @@ def create_app(
         if not valid:
             logger.warning("cron tick rejected: invalid credentials")
             return err(401, "unauthorized", "invalid cron credentials", request)
+        _mark_cron_tick()
         _process_pending_messages(store, settings, llm, adapters)
         _process_due_notification_jobs(store, adapters)
         schedule_jobs: list = []
@@ -893,6 +1377,7 @@ def create_app(
         radar_jobs: list = []
         _maybe_daily_radar(store, settings, llm, adapters, defer=radar_jobs)
         _schedule_run_jobs(radar_jobs, background_tasks)
+        _maybe_generate_reports(store, settings, adapters)
         logger.info("cron tick cycle completed")
         return JSONResponse(content={"ok": True})
 
@@ -1023,10 +1508,14 @@ def create_app(
             "gmail_check_minutes": p.get("gmail_check_minutes", 30),
             "radar_interval": p.get("radar_interval", "daily"),
             "notify_rules": p.get("notify_rules", []),
+            "monthly_budget_usd": p.get("monthly_budget_usd"),
+            "dashboard_widgets": p.get("dashboard_widgets", []),
         }
 
     @app.post("/api/v1/settings")
     def set_prefs(body: dict[str, Any], request: Request) -> JSONResponse:
+        if _admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
         p = _prefs()
         minutes = int(body.get("gmail_check_minutes", p.get("gmail_check_minutes", 30)))
         if minutes not in (30, 60):
@@ -1063,6 +1552,39 @@ def create_app(
                     }
                 )
             p["notify_rules"] = cleaned
+        if "monthly_budget_usd" in body:
+            raw_budget = body.get("monthly_budget_usd")
+            if raw_budget is None:
+                p["monthly_budget_usd"] = None
+            else:
+                try:
+                    budget_val = float(raw_budget)
+                except (TypeError, ValueError):
+                    return err(422, "validation", "monthly_budget_usd must be a number", request)
+                if budget_val < 0:
+                    return err(422, "validation", "monthly_budget_usd must be >= 0", request)
+                p["monthly_budget_usd"] = budget_val
+        if "dashboard_widgets" in body:
+            widgets = body.get("dashboard_widgets")
+            if not isinstance(widgets, list) or len(widgets) > 50:
+                return err(422, "validation", "dashboard_widgets must be a list (max 50)", request)
+            cleaned_widgets: list[dict[str, Any]] = []
+            for w in widgets:
+                if not isinstance(w, dict):
+                    return err(
+                        422,
+                        "validation",
+                        "dashboard_widgets items must be objects",
+                        request,
+                    )
+                cleaned_widgets.append(
+                    {
+                        "id": str(w.get("id", ""))[:64],
+                        "visible": bool(w.get("visible", True)),
+                        "order": int(w.get("order", 0) or 0),
+                    }
+                )
+            p["dashboard_widgets"] = cleaned_widgets
         store.set_state(PREFS_KEY, p)
         cronjob = _sync_cronjob(settings, store, p)
         return JSONResponse(content={"ok": True, "prefs": p, "cronjob": cronjob})
@@ -1517,7 +2039,16 @@ def create_app(
             "id": u["id"],
             "email": u["email"],
             "display_name": u["display_name"],
+            "role": _effective_role(u),
         }
+
+    def _maybe_first_user_admin(user: dict[str, Any]) -> None:
+        """첫 번째 가입 사용자는 자동 admin — 이후 관리자는 role/env로 지정."""
+        try:
+            if len(store.list_users()) == 1:
+                store.set_user_role(user["id"], "admin")
+        except Exception as e:
+            logger.warning("first-user admin promotion failed: %s", str(e)[:200])
 
     def _set_session(response: Any, request: Request, user_id: str) -> None:
         token = new_session_token()
@@ -1569,6 +2100,7 @@ def create_app(
         user = store.create_user(email, hash_password(password), name)
         if user is None:
             return err(409, "email_taken", "이미 가입된 이메일입니다", request)
+        _maybe_first_user_admin(user)
         logger.info("auth signup: user=%s", user["id"])
         resp = JSONResponse({"user": _pub_user(user)}, status_code=201)
         _set_session(resp, request, user["id"])
@@ -1717,6 +2249,7 @@ def create_app(
             user = store.create_user(email, "", name, gsub)
             if user is None:
                 return back("signup_failed")
+            _maybe_first_user_admin(user)
             logger.info("auth signup via google: user=%s", user["id"])
         logger.info("auth login via google: user=%s", user["id"])
         resp = RedirectResponse("/", status_code=302)
@@ -1792,6 +2325,17 @@ def _process_due_schedules(
                 sid,
                 {"interval_minutes": interval},
             )
+            # 통합 인박스 — 스케줄 발사/실패 알림
+            try:
+                store.upsert_inbox_item(
+                    "schedule",
+                    f"스케줄 실행: {workflow}",
+                    body=str(payload.get("task") or "")[:300],
+                    link="/?view=office",
+                    dedupe_key=f"schedule:{run.id}",
+                )
+            except Exception as e:
+                worker_logger.warning("inbox schedule item failed: %s", str(e)[:200])
             job = (run.id, workflow, payload, None)
             if defer is not None:
                 defer.append(job)
@@ -1804,6 +2348,16 @@ def _process_due_schedules(
             worker_logger.info("schedule %s fired run=%s workflow=%s", sid, run.id, workflow)
         except Exception as e:
             worker_logger.warning("schedule %s fire failed: %s", sid, str(e)[:200])
+            try:
+                store.upsert_inbox_item(
+                    "schedule",
+                    f"스케줄 실패: {workflow}",
+                    body=str(e)[:300],
+                    link="/?view=office",
+                    dedupe_key=f"schedule-fail:{sid}:{datetime.now(UTC).isoformat()}",
+                )
+            except Exception as inbox_err:
+                worker_logger.debug("inbox schedule-fail item failed: %s", str(inbox_err)[:200])
 
 
 def _parse_diff_files(diff_text: str) -> list[dict[str, Any]]:
@@ -1883,6 +2437,22 @@ def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
         if isinstance(run.input, dict):
             task = str(run.input.get("task", ""))[:200]
         send_web_push_text(adapters, f"승인 대기: {run.workflow_key}", task, "/?view=office")
+        # 통합 인박스 — run별 dedupe, 재대기 시 미읽음으로 리셋
+        try:
+            store.upsert_inbox_item(
+                "approval",
+                f"승인 대기: {run.workflow_key}",
+                body=task,
+                link="/?view=office",
+                dedupe_key=f"approval:{run.id}",
+                reset_read=True,
+            )
+        except Exception as e:
+            logger.warning("inbox approval item failed run=%s: %s", run.id, str(e)[:200])
+        try:
+            messenger.notify(f"승인 대기: {run.workflow_key} — {task or run.id}")
+        except Exception:
+            logger.debug("messenger notify failed", exc_info=True)
         logger.info("waiting_approval push sent run=%s", run.id)
 
 
@@ -1996,12 +2566,14 @@ def _automation_loop(
     gmail 폴링 + radar 일일 수집."""
     while not stop.is_set():
         try:
+            _mark_cron_tick()
             _process_pending_messages(store, settings, llm, adapters)
             _process_due_notification_jobs(store, adapters)
             _process_due_schedules(store, settings, llm, adapters)
             _check_waiting_approvals(store, adapters)
             _maybe_poll_gmail(store, settings, adapters)
             _maybe_daily_radar(store, settings, llm, adapters)
+            _maybe_generate_reports(store, settings, adapters)
         except Exception:
             worker_logger.exception("automation loop error")
         stop.wait(settings.worker_interval_seconds)
@@ -2207,6 +2779,58 @@ def _maybe_daily_radar(
     store.set_automation(auto)
     if scheduled:
         logger.info("radar daily collect scheduled: %s", ",".join(scheduled))
+
+
+_REPORT_MAX_AGE = {"daily": timedelta(hours=20), "weekly": timedelta(days=7)}
+
+
+def _report_is_stale(store: Store, kind: str) -> bool:
+    """해당 kind의 최신 저장 리포트가 없거나 최대 주기보다 오래됐으면 True."""
+    rep = store.latest_report(kind)
+    if rep is None or not rep.get("created_at"):
+        return True
+    try:
+        created = datetime.fromisoformat(str(rep["created_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return datetime.now(UTC) - created > _REPORT_MAX_AGE[kind]
+
+
+def _maybe_generate_reports(store: Store, settings: Settings, adapters: dict[str, Any]) -> None:
+    """daily 리포트 20시간/weekly 리포트 7일 주기로 자동 생성.
+    생성 시 reports 테이블 저장 + 인박스 kind='report' + 메신저 알림(best-effort)."""
+    from ..reports import build_report
+
+    for kind in ("daily", "weekly"):
+        try:
+            if not _report_is_stale(store, kind):
+                continue
+            content = build_report(store, kind, settings)
+            rid = store.save_report(kind, content)
+            store.upsert_inbox_item(
+                "report",
+                f"{kind} 리포트 생성됨",
+                body=(
+                    f"runs={content['runs']['total']} failed={content['runs']['failed']} "
+                    f"pending={content['approvals']['pending']}"
+                ),
+                link="/?view=reports",
+                dedupe_key=f"report:{rid}",
+            )
+            store.audit("", "system", "report_auto_generate", rid, {"kind": kind})
+            worker_logger.info("auto report generated id=%s kind=%s", rid, kind)
+            try:
+                messenger.notify(
+                    f"jobMate {kind} 리포트: run {content['runs']['total']}건 "
+                    f"(실패 {content['runs']['failed']}), "
+                    f"승인 대기 {content['approvals']['pending']}"
+                )
+            except Exception:
+                worker_logger.debug("messenger notify after auto report failed", exc_info=True)
+        except Exception as e:
+            worker_logger.warning("auto report %s failed: %s", kind, str(e)[:200])
 
 
 app = create_app()

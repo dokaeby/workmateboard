@@ -5,13 +5,16 @@ self.addEventListener("push", (event) => {
   } catch (e) {
     data = { title: "jobMate", body: event.data ? event.data.text() : "" };
   }
-  event.waitUntil(
-    self.registration.showNotification(data.title || "jobMate", {
-      body: data.body || "",
-      icon: "/static/icon.png",
-      data: { url: data.url || "/" },
-    })
-  );
+  const opts = {
+    body: data.body || "",
+    icon: "/static/icon.png",
+    data: { url: data.url || "/" },
+  };
+  // 앱 아이콘 뱃지 — payload.badge(숫자)가 오면 표시
+  if (data.badge != null && navigator.setAppBadge) {
+    try { navigator.setAppBadge(Number(data.badge) || 0); } catch (e) {}
+  }
+  event.waitUntil(self.registration.showNotification(data.title || "jobMate", opts));
 });
 
 self.addEventListener("notificationclick", (event) => {

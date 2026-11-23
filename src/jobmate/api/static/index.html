@@ -744,6 +744,51 @@
     .sidebar { position: static; }
     .nav { display: flex; gap: 4px; overflow-x: auto; }
   }
+  /* ── 알림 센터 / 비용 / 쿼리 / 리포트 / 위젯 / 상태 ── */
+  .nav-badge {
+    margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 999px; background: var(--err); color: #fff;
+    font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+    flex: none;
+  }
+  .nav-badge[hidden] { display: none; }
+  .inbox-item {
+    display: block; width: 100%; text-align: left; padding: 12px 14px;
+    border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px;
+    background: var(--surface); color: var(--ink); cursor: pointer;
+    font-weight: 500;
+  }
+  .inbox-item:hover { border-color: var(--accent-border); background: var(--surface-hover); }
+  .inbox-item.unread { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+  .inbox-top { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .inbox-title { font-weight: 700; font-size: 14px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .inbox-body { font-size: 13px; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .inbox-kind { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; flex: none; }
+  .inbox-kind.k-notification { color: var(--accent); border: 1px solid var(--accent-border); background: var(--accent-soft); }
+  .inbox-kind.k-session_attention { color: var(--warn); border: 1px solid var(--warn-border); background: var(--warn-soft); }
+  .inbox-kind.k-approval { color: var(--err); border: 1px solid var(--err-border); background: var(--err-soft); }
+  .inbox-kind.k-schedule { color: var(--ok); border: 1px solid var(--ok-border); background: var(--ok-soft); }
+  .inbox-kind.k-report { color: var(--muted); border: 1px solid var(--border); background: var(--surface-hover); }
+  .ask-form { display: flex; gap: 8px; }
+  .ask-form input { flex: 1; min-width: 0; }
+  .usage-nums { display: flex; gap: 28px; flex-wrap: wrap; margin: 6px 0 12px; }
+  .usage-num b { font-size: 22px; font-weight: 800; display: block; font-variant-numeric: tabular-nums; }
+  .usage-num span { font-size: 12px; color: var(--muted); }
+  .rpt-sec { margin-bottom: 10px; }
+  .rpt-sec h4 { margin: 0 0 4px; font-size: 13px; color: var(--muted); font-weight: 700; }
+  .rpt-val { font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .dw-row { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .dw-row:last-child { border-bottom: none; }
+  .dw-row .dw-name { flex: 1; min-width: 0; }
+  .dw-row button { padding: 2px 8px; font-size: 11px; }
+  .dw-row input[type="checkbox"] { accent-color: var(--accent); }
+  .health-warn { color: var(--err); font-weight: 700; }
+  #ios-install-banner {
+    position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 50;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; font-size: 13px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.18);
+  }
 #auth-overlay[hidden] { display: none !important; }
 </style>
 </head>
@@ -763,6 +808,15 @@
   </div>
 </header>
 
+<div id="ios-install-banner" hidden>
+  <div style="display:flex;gap:8px;align-items:flex-start">
+    <span style="flex:1">홈 화면에 추가하면 앱처럼 사용할 수 있고 알림을 받을 수 있습니다.<br>
+      <b>Safari 공유 버튼 → '홈 화면에 추가'</b> (iOS 16.4+)</span>
+    <button class="secondary" id="ios-install-close"
+            style="padding:2px 10px;font-size:12px;flex:none">닫기</button>
+  </div>
+</div>
+
 <div class="app-body">
   <aside class="sidebar">
     <span class="nav-label">메뉴</span>
@@ -772,6 +826,7 @@
       <button class="nav-item" data-view="office"><span class="ico">⬡</span>Agent-Office</button>
       <button class="nav-item" data-view="calendar"><span class="ico">▣</span>Calendar</button>
       <button class="nav-item" data-view="runs"><span class="ico">▶</span>실행 이력</button>
+      <button class="nav-item" data-view="inbox"><span class="ico">🔔</span>알림<span class="nav-badge" id="nav-inbox-badge" hidden></span></button>
     </nav>
   </aside>
 
@@ -1075,6 +1130,50 @@
       </div>
       <div id="detail-body" class="card"><span class="empty">실행을 선택하세요.</span></div>
     </section>
+
+    <!-- 알림 센터 + 쿼리 + 비용 + 리포트 -->
+    <section id="view-inbox" hidden>
+      <div class="page-head">
+        <h1 class="page-title">알림</h1>
+        <p class="page-desc">받은 알림 · 자연어 쿼리 · 비용 요약 · 리포트</p>
+      </div>
+      <div class="card" data-widget="ask">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px">자연어 쿼리
+          <span class="card-meta">예: 오늘 실패한 run 보여줘</span></div>
+        <form class="ask-form" id="ask-form">
+          <input id="ask-input" placeholder="오늘 실패한 run 보여줘" autocomplete="off">
+          <button type="submit" id="ask-btn">질문</button>
+        </form>
+        <div id="ask-answer" style="margin-top:10px"></div>
+      </div>
+      <div class="card" data-widget="inbox" id="inbox-card">
+        <div class="card-top" style="justify-content:space-between">
+          <h3 style="margin:0;font-size:15px">알림함
+            <span class="card-meta" id="inbox-count"></span></h3>
+          <button class="secondary" id="inbox-read-all"
+                  style="padding:4px 10px;font-size:12px">모두 읽음</button>
+        </div>
+        <div id="inbox-list"><div class="empty">로딩…</div></div>
+      </div>
+      <div class="card" data-widget="usage">
+        <h3 style="margin:0 0 8px;font-size:15px">비용 요약
+          <span class="card-meta">최근 30일 · LLM/세션 비용</span></h3>
+        <div id="usage-body"><span class="empty">로딩…</span></div>
+      </div>
+      <div class="card" data-widget="reports">
+        <h3 style="margin:0 0 8px;font-size:15px">일일/주간 리포트</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+          <button class="secondary rpt-btn" data-kind="daily"
+                  style="padding:4px 12px;font-size:12px">일일 리포트</button>
+          <button class="secondary rpt-btn" data-kind="weekly"
+                  style="padding:4px 12px;font-size:12px">주간 리포트</button>
+          <button class="secondary" id="rpt-generate"
+                  style="padding:4px 12px;font-size:12px">생성</button>
+          <span class="card-meta" id="rpt-kind"></span>
+        </div>
+        <div id="rpt-body"><span class="empty">리포트를 불러오려면 버튼을 누르세요</span></div>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -1086,7 +1185,7 @@
   <div id="compare-body" class="table-scroll"><span class="empty">로딩…</span></div>
 </dialog>
 
-<dialog id="settings-dialog" style="width:420px;padding:24px">
+<dialog id="settings-dialog" style="width:min(560px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
     <h2 style="font-size:18px;margin:0">설정</h2>
     <button class="secondary" id="settings-close" style="padding:4px 12px">✕</button>
@@ -1108,6 +1207,28 @@
       <div id="notify-rules-list"></div>
       <button type="button" class="secondary" id="notify-rule-add"
               style="margin-top:6px;padding:4px 10px;font-size:12px">+ 규칙 추가</button>
+    </div>
+    <label style="font-size:13px;font-weight:600">월 예산 (USD)
+      <input id="set-monthly-budget" type="number" min="0" step="0.01"
+             placeholder="미설정"></label>
+    <div style="margin-top:14px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px">대시보드 위젯
+        <span class="card-meta">알림 화면 카드 표시·순서</span></div>
+      <div id="widget-list"></div>
+    </div>
+    <details id="health-details" style="margin-top:14px">
+      <summary>시스템 상태</summary>
+      <div id="health-body" style="margin-top:8px">
+        <span class="card-meta">열면 로드</span></div>
+      <button type="button" class="secondary" id="health-reload"
+              style="margin-top:6px;padding:3px 10px;font-size:12px">새로고침</button>
+    </details>
+    <div id="users-section" hidden style="margin-top:14px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px">사용자</div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>이메일</th><th>역할</th><th>생성일</th></tr></thead>
+        <tbody id="users-body"><tr><td colspan="3" class="empty">로딩…</td></tr></tbody>
+      </table></div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button id="settings-save">저장</button>
@@ -1288,7 +1409,8 @@ const badge = (s) => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 const VIEWS = { gmail: loadGmail,
                 office: () => { officeApplyProvider(); officeRefresh(); loadOffice(); },
                 calendar: loadCalendar,
-                radar: () => window.loadRadar && window.loadRadar(), runs: loadRuns };
+                radar: () => window.loadRadar && window.loadRadar(), runs: loadRuns,
+                inbox: loadInbox };
 const loaded = {};
 document.querySelectorAll(".nav-item").forEach(b =>
   b.addEventListener("click", () => {
@@ -1515,7 +1637,7 @@ async function officeLiveSessionsState() {
   const active = list.filter(s => s.status === "working" || s.status === "decision");
   const now = Date.now();
   const iso = ms => new Date(ms).toISOString();
-  const label = s => `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.project || s.session_key}`;
+  const label = s => `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.title || s.project || s.session_key}`;
   const title = active.length
     ? active.map(label).slice(0, 3).join(", ") + (active.length > 3 ? ` 외 ${active.length - 3}` : "")
     : list.map(label).slice(0, 3).join(", ");
@@ -2349,9 +2471,11 @@ async function jmSessionProvider() {
         _sessionArtifacts(s).join(", ") || s.title || "";
       doing = summ ? `종료: ${summ}` : "종료됨";
     }
+    const keyShort = String(s.session_key || "").split(":").pop().slice(0, 12);
     return {
       id,
-      name: `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.project || s.session_key}`,
+      name: `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.title || s.project || keyShort}`,
+      _keyShort: keyShort,
       status: ended ? "rest"
             : s.status === "decision" ? "decision"
             : s.status === "working" ? "working" : "rest",
@@ -2368,6 +2492,13 @@ async function jmSessionProvider() {
       project: s.project || "",
     };
   });
+  // 동명 세션 구분 — 같은 프로젝트/제목이면 짧은 세션 키를 붙인다
+  const nameCount = {};
+  for (const p of people) nameCount[p.name] = (nameCount[p.name] || 0) + 1;
+  for (const p of people) {
+    if (nameCount[p.name] > 1 && p._keyShort) p.name += ` · ${p._keyShort}`;
+    delete p._keyShort;
+  }
   // 핀 고정 세션을 먼저 — 패널이 mode 순으로 재정렬하므로 여기선 안정 정렬만 보장
   people.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
   const chip = $("#office-pins-chip");
@@ -2568,6 +2699,12 @@ async function jmShowSessionHistory(tool, key) {
           `</li>`;
       }).join("") + "</ol>";
     }
+    // 활동 리플레이 토글 — /agent-sessions/{tool}/{key}/activity (최대 200건)
+    body += `<div style="margin-top:8px">` +
+      `<button type="button" class="secondary sd-replay" ` +
+      `data-tool="${esc(tool)}" data-key="${esc(key)}" ` +
+      `style="padding:2px 10px;font-size:11px">세션 활동 기록</button>` +
+      `<div class="sd-replay-body" hidden></div></div>`;
     box.querySelector(".sd-body").innerHTML = meta + body;
   } catch (e2) {
     const b = box.querySelector(".sd-body");
@@ -2575,8 +2712,24 @@ async function jmShowSessionHistory(tool, key) {
   }
 }
 
-// 상세 패널의 📌 고정/해제 버튼
+// 상세 패널의 📌 고정/해제 버튼 + 활동 리플레이 토글
 $("#jmo-session-detail").addEventListener("click", (ev) => {
+  const rb = ev.target.closest(".sd-replay");
+  if (rb) {
+    const body = rb.parentElement && rb.parentElement.querySelector(".sd-replay-body");
+    if (body) {
+      if (body.hidden) {
+        body.hidden = false;
+        if (!body.dataset.loaded) {
+          body.dataset.loaded = "1";
+          jmLoadSessionActivity(rb.dataset.tool, rb.dataset.key, body);
+        }
+      } else {
+        body.hidden = true;
+      }
+    }
+    return;
+  }
   const b = ev.target.closest(".sd-pin");
   if (!b) return;
   const pid = `${b.dataset.pinTool}:${b.dataset.pinKey}`;
@@ -3896,9 +4049,28 @@ $("#settings-open").addEventListener("click", async () => {
           statuses: _notifyRuleStatuses(r)}))
       : [];
     _renderNotifyRules();
+    $("#set-monthly-budget").value =
+      s.monthly_budget_usd != null ? String(s.monthly_budget_usd) : "";
+    _prefsCache = s;
+    _widgetDraft = _normalizeWidgets(s);
+    _renderWidgetList();
     $("#settings-status").textContent = "";
   } catch (e) { $("#settings-status").textContent = e.message; }
   dlg.showModal();
+  // 관리자만 사용자 섹션 표시 — 비관리자/401/403은 조용히 숨김.
+  // 다이얼로그 오픈을 막지 않도록 백그라운드로 확인하고,
+  // api()의 401→로그인 오버레이 흐름을 타지 않도록 raw fetch 사용.
+  (async () => {
+    try {
+      const r = await fetch(API + "/auth/me", {headers: apiHeaders()});
+      if (!r.ok) { $("#users-section").hidden = true; return; }
+      const me = await r.json();
+      const u = (me && me.user) || me || {};
+      const admin = u.role === "admin";
+      $("#users-section").hidden = !admin;
+      if (admin) loadUsers();
+    } catch (e) { $("#users-section").hidden = true; }
+  })();
 });
 $("#settings-close").addEventListener("click", () => $("#settings-dialog").close());
 $("#settings-dialog").addEventListener("click", (e) => {
@@ -3907,15 +4079,483 @@ $("#settings-dialog").addEventListener("click", (e) => {
 $("#settings-save").addEventListener("click", async () => {
   const st = $("#settings-status");
   st.textContent = "저장합니다…"; st.className = "status-line";
+  const mb = $("#set-monthly-budget").value.trim();
+  const payload = {
+    gmail_check_minutes: Number($("#set-gmail-minutes").value),
+    radar_interval: $("#set-radar-interval").value,
+    notify_rules: _collectNotifyRules(),
+    monthly_budget_usd: mb === "" ? null : Number(mb),
+    dashboard_widgets: _collectWidgetDraft(),
+  };
   try {
     const res = await api("/settings", {method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        gmail_check_minutes: Number($("#set-gmail-minutes").value),
-        radar_interval: $("#set-radar-interval").value,
-        notify_rules: _collectNotifyRules()})});
+      body: JSON.stringify(payload)});
+    _prefsCache = res && typeof res === "object" ? res : payload;
     st.textContent = "저장했습니다";
-  } catch (e) { st.textContent = e.message; st.className = "status-line err"; }
+    applyDashboardWidgets();
+  } catch (e) {
+    // 신규 키(monthly_budget_usd/dashboard_widgets)가 권한 부족으로 거부되면
+    // 기존 키만으로 재시도 — 기존 설정 저장이 깨지지 않게 한다
+    if (/403|권한|forbidden|permission/i.test(String(e.message || ""))) {
+      try {
+        await api("/settings", {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            gmail_check_minutes: payload.gmail_check_minutes,
+            radar_interval: payload.radar_interval,
+            notify_rules: payload.notify_rules})});
+        st.textContent = "저장했습니다 (일부 항목은 권한 없음)";
+        st.className = "status-line";
+        return;
+      } catch (e2) { st.textContent = e2.message; st.className = "status-line err"; return; }
+    }
+    st.textContent = e.message; st.className = "status-line err";
+  }
+});
+
+/* ── 알림 센터 / 비용 요약 / 자연어 쿼리 / 리포트 / 위젯 / 상태 / 사용자 ── */
+// 알림 뷰의 카드 = 대시보드 위젯. prefs.dashboard_widgets=[{id,visible,order}]
+const DASH_WIDGETS = [
+  {id: "ask",     name: "자연어 쿼리"},
+  {id: "inbox",   name: "알림함"},
+  {id: "usage",   name: "비용 요약"},
+  {id: "reports", name: "리포트"},
+];
+let _prefsCache = null;
+let _widgetDraft = [];
+
+async function getPrefs() {
+  if (_prefsCache) return _prefsCache;
+  try { _prefsCache = await api("/settings"); }
+  catch (e) { _prefsCache = {}; }
+  return _prefsCache;
+}
+
+// prefs.dashboard_widgets → [{id,visible,order}] 정규화 (누락 id는 기본 표시)
+function _normalizeWidgets(prefs) {
+  const src = (prefs && Array.isArray(prefs.dashboard_widgets))
+    ? prefs.dashboard_widgets.filter(w => w && w.id) : [];
+  const byId = {};
+  src.forEach(w => { byId[w.id] = w; });
+  const known = DASH_WIDGETS.map(d => d.id);
+  const extra = src.map(w => w.id).filter(id => !known.includes(id));
+  const items = [...known, ...extra].map((id, i) => ({id, i, w: byId[id]}));
+  items.sort((a, b) => {
+    const oa = a.w && typeof a.w.order === "number" ? a.w.order : 900 + a.i;
+    const ob = b.w && typeof b.w.order === "number" ? b.w.order : 900 + b.i;
+    return oa - ob || a.i - b.i;
+  });
+  return items.map((it, i) => ({
+    id: it.id,
+    visible: it.w ? it.w.visible !== false : true,
+    order: i,
+  }));
+}
+
+function _renderWidgetList() {
+  const box = $("#widget-list");
+  if (!box) return;
+  box.innerHTML = _widgetDraft.map((w, i) => {
+    const name = (DASH_WIDGETS.find(d => d.id === w.id) || {}).name || w.id;
+    return `<div class="dw-row" data-i="${i}">` +
+      `<input type="checkbox" class="dw-vis"${w.visible ? " checked" : ""} ` +
+      `title="표시 여부">` +
+      `<span class="dw-name">${esc(name)}</span>` +
+      `<button type="button" class="secondary dw-up"${i === 0 ? " disabled" : ""}>↑</button>` +
+      `<button type="button" class="secondary dw-down"` +
+      `${i === _widgetDraft.length - 1 ? " disabled" : ""}>↓</button>` +
+      `</div>`;
+  }).join("");
+}
+
+$("#widget-list")?.addEventListener("click", (e) => {
+  const row = e.target.closest(".dw-row");
+  if (!row) return;
+  const i = Number(row.dataset.i);
+  const up = e.target.closest(".dw-up"), dn = e.target.closest(".dw-down");
+  if (up && i > 0) {
+    [_widgetDraft[i - 1], _widgetDraft[i]] = [_widgetDraft[i], _widgetDraft[i - 1]];
+    _renderWidgetList();
+  } else if (dn && i < _widgetDraft.length - 1) {
+    [_widgetDraft[i], _widgetDraft[i + 1]] = [_widgetDraft[i + 1], _widgetDraft[i]];
+    _renderWidgetList();
+  }
+});
+$("#widget-list")?.addEventListener("change", (e) => {
+  const row = e.target.closest(".dw-row");
+  if (!row || !e.target.classList.contains("dw-vis")) return;
+  _widgetDraft[Number(row.dataset.i)].visible = e.target.checked;
+});
+
+function _collectWidgetDraft() {
+  return _widgetDraft.map((w, i) => ({id: w.id, visible: w.visible !== false, order: i}));
+}
+
+// 알림 뷰의 data-widget 카드에 visible/order 적용 (DOM 재정렬)
+function applyDashboardWidgets() {
+  const sec = $("#view-inbox");
+  if (!sec) return;
+  const prefs = (_prefsCache && Array.isArray(_prefsCache.dashboard_widgets))
+    ? _prefsCache.dashboard_widgets : [];
+  const norm = _normalizeWidgets({dashboard_widgets: prefs});
+  const rank = {};
+  norm.forEach((w, i) => { rank[w.id] = i; });
+  const cards = [...sec.querySelectorAll("[data-widget]")];
+  cards.sort((a, b) =>
+    (rank[a.dataset.widget] ?? 999) - (rank[b.dataset.widget] ?? 999))
+    .forEach(c => sec.appendChild(c));
+  const byId = {};
+  norm.forEach(w => { byId[w.id] = w; });
+  cards.forEach(c => {
+    const w = byId[c.dataset.widget];
+    c.hidden = w ? !w.visible : false;
+  });
+}
+
+/* ── 알림 목록 ── */
+const INBOX_KIND_LABEL = {
+  notification: "알림", session_attention: "세션 주의",
+  approval: "승인", schedule: "일정", report: "리포트",
+};
+const INBOX_KIND_CLS = {
+  notification: "k-notification", session_attention: "k-session_attention",
+  approval: "k-approval", schedule: "k-schedule", report: "k-report",
+};
+let _inboxLinks = {};
+
+async function loadInboxList() {
+  const el = $("#inbox-list");
+  try {
+    const d = await api("/inbox?limit=50");
+    const items = Array.isArray(d) ? d : (d.items || d.inbox || []);
+    _inboxLinks = {};
+    const unread = items.filter(i => !i.read).length;
+    $("#inbox-count").textContent = unread ? `읽지 않음 ${unread}건` : "";
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">알림이 없습니다</div>';
+      return;
+    }
+    el.innerHTML = items.map(it => {
+      const kind = it.kind || "notification";
+      const when = (it.created_at || "").slice(0, 16).replace("T", " ");
+      _inboxLinks[String(it.id)] = it.link || "";
+      return `<button type="button" class="inbox-item${it.read ? "" : " unread"}" ` +
+        `data-id="${esc(it.id)}">` +
+        `<div class="inbox-top">` +
+        `<span class="inbox-kind ${INBOX_KIND_CLS[kind] || "k-notification"}">` +
+        `${esc(INBOX_KIND_LABEL[kind] || kind)}</span>` +
+        `<span class="inbox-title">${esc(it.title || "(제목 없음)")}</span>` +
+        `<span class="card-meta" style="flex:none">${esc(when)}</span>` +
+        `</div>` +
+        (it.body ? `<div class="inbox-body">${esc(it.body)}</div>` : "") +
+        (it.link ? `<div class="card-meta" style="margin-top:4px">→ ${esc(it.link)}</div>` : "") +
+        `</button>`;
+    }).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+$("#inbox-list")?.addEventListener("click", async (e) => {
+  const b = e.target.closest(".inbox-item");
+  if (!b) return;
+  const id = b.dataset.id;
+  try {
+    await api(`/inbox/${encodeURIComponent(id)}/read`, {method: "POST"});
+  } catch (err) { /* 읽음 처리 실패해도 이동은 허용 */ }
+  b.classList.remove("unread");
+  updateInboxBadge();
+  const link = _inboxLinks[id] || "";
+  if (!link) return;
+  try {
+    const u = new URL(link, location.origin);
+    const v = u.searchParams.get("view");
+    if (v) {
+      const nb = document.querySelector(`.nav-item[data-view="${v}"]`);
+      if (nb) { nb.click(); return; }
+    }
+    if (link !== "/" && !link.startsWith("#")) location.href = link;
+  } catch (err) { /* 잘못된 링크는 무시 */ }
+});
+
+$("#inbox-read-all")?.addEventListener("click", async () => {
+  try {
+    await api("/inbox/read-all", {method: "POST"});
+    loadInboxList();
+    updateInboxBadge();
+  } catch (e) { alert(e.message); }
+});
+
+/* ── 알림 뱃지 (사이드바 + PWA 앱 배지) ── */
+async function updateInboxBadge() {
+  try {
+    const d = await api("/inbox/unread-count");
+    const n = (d && d.count) || 0;
+    const b = $("#nav-inbox-badge");
+    if (b) {
+      b.hidden = n <= 0;
+      b.textContent = n > 99 ? "99+" : String(n);
+    }
+  } catch (e) { /* 엔드포인트 없으면 뱃지 숨김 유지 */ }
+}
+
+async function updateAppBadge() {
+  try {
+    const d = await api("/badge/count");
+    const n = (d && d.count) || 0;
+    if ("setAppBadge" in navigator) {
+      if (n > 0) await navigator.setAppBadge(n);
+      else await navigator.clearAppBadge();
+    }
+  } catch (e) { /* 권한/미지원 환경은 무시 */ }
+}
+
+/* ── 비용 요약 (/usage/summary) ── */
+const usd = v => "$" + (Number(v) || 0)
+  .toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 4});
+
+async function loadUsageSummary() {
+  const el = $("#usage-body");
+  if (!el) return;
+  try {
+    const d = await api("/usage/summary?days=30");
+    const exceeded = d.budget_exceeded;
+    const budgetTxt = d.budget_usd != null ? ` · 예산 ${usd(d.budget_usd)}` : "";
+    const warn = exceeded
+      ? `<div class="office-err-box"><b>월 예산 초과</b> — ` +
+        `예산 ${usd(d.budget_usd)} / 사용 ${usd(d.total_cost_usd)}</div>` : "";
+    const bm = Array.isArray(d.by_model) ? d.by_model : [];
+    const bmRows = bm.map(m =>
+      `<tr><td class="mono">${esc(m.model || "-")}</td>` +
+      `<td>${esc(usd(m.cost_usd))}</td>` +
+      `<td>${esc(Number(m.tokens || 0).toLocaleString())}</td></tr>`).join("");
+    const bd = Array.isArray(d.by_day) ? d.by_day : [];
+    const dMax = Math.max(1, ...bd.map(x => Number(x.cost_usd) || 0));
+    const spark = bd.length
+      ? `<div class="office-spark">` + bd.map(x => {
+          const h = Math.max(4, Math.round((Number(x.cost_usd) || 0) / dMax * 100));
+          return `<div style="height:${h}%" title="${esc(x.date)} · ` +
+            `${usd(x.cost_usd)} · 토큰 ${esc(Number(x.tokens || 0).toLocaleString())}"></div>`;
+        }).join("") + `</div>` +
+        `<div class="card-meta" style="display:flex;justify-content:space-between">` +
+        `<span>${esc(bd[0].date)}</span><span>${esc(bd[bd.length - 1].date)}</span></div>`
+      : "";
+    const ts = Array.isArray(d.top_sessions) ? d.top_sessions : [];
+    const tsRows = ts.slice(0, 8).map(s =>
+      `<div class="office-kv"><span>${esc(s.tool || "-")}</span>` +
+      `<b style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(s.session_key || "-")}</b>` +
+      `<span class="card-meta" style="flex:none">${usd(s.cost_usd)}</span></div>`).join("");
+    el.innerHTML = warn +
+      `<div class="usage-nums">` +
+      `<div class="usage-num"><b>${usd(d.total_cost_usd)}</b><span>총 비용 (30일)${esc(budgetTxt)}</span></div>` +
+      `<div class="usage-num"><b>${esc(Number(d.total_tokens_in || 0).toLocaleString())}</b><span>입력 토큰</span></div>` +
+      `<div class="usage-num"><b>${esc(Number(d.total_tokens_out || 0).toLocaleString())}</b><span>출력 토큰</span></div>` +
+      `</div>` +
+      (bmRows
+        ? `<div class="table-scroll" style="margin-bottom:10px"><table>` +
+          `<thead><tr><th>모델</th><th>비용</th><th>토큰</th></tr></thead>` +
+          `<tbody>${bmRows}</tbody></table></div>` : "") +
+      (spark ? `<div style="font-size:12px;color:var(--muted);margin-bottom:4px">일별 비용</div>` + spark : "") +
+      (tsRows ? `<div style="margin-top:10px;font-size:12px;font-weight:700;color:var(--muted)">비용 상위 세션</div>` + tsRows : "");
+  } catch (e) {
+    el.innerHTML = `<span class="empty">${esc(e.message)}</span>`;
+  }
+}
+
+/* ── 자연어 쿼리 (POST /ask) ── */
+$("#ask-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = ($("#ask-input").value || "").trim();
+  const out = $("#ask-answer");
+  if (!q || !out) return;
+  out.innerHTML = '<span class="card-meta">답변 생성 중…</span>';
+  try {
+    const d = await api("/ask", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({question: q})});
+    out.innerHTML = `<div class="card-body" style="background:var(--surface-hover);` +
+      `border:1px solid var(--border);border-radius:10px;padding:12px">` +
+      `${esc(d.answer || "(빈 응답)")}</div>`;
+  } catch (err) {
+    out.innerHTML = `<div class="card-meta" style="color:var(--err)">${esc(err.message)}</div>`;
+  }
+});
+
+/* ── 리포트 (GET/POST /reports) ── */
+let _rptKind = "daily";
+
+function _renderReportSections(r) {
+  const secs = (r && r.sections) || {};
+  const keys = Object.keys(secs);
+  if (!keys.length) return '<span class="empty">리포트 섹션이 없습니다</span>';
+  return `<div class="rpt-sections">` + keys.map(k => {
+    const v = secs[k];
+    let inner;
+    if (Array.isArray(v)) {
+      inner = v.length
+        ? `<ul style="margin:0;padding-left:18px">` + v.map(x =>
+            `<li>${esc(typeof x === "object" ? JSON.stringify(x) : x)}</li>`).join("") +
+          `</ul>`
+        : '<span class="card-meta">항목 없음</span>';
+    } else if (v && typeof v === "object") {
+      inner = `<pre class="block">${esc(JSON.stringify(v, null, 2).slice(0, 4000))}</pre>`;
+    } else {
+      inner = `<div class="rpt-val">${esc(v ?? "-")}</div>`;
+    }
+    return `<div class="rpt-sec"><h4>${esc(k)}</h4>${inner}</div>`;
+  }).join("") + `</div>`;
+}
+
+async function loadReport() {
+  const out = $("#rpt-body");
+  if (!out) return;
+  out.innerHTML = '<span class="card-meta">로딩…</span>';
+  try {
+    const d = await api("/reports?kind=" + encodeURIComponent(_rptKind));
+    const r = Array.isArray(d) ? d[0] : d;
+    if (!r || typeof r !== "object") {
+      out.innerHTML = '<span class="empty">생성된 리포트가 없습니다 — \'생성\' 버튼을 누르세요</span>';
+      $("#rpt-kind").textContent = "";
+      return;
+    }
+    $("#rpt-kind").textContent =
+      r.generated_at ? `생성: ${officeFmtTs(r.generated_at)}` : "";
+    out.innerHTML = _renderReportSections(r);
+  } catch (e) {
+    out.innerHTML = `<span class="card-meta" style="color:var(--err)">` +
+      `${esc(e.message)} — '생성' 버튼으로 만들어보세요</span>`;
+    $("#rpt-kind").textContent = "";
+  }
+}
+
+document.querySelectorAll(".rpt-btn")?.forEach(b =>
+  b.addEventListener("click", () => {
+    _rptKind = b.dataset.kind || "daily";
+    loadReport();
+  }));
+$("#rpt-generate")?.addEventListener("click", async () => {
+  const out = $("#rpt-body");
+  if (out) out.innerHTML = '<span class="card-meta">리포트 생성 중… (시간이 걸릴 수 있습니다)</span>';
+  try {
+    await api("/reports/generate", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({kind: _rptKind})});
+    await loadReport();
+  } catch (e) {
+    if (out) out.innerHTML = `<span class="card-meta" style="color:var(--err)">${esc(e.message)}</span>`;
+  }
+});
+
+/* ── 세션 활동 기록 (GET /agent-sessions/{tool}/{key}/activity) ── */
+async function jmLoadSessionActivity(tool, key, body) {
+  if (!body) return;
+  body.innerHTML = '<span class="card-meta">로딩…</span>';
+  try {
+    const d = await api(
+      `/agent-sessions/${encodeURIComponent(tool)}` +
+      `/${encodeURIComponent(key)}/activity?limit=200`);
+    const arr = Array.isArray(d) ? d : (d.activity || d.events || []);
+    if (!arr.length) {
+      body.innerHTML = '<span class="card-meta">활동 기록 없음</span>';
+      return;
+    }
+    body.innerHTML = `<ol class="jmo-timeline">` + arr.slice().reverse().map(a => {
+      const when = (a.at || a.created_at || "").slice(5, 16).replace("T", " ");
+      const st = String(a.status || "");
+      const cls = ["working", "decision", "rest", "ended"].includes(st) ? st : "rest";
+      const what = [a.doing, a.project].filter(Boolean).join(" — ");
+      return `<li class="tl-${cls}">` +
+        `<span class="sd-time">${esc(when)}</span> ` +
+        (st ? `<span class="tl-trans">${esc(st)}</span> ` : "") +
+        (what ? `<span class="tl-text">${esc(what)}</span>` : "") +
+        `</li>`;
+    }).join("") + `</ol>`;
+  } catch (e) {
+    body.innerHTML = `<span class="card-meta">${esc(e.message)}</span>`;
+  }
+}
+
+/* ── 시스템 상태 (GET /health/detail, 설정 다이얼로그) ── */
+$("#health-details")?.addEventListener("toggle", (e) => {
+  if (e.target.open) loadHealthDetail();
+});
+$("#health-reload")?.addEventListener("click", loadHealthDetail);
+
+async function loadHealthDetail() {
+  const el = $("#health-body");
+  if (!el) return;
+  el.innerHTML = '<span class="card-meta">로딩…</span>';
+  try {
+    const h = await api("/health/detail");
+    const apiUptime = h.api && h.api.uptime_s != null
+      ? officeFmtSecs(h.api.uptime_s) : "-";
+    const db = h.db || {};
+    const dbTxt = Object.keys(db).length
+      ? JSON.stringify(db).slice(0, 300) : "-";
+    const bridge = h.bridge || {};
+    const lastPush = bridge.last_push_at || "";
+    const pushAge = Date.parse(lastPush);
+    const stale = !isNaN(pushAge) && (Date.now() - pushAge) > 10 * 60 * 1000;
+    const machines = Array.isArray(bridge.machines) ? bridge.machines : [];
+    const mrows = machines.map(m =>
+      `<div class="office-kv"><span>${esc(m.machine || "-")}</span>` +
+      `<b>${esc(officeFmtTs(m.last_push_at))} · 세션 ${esc(m.sessions ?? 0)}</b></div>`).join("");
+    const cron = h.cron || {};
+    el.innerHTML =
+      officeKv("API 가동시간", apiUptime) +
+      officeKv("DB", dbTxt) +
+      `<div class="office-kv"><span>브리지 마지막 push</span>` +
+      `<b>${esc(officeFmtTs(lastPush))}` +
+      (stale ? ' <span class="health-warn">10분 이상 지연</span>' : "") +
+      `</b></div>` +
+      (mrows || `<div class="office-kv"><span>머신</span><b>-</b></div>`) +
+      officeKv("크론 마지막 틱", officeFmtTs(cron.last_tick_at));
+  } catch (e) {
+    el.innerHTML = `<span class="card-meta" style="color:var(--err)">${esc(e.message)}</span>`;
+  }
+}
+
+/* ── 사용자 관리 (admin only, GET /users) ── */
+async function loadUsers() {
+  const tb = $("#users-body");
+  if (!tb) return;
+  try {
+    const d = await api("/users");
+    const arr = Array.isArray(d) ? d : (d.users || []);
+    tb.innerHTML = arr.length ? arr.map(u =>
+      `<tr><td>${esc(u.email || "-")}</td>` +
+      `<td>${esc(u.role || "-")}</td>` +
+      `<td class="card-meta">${esc((u.created_at || "").slice(0, 10))}</td></tr>`).join("")
+      : '<tr><td colspan="3" class="empty">사용자 없음</td></tr>';
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="3" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+/* ── 알림 뷰 로더 ── */
+async function loadInbox() {
+  updateInboxBadge();
+  updateAppBadge();
+  loadInboxList();
+  loadUsageSummary();
+  loadReport();
+  getPrefs().then(applyDashboardWidgets).catch(() => {});
+}
+
+/* ── iOS '홈 화면에 추가' 안내 배너 ── */
+(() => {
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const standalone = window.matchMedia("(display-mode: standalone)").matches
+    || window.navigator.standalone === true;
+  if (isIOS && !standalone && !localStorage.getItem("jobmate.iosInstallDismissed")) {
+    $("#ios-install-banner").hidden = false;
+  }
+})();
+$("#ios-install-close")?.addEventListener("click", () => {
+  localStorage.setItem("jobmate.iosInstallDismissed", "1");
+  $("#ios-install-banner").hidden = true;
 });
 
 /* ── Web Push ── */
@@ -3976,6 +4616,11 @@ VIEWS.radar();
 setInterval(() => { if (!document.getElementById("view-gmail").hidden) loadGmail(); }, 10000);
 setInterval(() => { if (!document.getElementById("view-office").hidden) loadOffice(); }, 3000);
 setInterval(refreshRuns, 5000);
+// 알림/앱 뱃지 폴링 — 엔드포인트가 없으면 조용히 실패
+updateInboxBadge();
+updateAppBadge();
+setInterval(updateInboxBadge, 30000);
+setInterval(updateAppBadge, 30000);
 </script>
 </body>
 </html>

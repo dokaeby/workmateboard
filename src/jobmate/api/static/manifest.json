@@ -1,6 +1,7 @@
 {
   "name": "jobMate",
   "short_name": "jobMate",
+  "id": "/",
   "description": "Gmail 요약, Skill Radar, 자동화 대시보드",
   "start_url": "/",
   "scope": "/",
