@@ -626,12 +626,12 @@
             <button class="office-mode-btn office-tool-btn" data-office-tool="gemini" aria-pressed="false">Gemini</button>
             <button class="office-mode-btn office-tool-btn" data-office-tool="devin" aria-pressed="false">Devin</button>
             <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="false">전체</button>
-            <button class="office-mode-btn" id="office-demo-btn" aria-pressed="true">데모</button>
           </div>
           <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
             <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
             <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
           </div>
+          <button class="office-mode-btn" id="office-demo-btn" aria-pressed="true">데모</button>
         </div>
       </div>
       <div class="office-status" id="office-chips">
@@ -1147,6 +1147,75 @@ function renderOfficeEmpty() {
   $("#office-progress").textContent = "-";
 }
 
+// ── 데모 run — dev_review가 없어도 보드가 계속 돌아가게 가짜 실행을 합성 ──
+// 8초마다 단계가 하나씩 succeeded로 진행되고, approval까지 끝나면 completed로
+// 잠시 보이다가 처음부터 반복한다. 실제 run이 있으면 절대 호출되지 않는다.
+let _demoRunStart = 0;
+const DEMO_STAGE_SEC = 8, DEMO_DONE_SEC = 10;
+
+function officeDemoRunState() {
+  if (!_demoRunStart) _demoRunStart = Date.now();
+  const keys = OFFICE_STAGES.map(s => s.key);
+  const cycle = keys.length * DEMO_STAGE_SEC + DEMO_DONE_SEC;
+  const elapsed = (Date.now() - _demoRunStart) / 1000;
+  if (elapsed >= cycle) { _demoRunStart = Date.now(); return officeDemoRunState(); }
+  const idx = Math.floor(elapsed / DEMO_STAGE_SEC);
+  const done = elapsed >= keys.length * DEMO_STAGE_SEC;
+  const iso = ms => new Date(ms).toISOString();
+  const stageRuns = keys.map((key, i) => {
+    const status = done || i < idx ? "succeeded" : i === idx ? "running" : "pending";
+    const started = _demoRunStart + i * DEMO_STAGE_SEC * 1000;
+    return {
+      stage_key: key, status, attempt: 1, model: "demo",
+      tokens_in: status === "pending" ? 0 : 800 + i * 120,
+      tokens_out: status === "pending" ? 0 : 300 + i * 60,
+      started_at: status === "pending" ? null : iso(started),
+      finished_at: status === "succeeded" ? iso(started + DEMO_STAGE_SEC * 1000) : null,
+      input: { demo: true, stage: key },
+      output: status === "pending" ? {} : { demo: `${key} 완료 (가상)` },
+      error: "",
+    };
+  });
+  const audit = stageRuns
+    .filter(s => s.status !== "pending")
+    .map((s, i) => ({
+      id: `demo-audit-${i}`, actor: "demo", action: "stage_" + s.status,
+      object_ref: s.stage_key, detail: { demo: true },
+      created_at: s.finished_at || s.started_at,
+    }));
+  audit.push({
+    id: "demo-audit-start", actor: "demo", action: "run_started",
+    object_ref: "", detail: { demo: true }, created_at: iso(_demoRunStart),
+  });
+  audit.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  return {
+    run: {
+      id: "demo-run", workflow: "dev_review", version: 1,
+      status: done ? "completed" : "running",
+      created_at: iso(_demoRunStart), updated_at: iso(Date.now()),
+      input: { task: "(demo) dev_review 파이프라인 시연" },
+      approvals: [], audit, error: "",
+    },
+    stageRuns,
+  };
+}
+
+function officeRenderDemoRun() {
+  const { run, stageRuns } = officeDemoRunState();
+  officeState.run = run;
+  officeState.stages.clear();
+  for (const s of stageRuns) {
+    const cur = officeState.stages.get(s.stage_key);
+    if (!cur || (s.attempt || 1) > (cur.attempt || 1)) officeState.stages.set(s.stage_key, s);
+  }
+  officeState.stageRuns = stageRuns;
+  if (!officeState.selected) officeState.selected = {type: "orch"};
+  officeRenderHeader(run);
+  officeRenderStage();
+  officeRenderDetail();
+  officeRenderLog();
+}
+
 // run 선택: 진행 중 상태 우선(최신 created_at), 없으면 전체 최신 created_at
 function officePickRun(runs) {
   const dr = (runs || []).filter(r => r.workflow === "dev_review");
@@ -1462,7 +1531,11 @@ async function loadOffice() {
     // 밀어내 dev_review run을 놓치는 것을 방지한다
     const runs = await api("/runs?workflow=dev_review&limit=50");
     const summary = officePickRun(runs);
-    if (!summary) { renderOfficeEmpty(); return; }
+    if (!summary) {
+      // 데모 ON이면 가상 dev_review run을 합성해 보드를 계속 돌린다
+      if (officeDemo) officeRenderDemoRun(); else renderOfficeEmpty();
+      return;
+    }
     const detail = await api(`/runs/${summary.id}`);
     officeState.run = detail;
     officeState.stages.clear();
@@ -1742,6 +1815,7 @@ _demoBtn.addEventListener("click", () => {
   localStorage.setItem("jobmate.officeDemo", officeDemo ? "1" : "0");
   _demoBtn.setAttribute("aria-pressed", String(officeDemo));
   officeApplyProvider();
+  loadOffice();   // 워크플로 보드의 데모 run도 즉시 갱신
 });
 
 /* ── Calendar ── */
