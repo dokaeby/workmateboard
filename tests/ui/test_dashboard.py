@@ -318,16 +318,7 @@ def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: Simpl
     page.click('.nav-item[data-view="office"]')
     page.click('.office-tab-btn[data-office-tab="sessions"]')
     page.wait_for_selector("#jmo-canvas", state="visible", timeout=15000)
-    # 기본 필터는 codex — claude 세션은 표시되지 않는다
-    page.wait_for_function(
-        "window.officeDebug && window.officeDebug().length === 1",
-        timeout=15000,
-    )
-    people = page.evaluate("window.officeDebug()")
-    assert {p["id"] for p in people} == {"codex:ui-session-2"}
-    assert people[0]["status"] == "decision"
-    # '전체' 선택 시 두 세션 모두 표시
-    page.click('.office-tool-btn[data-office-tool="all"]')
+    # 기본 필터는 all — 두 세션 모두 표시된다
     page.wait_for_function(
         "window.officeDebug && window.officeDebug().length === 2",
         timeout=15000,
@@ -338,6 +329,17 @@ def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: Simpl
     statuses = {p["id"]: p["status"] for p in people}
     assert statuses["claude:ui-session-1"] == "working"
     assert statuses["codex:ui-session-2"] == "decision"
+    # 'codex' 선택 시 claude 세션은 숨겨진다.
+    # 사이드 패널(#jmo-people)은 provider 데이터를 바로 반영하지만,
+    # officeDebug의 스프라이트는 퇴장 연출(걸어 나가기+페이드) 동안 남아 있으므로
+    # 패널 목록으로 검증한다.
+    page.click('.office-tool-btn[data-office-tool="codex"]')
+    page.wait_for_function(
+        "document.querySelectorAll('#jmo-people li.o-person').length === 1",
+        timeout=15000,
+    )
+    ids = page.eval_on_selector_all("#jmo-people li.o-person", "els => els.map(e => e.dataset.id)")
+    assert ids == ["codex:ui-session-2"]
     # 워크플로 탭으로 복귀하면 기존 보드가 보인다
     page.click('.office-tab-btn[data-office-tab="workflow"]')
     page.wait_for_selector("#office-stage", state="visible", timeout=5000)
