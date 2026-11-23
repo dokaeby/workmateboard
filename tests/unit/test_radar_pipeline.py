@@ -127,27 +127,23 @@ def test_summarize_repo_ok_and_failed():
     assert summ2 is None and status2 == "failed"
 
 
-def test_translate_lines_ko_google_and_fallback(monkeypatch):
+def test_translate_lines_ko_and_fallback(monkeypatch):
     import jobmate.radar.pipeline as pl
 
     monkeypatch.setattr(pl, "_TRANSLATE_INTERVAL", 0)
-    monkeypatch.setattr(pl, "_google_broken", False)
-    monkeypatch.setattr(pl, "_tr_google", lambda t: "번역1\n번역2\n번역3")
-    monkeypatch.setattr(pl, "_tr_mymemory", lambda t: t)
+    monkeypatch.setattr(pl, "_tr_mymemory", lambda t: "번역1\n번역2\n번역3")
     out = pl.translate_lines_ko(["a", "b", "c"])
     assert out == ["번역1", "번역2", "번역3"]
 
-    # Google 실패 → MyMemory 폴백
+    # 번역 실패 → 원문 보존
     def boom(t):
         raise RuntimeError("google down")
 
-    monkeypatch.setattr(pl, "_tr_google", boom)
-    monkeypatch.setattr(pl, "_google_broken", False)
     monkeypatch.setattr(pl, "_tr_mymemory", lambda t: "대체번역")
     out2 = pl.translate_lines_ko(["x"])
     assert out2 == ["대체번역"]
 
-    # 양쪽 실패 → 원문
+    # 서비스 실패 → 원문
     monkeypatch.setattr(pl, "_tr_mymemory", boom)
     out3 = pl.translate_lines_ko(["y"])
     assert out3 == ["y"]
@@ -157,10 +153,32 @@ def test_fallback_summaries_translated(monkeypatch):
     import jobmate.radar.pipeline as pl
 
     monkeypatch.setattr(pl, "_TRANSLATE_INTERVAL", 0)
-    monkeypatch.setattr(pl, "_google_broken", False)
-    monkeypatch.setattr(pl, "_tr_google", lambda t: "번역")
+    monkeypatch.setattr(pl, "_tr_mymemory", lambda t: "번역")
     fb = pl.fallback_summaries_translated("desc", "o/r")
     assert fb["ko"] == ["번역"] * 3 or fb["ko"][0] == "번역"
+
+
+def test_mymemory_uses_bounded_http_without_translation_dependency(monkeypatch):
+    import sys
+
+    import httpx
+
+    import jobmate.radar.pipeline as pl
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return httpx.Response(
+            200,
+            json={"responseStatus": 200, "responseData": {"translatedText": "안녕"}},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setitem(sys.modules, "deep_translator", None)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    assert pl._tr_mymemory("hello") == "안녕"
+    assert calls[0][1]["timeout"] == 10
 
 
 def test_metrics_dict_derived():

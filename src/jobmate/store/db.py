@@ -603,7 +603,10 @@ class Store:
         else:
             self._path = Path(path)
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+            # CPython #118172: shared statement caches can mix concurrent query results.
+            self._conn = sqlite3.connect(
+                str(self._path), check_same_thread=False, cached_statements=0
+            )
             self._conn.row_factory = sqlite3.Row
             with self._conn:
                 self._conn.executescript(SCHEMA)

@@ -347,12 +347,13 @@ def create_app(
 
     def _session_user(request: Request) -> dict[str, Any] | None:
         """세션 쿠키 → 유효 사용자. 만료/무효 시 None."""
-        from ..security import SESSION_COOKIE, hash_token
+        from ..security import SESSION_COOKIE, email_allowed, hash_token
 
         token = request.cookies.get(SESSION_COOKIE, "")
         if not token:
             return None
-        return store.get_session_user(hash_token(token))
+        user = store.get_session_user(hash_token(token))
+        return user if user and email_allowed(user["email"]) else None
 
     @app.get("/")
     def index() -> HTMLResponse:
@@ -608,12 +609,20 @@ def create_app(
     def cron_tick(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
         """서버리스 환경용 1회 자동화 사이클 (Vercel Cron 등에서 호출)."""
         secret = os.environ.get("CRON_SECRET") or os.environ.get("JOBMATE_CRON_SECRET", "")
+        from ..security import api_key, authorized
+
+        # Vercel Cron requires its dedicated secret; other hosts also accept a machine key.
         if os.environ.get("VERCEL"):
-            # Vercel Cron은 CRON_SECRET env가 있으면 Bearer를 자동 부착.
-            # 서버리스에서는 secret 미설정 시에도 외부 호출을 허용하지 않는다.
-            if not secret or request.headers.get("authorization") != f"Bearer {secret}":
-                logger.warning("cron tick rejected: invalid secret")
-                return err(401, "unauthorized", "invalid cron secret", request)
+            valid = bool(secret) and request.headers.get("authorization") == f"Bearer {secret}"
+        else:
+            valid = (
+                (bool(secret) and request.headers.get("authorization") == f"Bearer {secret}")
+                or (not secret and authorized(request))
+                or (bool(api_key()) and authorized(request))
+            )
+        if not valid:
+            logger.warning("cron tick rejected: invalid credentials")
+            return err(401, "unauthorized", "invalid cron credentials", request)
         _process_pending_messages(store, settings, llm, adapters)
         _process_due_notification_jobs(store, adapters)
         _maybe_poll_gmail(store, settings, adapters)
@@ -1160,12 +1169,15 @@ def create_app(
         return {"public_key": os.environ.get("VAPID_PUBLIC_KEY", "")}
 
     @app.post("/api/v1/push/subscribe")
-    def push_subscribe(body: dict[str, Any]) -> dict[str, str]:
+    def push_subscribe(body: dict[str, Any], request: Request) -> Any:
+        from ..adapters.push import valid_push_subscription
+
         endpoint = body.get("endpoint", "")
         keys = body.get("keys") or {}
-        if endpoint:
-            store.save_push_subscription(endpoint, keys)
-            logger.info("push subscribed: sub=%s", _endpoint_fp(endpoint))
+        if not valid_push_subscription(endpoint, keys):
+            return err(422, "invalid_subscription", "invalid push subscription", request)
+        store.save_push_subscription(endpoint, keys)
+        logger.info("push subscribed: sub=%s", _endpoint_fp(endpoint))
         return {"status": "subscribed"}
 
     @app.post("/api/v1/push/unsubscribe")
@@ -1198,6 +1210,9 @@ def create_app(
         OAUTH_STATE_COOKIE,
         SESSION_COOKIE,
         SESSION_TTL_DAYS,
+        allowed_emails,
+        api_key,
+        authorized,
         email_allowed,
         hash_password,
         hash_token,
@@ -1248,6 +1263,11 @@ def create_app(
 
     @app.post("/api/v1/auth/signup")
     def auth_signup(body: dict[str, Any], request: Request) -> JSONResponse:
+        # Password signup cannot prove ownership of an allowlisted email address.
+        if api_key() or allowed_emails() or os.environ.get("VERCEL"):
+            if not api_key() or not authorized(request):
+                logger.warning("signup rejected: administrator API key required")
+                return err(403, "signup_restricted", "관리자 API 키가 필요합니다", request)
         email = str(body.get("email", "")).strip().lower()
         password = str(body.get("password", ""))
         name = str(body.get("display_name", "")).strip()[:80]
@@ -1392,12 +1412,20 @@ def create_app(
         name = str(info.get("name", "")).strip()[:80]
         if not gsub or not _EMAIL_RE.match(email):
             return back("google_no_email")
+        if info.get("email_verified") is not True:
+            logger.warning("google login rejected: unverified email")
+            return back("google_unverified_email")
+        if (api_key() or os.environ.get("VERCEL")) and not allowed_emails():
+            logger.warning("google login rejected: allowed emails not configured")
+            return back("email_not_allowed")
         if not email_allowed(email):
             logger.warning("google login denied (not allowed): %s", email)
             return back("email_not_allowed")
         user = store.get_user_by_google_sub(gsub)
         if user is None:
             user = store.get_user_by_email(email)
+            if user is not None and user.get("google_sub") not in ("", gsub):
+                return back("google_account_mismatch")
             if user is not None and not user.get("google_sub"):
                 store.link_google_sub(user["id"], gsub)
         if user is None:

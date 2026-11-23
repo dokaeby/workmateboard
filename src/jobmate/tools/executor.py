@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("jobmate.tools")
@@ -28,14 +29,14 @@ class ToolExecutor:
     def _default_tools(repo_root: str | None) -> dict[str, Callable[..., Any]]:
         import os
 
-        root = repo_root or os.getcwd()
+        root = Path(repo_root or os.getcwd()).resolve()
 
         def read_file(path: str) -> str:
-            p = os.path.normpath(os.path.join(root, path))
-            if not p.startswith(os.path.abspath(root)):
+            p = (root / path).resolve()
+            if not p.is_relative_to(root):
                 raise ToolDeniedError("path outside repo")
             with open(p, encoding="utf-8", errors="replace") as f:
-                return f.read()[: ToolExecutor.MAX_RESULT_CHARS]
+                return f.read(ToolExecutor.MAX_RESULT_CHARS)
 
         def run_tests(command: str = "pytest -q") -> dict[str, Any]:
             proc = subprocess.run(  # noqa: S603

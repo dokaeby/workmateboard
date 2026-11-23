@@ -13,6 +13,7 @@ import math
 import re
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, ValidationError
 
 from ..llm.client import LLMClient
@@ -182,46 +183,33 @@ def fallback_summaries(description: str | None, full_name: str) -> dict[str, lis
 
 # --- ko 번역 폴백 (summarizer.py translate_lines_ko 포팅, 동기) ---
 
-_TRANSLATE_INTERVAL = 1.1  # Google 무료 번역 한도(초당 ~5회)보다 충분히 낮게
-_google_broken = False  # 연속 실패 시 Google을 건너뛰는 서킷 브레이커
-
-
-def _tr_google(text: str) -> str:
-    from deep_translator import GoogleTranslator
-
-    return GoogleTranslator(source="auto", target="ko").translate(text)
+_TRANSLATE_INTERVAL = 1.1
 
 
 def _tr_mymemory(text: str) -> str:
-    from deep_translator import MyMemoryTranslator
-
-    result = MyMemoryTranslator(source="en-US", target="ko-KR").translate(text)
-    return result if isinstance(result, str) else " ".join(result)
+    response = httpx.get(
+        "https://api.mymemory.translated.net/get",
+        params={"q": text, "langpair": "en|ko"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    result = data.get("responseData", {}).get("translatedText")
+    if data.get("responseStatus") != 200 or not isinstance(result, str) or not result.strip():
+        raise ValueError("translation unavailable")
+    return result
 
 
 def translate_lines_ko(lines: list[str]) -> list[str]:
-    """en 라인을 ko로 번역. Google 우선 → MyMemory 폴백 → 최종 실패 시 원문.
+    """en 라인을 MyMemory로 번역하고 실패 시 원문을 보존한다.
 
     skillRadar의 비동기 버전(세마포어+interval)을 동기 호출로 단순화했다.
     """
-    global _google_broken
     import time
 
     if not lines:
         return lines
     joined = "\n".join(lines)
-    if not _google_broken:
-        try:
-            time.sleep(_TRANSLATE_INTERVAL)
-            out = _tr_google(joined)
-            _google_broken = False
-            parts = [p.strip() for p in out.split("\n") if p.strip()]
-            if len(parts) == len(lines):
-                return parts
-            return [translate_lines_ko([line])[0] for line in lines]
-        except Exception as exc:  # noqa: BLE001 - 번역 실패가 수집을 막으면 안 됨
-            _google_broken = True
-            logger.info("Google 번역 실패, MyMemory 폴백 시도: %s", str(exc)[:120])
     try:
         time.sleep(_TRANSLATE_INTERVAL)
         out = _tr_mymemory(joined)
@@ -230,7 +218,7 @@ def translate_lines_ko(lines: list[str]) -> list[str]:
             return parts
         return [_tr_mymemory(line) for line in lines]
     except Exception as exc:  # noqa: BLE001
-        logger.info("한국어 번역 폴백 실패, 원문 사용: %s", str(exc)[:120])
+        logger.warning("한국어 번역 폴백 실패, 원문 사용: %s", type(exc).__name__)
         return list(lines)
 
 

@@ -19,7 +19,7 @@ class FakeStore:
         self._subs = [s for s in self._subs if s["endpoint"] != endpoint]
 
 
-SUB = {"endpoint": "https://push.example.com/1", "keys": {"p256dh": "pk", "auth": "ak"}}
+SUB = {"endpoint": "https://fcm.googleapis.com/1", "keys": {"p256dh": "pk", "auth": "ak"}}
 
 
 def _patch_webpush(monkeypatch, calls, exc=None):
@@ -34,7 +34,7 @@ def _patch_webpush(monkeypatch, calls, exc=None):
 def test_send_to_all_subscriptions(monkeypatch):
     calls = []
     _patch_webpush(monkeypatch, calls)
-    store = FakeStore([SUB, dict(SUB, endpoint="https://push.example.com/2")])
+    store = FakeStore([SUB, dict(SUB, endpoint="https://fcm.googleapis.com/2")])
     WebPushNotifier(store, private_key="priv").send(
         title="일정 등록: 회의", body="2026-01-05T15:00:00+09:00", source_url="https://mail"
     )

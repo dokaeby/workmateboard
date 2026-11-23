@@ -35,7 +35,7 @@ def test_release_mode_hides_debug() -> None:
 def test_push_failure_does_not_log_endpoint(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path
 ) -> None:
-    endpoint = "https://push.example.com/send/SECRET-TOKEN-123"
+    endpoint = "https://fcm.googleapis.com/send/SECRET-TOKEN-123"
 
     class _Store:
         def list_push_subscriptions(self):
@@ -45,7 +45,7 @@ def test_push_failure_does_not_log_endpoint(
             pass
 
     def _boom(**kwargs):
-        raise RuntimeError("network down")
+        raise RuntimeError(f"network down: {endpoint}")
 
     monkeypatch.setattr("jobmate.adapters.push.webpush", _boom)
     n = WebPushNotifier(_Store(), private_key="vapid-key")

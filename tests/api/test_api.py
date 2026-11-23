@@ -370,7 +370,8 @@ def test_token_path_for_env_json(monkeypatch, tmp_path):
     import os
     import stat
 
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    if os.name != "nt":  # Windows chmod does not implement POSIX permission bits.
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     # 잘못된 JSON이면 None
     monkeypatch.setenv("JOBMATE_CALENDAR_TOKEN_JSON", "{bad")
     assert _token_path_for("calendar", settings) is None
@@ -394,6 +395,7 @@ def test_cron_tick_vercel_requires_secret(monkeypatch):
 def test_radar_refresh_serverless_runs_via_background_tasks(monkeypatch):
     """VERCEL 환경: refresh가 BackgroundTasks로 run을 끝까지 실행해 waiting_approval 도달."""
     monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("JOBMATE_API_KEY", "serverless-test-key")
     from jobmate.adapters.fakes import FakeGitHub
     from jobmate.models import RadarClassification, RadarVerify
 
@@ -435,6 +437,7 @@ def test_radar_refresh_serverless_runs_via_background_tasks(monkeypatch):
         settings=settings, store=store, llm=llm, adapters={"github": gh, "notifier": None}
     )
     client = TestClient(app)
+    client.headers["X-API-Key"] = "serverless-test-key"
     r = client.post("/api/v1/radar/refresh", json={"platforms": ["claude"], "force": True})
     assert r.status_code == 202
     run_id = r.json()["run_ids"][0]

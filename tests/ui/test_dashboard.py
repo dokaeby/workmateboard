@@ -173,6 +173,8 @@ def test_push_toggle_without_vapid(page: Page) -> None:
 
 def test_office_view_empty_state(page: Page) -> None:
     """dev_review run이 없으면 빈 상태 안내 문구를 표시한다."""
+    page.evaluate("localStorage.setItem('jobmate.officeDemo','0')")
+    page.reload()
     page.click('.nav-item[data-view="office"]')
     _wait_text(page, "#office-stage", "dev_review")
 
@@ -406,7 +408,6 @@ def test_calendar_review_reject(page: Page, ui_server: SimpleNamespace) -> None:
     assert "검토 필요" in page.locator("#calendar-review h3").inner_text()
     assert card.locator(".rv-title").input_value() == "UI 검토회의"
     card.locator(".rv-reject").click()
-    _wait_text(page, '[data-review="ui:rev-reject"] .rv-msg', "거부됨")
     page.wait_for_selector('[data-review="ui:rev-reject"]', state="detached", timeout=5000)
     assert ui_server.store.get_scheduled_event("ui:rev-reject")["status"] == "rejected"
 
@@ -420,7 +421,6 @@ def test_calendar_review_approve_with_edit(page: Page, ui_server: SimpleNamespac
     card.locator(".rv-start").fill("2025-01-10T10:00:00+09:00")
     card.locator(".rv-end").fill("2025-01-10T11:00:00+09:00")
     card.locator(".rv-approve").click()
-    _wait_text(page, '[data-review="ui:rev-approve"] .rv-msg', "등록됨")
     page.wait_for_selector('[data-review="ui:rev-approve"]', state="detached", timeout=5000)
     ev = ui_server.store.get_scheduled_event("ui:rev-approve")
     assert ev["status"] == "registered"

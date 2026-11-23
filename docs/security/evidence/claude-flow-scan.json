@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-11-23T02:29:00.183Z",
+  "target": "C:\\Users\\Playdata\\aio4\\workmateboard",
+  "depth": "deep",
+  "type": "all",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "total": 0
+  },
+  "incomplete": true,
+  "skipped": {
+    "deps": "No package.json found in the scan target; dependency scan could not run."
+  },
+  "findings": []
+}

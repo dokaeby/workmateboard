@@ -1,0 +1,131 @@
+{
+  "metrics": {
+    "CONFIDENCE.HIGH": 9,
+    "CONFIDENCE.LOW": 0,
+    "CONFIDENCE.MEDIUM": 10,
+    "CONFIDENCE.UNDEFINED": 0,
+    "SEVERITY.HIGH": 0,
+    "SEVERITY.LOW": 17,
+    "SEVERITY.MEDIUM": 2,
+    "SEVERITY.UNDEFINED": 0,
+    "loc": 8151,
+    "nosec": 0,
+    "skipped_tests": 0
+  },
+  "findings": [
+    {
+      "id": "B105",
+      "severity": "LOW",
+      "file": "src/jobmate\\adapters\\google.py",
+      "line": 38
+    },
+    {
+      "id": "B105",
+      "severity": "LOW",
+      "file": "src/jobmate\\adapters\\google.py",
+      "line": 62
+    },
+    {
+      "id": "B105",
+      "severity": "LOW",
+      "file": "src/jobmate\\adapters\\google.py",
+      "line": 307
+    },
+    {
+      "id": "B404",
+      "severity": "LOW",
+      "file": "src/jobmate\\agent_bridge.py",
+      "line": 16
+    },
+    {
+      "id": "B603",
+      "severity": "LOW",
+      "file": "src/jobmate\\agent_bridge.py",
+      "line": 263
+    },
+    {
+      "id": "B101",
+      "severity": "LOW",
+      "file": "src/jobmate\\agent_bridge.py",
+      "line": 271
+    },
+    {
+      "id": "B108",
+      "severity": "MEDIUM",
+      "file": "src/jobmate\\config.py",
+      "line": 146
+    },
+    {
+      "id": "B404",
+      "severity": "LOW",
+      "file": "src/jobmate\\engine\\functions.py",
+      "line": 6
+    },
+    {
+      "id": "B603",
+      "severity": "LOW",
+      "file": "src/jobmate\\engine\\functions.py",
+      "line": 72
+    },
+    {
+      "id": "B105",
+      "severity": "LOW",
+      "file": "src/jobmate\\models\\enums.py",
+      "line": 72
+    },
+    {
+      "id": "B107",
+      "severity": "LOW",
+      "file": "src/jobmate\\radar\\github.py",
+      "line": 58
+    },
+    {
+      "id": "B105",
+      "severity": "LOW",
+      "file": "src/jobmate\\radar\\github.py",
+      "line": 96
+    },
+    {
+      "id": "B404",
+      "severity": "LOW",
+      "file": "src/jobmate\\sensors\\diffcheck.py",
+      "line": 7
+    },
+    {
+      "id": "B603",
+      "severity": "LOW",
+      "file": "src/jobmate\\sensors\\diffcheck.py",
+      "line": 28
+    },
+    {
+      "id": "B608",
+      "severity": "MEDIUM",
+      "file": "src/jobmate\\store\\db.py",
+      "line": 1313
+    },
+    {
+      "id": "B107",
+      "severity": "LOW",
+      "file": "src/jobmate\\store\\db.py",
+      "line": 1528
+    },
+    {
+      "id": "B404",
+      "severity": "LOW",
+      "file": "src/jobmate\\tools\\executor.py",
+      "line": 6
+    },
+    {
+      "id": "B603",
+      "severity": "LOW",
+      "file": "src/jobmate\\tools\\executor.py",
+      "line": 42
+    },
+    {
+      "id": "B105",
+      "severity": "LOW",
+      "file": "src/jobmate\\workflows\\dev_review.py",
+      "line": 48
+    }
+  ]
+}

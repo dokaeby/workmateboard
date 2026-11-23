@@ -1,0 +1,107 @@
+[
+  {
+    "path": ".env.example",
+    "before_sha256": "7aa0d0e9100e62d492384853a5b2207b112508765526a5bf47560a606c3d376d",
+    "after_sha256": "eed4bb426fa283b6325710f882d403d8210a0080216c1b52c35026d9560df621"
+  },
+  {
+    "path": "docs/harness/05_\ub0b4\ubd80\uae30\ub2a5_\ud1b5\ud569.md",
+    "before_sha256": "ee348b615f0f170c5f760b91f9afdc78bbce5772e7c79a7dcc05f66c730e399b",
+    "after_sha256": "02f60cb88d46044961a289a300a130df17b4e109174c29d8637fcf7a649fce6d"
+  },
+  {
+    "path": "pyproject.toml",
+    "before_sha256": "eddf9001de5e2aa74fd0c32b7417a79eec04ff09e28e4581a3baf4a2bf4d6266",
+    "after_sha256": "5fb95e340a27bc32cd1484435fcb699def9e04412ff9854521cdcbdc0acb8b09"
+  },
+  {
+    "path": "requirements.txt",
+    "before_sha256": "b870ac14450e677c9c14f6449e416f69144dd0ff3cca256fc5f65cef7c3f4089",
+    "after_sha256": "ec1711f9d2e52180e7025ad5fce6602b6638bc9d25bf2f98545c366b4d8d80ae"
+  },
+  {
+    "path": "src/jobmate/adapters/push.py",
+    "before_sha256": "1a86a41ec0b347c9a235387d0b8eb39ed979cb284327fdd63d5fb6fbc7c3fe58",
+    "after_sha256": "5dddf23a185b63d6ea6ff2b86ad8fa9b53f0ff2c1e9f4f8a08aff6150fd44a8b"
+  },
+  {
+    "path": "src/jobmate/api/app.py",
+    "before_sha256": "5b5f08436125d8fbba0d622b3752bc1b718cf1dbdebb42b91b883708246c64a2",
+    "after_sha256": "c1f20ea1135972a293e17801137f488c5396ee894d5400de5d056a572f17301a"
+  },
+  {
+    "path": "src/jobmate/radar/pipeline.py",
+    "before_sha256": "217af5cb32c9287228675f37c04a6d1a0bb61332460aa792674a19ff424daf66",
+    "after_sha256": "368c5b3e648b3e1270ef3e988c4ccf9b166a7859c0c7f977a7a0e5c53020a346"
+  },
+  {
+    "path": "src/jobmate/security.py",
+    "before_sha256": "cda2bf3f11cb187a073fa109150150e984a903e6dafc41ea4d783b3e2612df17",
+    "after_sha256": "f3606d2b63d7b8f482dc11e546d57c2bbe4e20b90aaad6c30bcc49f2d00f6790"
+  },
+  {
+    "path": "src/jobmate/tools/executor.py",
+    "before_sha256": "92258999fac92859a6b600e11c2499ca58c1de36f92d788f8c68ba280fe7ac80",
+    "after_sha256": "37c36ec06752164035125aad48642bef43d17d9a9ebcae78d0a168b7314cf08a"
+  },
+  {
+    "path": "tests/api/test_agent_sessions.py",
+    "before_sha256": "5ca40df522a1afa045125d2eddce1c45aaf3e886b55b2abfce0c3223cb7e8872",
+    "after_sha256": "bce4ccf4da6f8d339cccc2a6827aed764c63048a1c4c1a8f4918323dcbb68cca"
+  },
+  {
+    "path": "tests/api/test_api.py",
+    "before_sha256": "74f5ddf42395cfa45f1f171a2758e5ee214880348391a70976440c76e0f6ea28",
+    "after_sha256": "25ed62e9c98838d913c61ececac5037ffb3237ac42e764f82f473f7d4e4aab4f"
+  },
+  {
+    "path": "tests/ui/test_dashboard.py",
+    "before_sha256": "a6bd5eee2ae35d1f3e9ed40b0cc8766c38ed39464b1380b4b770dcb03d8cd40b",
+    "after_sha256": "3c6d9fadc06bcd1404782c4f4fb047d49c440e6efc99c5bb1b96808345bced94"
+  },
+  {
+    "path": "tests/unit/test_agent_bridge.py",
+    "before_sha256": "00669dfd27d98d730983efc623eef3e04efadb754c6f89b2ed7e913cc6a7e718",
+    "after_sha256": "63759c236d4cc2b77ba612a72a3415bfd27a105d82677e93b4a3270257f3e860"
+  },
+  {
+    "path": "tests/unit/test_auth.py",
+    "before_sha256": "df3b9d89092ff6b5b68e1cdb1a445469240f743b685e9f12feabc915f2499150",
+    "after_sha256": "e205b9acfd7963faea44bc82da6df4d42b1dab1c63e4c034b2669c4c4cd82e4b"
+  },
+  {
+    "path": "tests/unit/test_logging_mode.py",
+    "before_sha256": "dc0815b759172ccb7c27e5af62906a66e0a24f5aa3bcbdb3696ef4491ebead6d",
+    "after_sha256": "14c26b88b31196c7d9c4c28338c9b1acf67fa5e8babeb52f9917f7077301103d"
+  },
+  {
+    "path": "tests/unit/test_radar_pipeline.py",
+    "before_sha256": "5d39bc08da7ae7c78554ec7a83e5cd77781b784358f68297d3b3013e5a309a6d",
+    "after_sha256": "da628fbafdb1e9ef3c5293bc41c9fd8c8bd66fdad42611dce9d0ecf7db5c4502"
+  },
+  {
+    "path": "tests/unit/test_webpush.py",
+    "before_sha256": "46c7dff1cab92f69261a40171887ac80006ffee75fb192417e069ebe002f7008",
+    "after_sha256": "17e8518832e938bea24448d9b7df2921a199215f2a40135c92ff2d959bd0a759"
+  },
+  {
+    "path": "uv.lock",
+    "before_sha256": "462c9bb48391f029c07e034d2479beac375387b4834154d13e729409bbcd6c54",
+    "after_sha256": "f70e80fadd146eccf8a4f882007bf2fe57594065f3bea7a3dc46dd7c49442282"
+  },
+  {
+    "path": "tests/unit/test_security_regressions.py",
+    "before_sha256": null,
+    "after_sha256": "c39e0a31df6f34ce6bfa11736e210b9676270c1e7686b2803d77698d5a73709d"
+  },
+  {
+    "path": "src/jobmate/store/db.py",
+    "before_sha256": "e57055b4a44b1feb216f3a74979da8c08a344d9631eb8b590bceae82bb24b50e",
+    "after_sha256": "50ded2b6345d72ac3029890ce71bfafff37ef3db38614dd70efc8c00c53b381e"
+  },
+  {
+    "path": "docs/security/2026-11-23-security-audit.md",
+    "before_sha256": null,
+    "after_sha256": "af8549de84a9285d43db209eaed68006b787a17a1c6a578b155602e3cc625630"
+  }
+]

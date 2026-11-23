@@ -86,12 +86,12 @@ def authorized(request: Any) -> bool:
     """Authorization: Bearer <key> 또는 X-API-Key 헤더 검증."""
     key = api_key()
     if not key:
-        return True
+        return not os.environ.get("VERCEL") and not allowed_emails()
     auth = request.headers.get("authorization", "")
     provided = request.headers.get("x-api-key", "")
     if auth.lower().startswith("bearer "):
         provided = auth[7:].strip() or provided
-    return provided == key
+    return hmac.compare_digest(provided.encode(), key.encode())
 
 
 # ---------- 계정 인증 (세션 쿠키 + 이메일/Google 로그인) ----------

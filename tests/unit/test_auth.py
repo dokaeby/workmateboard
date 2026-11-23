@@ -92,7 +92,11 @@ def test_session_cookie_authorizes_api(monkeypatch):
     client, _ = _client()
     assert client.get("/api/v1/workflows").status_code == 401
 
-    client.post("/api/v1/auth/signup", json={"email": "s@b.com", "password": "password123"})
+    client.post(
+        "/api/v1/auth/signup",
+        json={"email": "s@b.com", "password": "password123"},
+        headers={"X-API-Key": "secret-key"},
+    )
     assert client.get("/api/v1/workflows").status_code == 200
 
     # 잘못된 키 + 세션 없음 → 401
