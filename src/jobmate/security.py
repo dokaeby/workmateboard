@@ -162,3 +162,10 @@ def admin_emails() -> set[str]:
     """JOBMATE_ADMIN_EMAILS(쉼표 구분) — 이 목록의 계정은 role과 무관하게 admin."""
     raw = os.environ.get("JOBMATE_ADMIN_EMAILS", "")
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def lead_emails() -> set[str]:
+    """JOBMATE_LEAD_EMAILS(쉼표 구분) — 이 목록의 계정은 role과 무관하게 lead
+    (admin_emails에 있으면 admin이 우선)."""
+    raw = os.environ.get("JOBMATE_LEAD_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}

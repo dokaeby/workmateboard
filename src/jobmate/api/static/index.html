@@ -916,6 +916,41 @@
     font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums;
     margin-top: 6px; overflow-wrap: anywhere;
   }
+  /* ── 역할 배지 / 리스크 / 프로젝트 / 세션 기록 / 성과 (lead+ 뷰) ── */
+  .badge.role-admin { color: var(--err); border-color: var(--err-border);
+    background: var(--err-soft); }
+  .badge.role-lead { color: var(--accent); border-color: var(--accent-border);
+    background: var(--accent-soft); }
+  .badge.role-member { color: var(--muted); }
+  .proj-grid { display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  .proj-card { position: relative; }
+  .proj-dot { display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
+  .proj-bar { height: 6px; border-radius: 4px; background: var(--surface-hover);
+    overflow: hidden; margin: 6px 0 4px; }
+  .proj-bar > span { display: block; height: 100%;
+    background: var(--accent); border-radius: 4px; }
+  .proj-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .proj-chip { font-size: 11.5px; color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 1px 9px; background: var(--surface); white-space: nowrap; }
+  .proj-acts { font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
+  .proj-acts div { padding: 2px 0; overflow-wrap: anywhere; }
+  .risk-card { border-left: 3px solid var(--border); }
+  .risk-card.risk-high { border-left-color: var(--err); }
+  .risk-card.risk-med { border-left-color: var(--warn); }
+  .risk-card.risk-low { border-left-color: var(--border-strong); }
+  .sl-row { cursor: pointer; }
+  .sl-row:hover { background: var(--surface-hover); }
+  .sl-tl { list-style: none; margin: 0; padding: 0; }
+  .sl-tl li { position: relative; padding: 6px 0 6px 18px;
+    border-left: 2px solid var(--border); font-size: 13px; }
+  .sl-tl li::before { content: ""; position: absolute; left: -5px; top: 12px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .sl-tl li.sl-end::before { background: var(--ok); }
+  .perf-bar { display: inline-block; height: 7px; border-radius: 4px;
+    background: var(--accent); vertical-align: middle; }
   /* ── 모바일 요약 바 ── */
   #mob-bar { display: none; }
   @media (max-width: 820px) {
@@ -972,18 +1007,23 @@
       <button class="nav-item" data-view="calendar"><span class="ico">▣</span>Calendar</button>
       <button class="nav-item" data-view="runs"><span class="ico">▶</span>실행 이력</button>
       <button class="nav-item" data-view="inbox"><span class="ico">🔔</span>알림<span class="nav-badge" id="nav-inbox-badge" hidden></span></button>
-      <button class="nav-item" data-view="insights"><span class="ico">📊</span>인사이트</button>
-      <button class="nav-item" data-view="automation"><span class="ico">⚙</span>자동화</button>
-      <button class="nav-item" data-view="system"><span class="ico">🖥</span>시스템</button>
-      <button class="nav-item" data-view="archive"><span class="ico">🗄</span>아카이브</button>
-      <button class="nav-item" data-view="cost"><span class="ico">💰</span>비용</button>
-      <button class="nav-item" data-view="developer"><span class="ico">🛠</span>개발자</button>
-      <button class="nav-item" data-view="playbooks"><span class="ico">📒</span>플레이북</button>
-      <button class="nav-item" data-view="connectors"><span class="ico">🔌</span>커넥터</button>
-      <button class="nav-item" data-view="triggers"><span class="ico">⚡</span>트리거</button>
-      <button class="nav-item" data-view="builder"><span class="ico">🧩</span>워크플로 빌더</button>
-      <button class="nav-item" data-view="team"><span class="ico">👥</span>팀</button>
-      <button class="nav-item" id="nav-audit" data-view="audit" hidden><span class="ico">🔍</span>감사 로그</button>
+      <button class="nav-item" data-view="projects" data-min-role="lead"><span class="ico">📁</span>프로젝트</button>
+      <button class="nav-item" data-view="sessionlog" data-min-role="lead"><span class="ico">🕘</span>세션 기록</button>
+      <button class="nav-item" data-view="risks" data-min-role="lead"><span class="ico">⚠</span>리스크</button>
+      <button class="nav-item" data-view="approvals" data-min-role="lead"><span class="ico">✅</span>승인</button>
+      <button class="nav-item" data-view="perf" data-min-role="lead"><span class="ico">📈</span>성과</button>
+      <button class="nav-item" data-view="insights" data-min-role="lead"><span class="ico">📊</span>인사이트</button>
+      <button class="nav-item" data-view="automation" data-min-role="admin"><span class="ico">⚙</span>자동화</button>
+      <button class="nav-item" data-view="system" data-min-role="admin"><span class="ico">🖥</span>시스템</button>
+      <button class="nav-item" data-view="archive" data-min-role="lead"><span class="ico">🗄</span>아카이브</button>
+      <button class="nav-item" data-view="cost" data-min-role="lead"><span class="ico">💰</span>비용</button>
+      <button class="nav-item" data-view="developer" data-min-role="admin"><span class="ico">🛠</span>개발자</button>
+      <button class="nav-item" data-view="playbooks" data-min-role="lead"><span class="ico">📒</span>플레이북</button>
+      <button class="nav-item" data-view="connectors" data-min-role="lead"><span class="ico">🔌</span>커넥터</button>
+      <button class="nav-item" data-view="triggers" data-min-role="lead"><span class="ico">⚡</span>트리거</button>
+      <button class="nav-item" data-view="builder" data-min-role="lead"><span class="ico">🧩</span>워크플로 빌더</button>
+      <button class="nav-item" data-view="team" data-min-role="lead"><span class="ico">👥</span>팀</button>
+      <button class="nav-item" id="nav-audit" data-view="audit" data-min-role="admin" hidden><span class="ico">🔍</span>감사 로그</button>
     </nav>
   </aside>
 
@@ -1318,12 +1358,16 @@
         <div id="usage-body"><span class="empty">로딩…</span></div>
       </div>
       <div class="card" data-widget="reports">
-        <h3 style="margin:0 0 8px;font-size:15px">일일/주간 리포트</h3>
+        <h3 style="margin:0 0 8px;font-size:15px">리포트</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
           <button class="secondary rpt-btn" data-kind="daily"
                   style="padding:4px 12px;font-size:12px">일일 리포트</button>
           <button class="secondary rpt-btn" data-kind="weekly"
                   style="padding:4px 12px;font-size:12px">주간 리포트</button>
+          <button class="secondary rpt-btn" data-kind="exec_daily"
+                  style="padding:4px 12px;font-size:12px">경영 일일</button>
+          <button class="secondary rpt-btn" data-kind="exec_weekly"
+                  style="padding:4px 12px;font-size:12px">경영 주간</button>
           <button class="secondary" id="rpt-generate"
                   style="padding:4px 12px;font-size:12px">생성</button>
           <span class="card-meta" id="rpt-kind"></span>
@@ -1645,8 +1689,94 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
         </table></div>
       </div>
     </section>
+
+    <!-- 프로젝트 (lead+) -->
+    <section id="view-projects" hidden>
+      <div class="page-head">
+        <h1 class="page-title">프로젝트</h1>
+        <p class="page-desc">세션·실행을 프로젝트별로 묶어 보기 — 프로젝트가 없는 세션은 '(기타)'로 표시됩니다</p>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 10px;font-size:15px">프로젝트 추가</h3>
+        <form id="proj-form" class="mini-form">
+          <input id="proj-name" placeholder="이름" required autocomplete="off"
+                 style="flex:1;min-width:140px">
+          <input id="proj-color" placeholder="색상 (#hex)" autocomplete="off"
+                 style="width:110px">
+          <input id="proj-goal" placeholder="목표" autocomplete="off"
+                 style="flex:1;min-width:140px">
+          <input id="proj-target" type="number" min="0" placeholder="목표 수"
+                 aria-label="목표 수" style="width:90px">
+          <button type="submit" style="padding:6px 14px;font-size:13px">추가</button>
+          <span class="status-line" id="proj-status" role="status"></span>
+        </form>
+      </div>
+      <div id="proj-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 세션 기록 (lead+) -->
+    <section id="view-sessionlog" hidden>
+      <div class="page-head">
+        <h1 class="page-title">세션 기록</h1>
+        <p class="page-desc">에이전트 세션의 상태 전이 타임라인·통계·프로젝트 태그</p>
+      </div>
+      <div class="card">
+        <input id="sl-q" type="search" placeholder="세션 검색 (도구/프로젝트/제목/키)…"
+               autocomplete="off" style="width:100%">
+      </div>
+      <div id="sl-list"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 리스크 (lead+) -->
+    <section id="view-risks" hidden>
+      <div class="page-head">
+        <h1 class="page-title">리스크</h1>
+        <p class="page-desc">실패·지연·오류 징후를 심각도 순으로 표시</p>
+        <button class="secondary" id="risk-reload"
+                style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
+      </div>
+      <div id="risk-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 승인 대기 (lead+) -->
+    <section id="view-approvals" hidden>
+      <div class="page-head">
+        <h1 class="page-title">승인 대기</h1>
+        <p class="page-desc">실행·세션·트리거 승인을 오래된 순으로 — 30초마다 자동 갱신</p>
+        <button class="secondary" id="appr-reload"
+                style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
+      </div>
+      <div id="appr-body"><div class="empty">로딩…</div></div>
+    </section>
+
+    <!-- 성과 (lead+) -->
+    <section id="view-perf" hidden>
+      <div class="page-head">
+        <h1 class="page-title">성과</h1>
+        <p class="page-desc">워크플로 실행을 모델/에이전트/도구별로 비교</p>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <select id="perf-wf" aria-label="워크플로"></select>
+          <select id="perf-group" aria-label="그룹 기준">
+            <option value="model">모델별</option>
+            <option value="agent">에이전트별</option>
+            <option value="tool">도구별</option>
+          </select>
+          <button class="secondary" id="perf-reload"
+                  style="padding:4px 10px;font-size:12px">조회</button>
+        </div>
+      </div>
+      <div id="perf-body"><div class="empty">조건을 선택하고 조회를 누르세요</div></div>
+    </section>
   </main>
 </div>
+
+<dialog id="sl-dialog" style="width:min(760px,94vw);padding:24px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="font-size:18px;margin:0" id="sl-title">세션 기록</h2>
+    <button class="secondary" id="sl-close" style="padding:4px 12px">✕</button>
+  </div>
+  <div id="sl-body"><span class="empty">로딩…</span></div>
+</dialog>
 
 <dialog id="compare-dialog" style="width:min(960px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -1924,6 +2054,33 @@ async function api(path, opts, _retried) {
 }
 const badge = (s) => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 
+/* ── 역할 기반 메뉴 (member < lead < admin) ──
+   /auth/me 의 role 을 정규화해 nav-item[data-min-role] 표시 여부를 결정한다.
+   me 로드 전(_jmRoleRank === null)에는 모두 허용 — 뷰 로더가 403을
+   graceful empty state로 처리한다. */
+const JM_ROLE_RANK = {member: 0, lead: 1, admin: 2};
+let _jmRole = null;      // 정규화된 현재 사용자 role
+let _jmRoleRank = null;  // 숫자 rank — me 로드 전에는 null
+function jmNormalizeRole(r) {
+  const k = String(r || "").toLowerCase();
+  return JM_ROLE_RANK[k] != null ? k : "member";  // "user"/누락 → member
+}
+function jmRoleAllows(min) {
+  if (_jmRoleRank == null) return true;          // 아직 모름 → 일단 허용
+  return _jmRoleRank >= (JM_ROLE_RANK[min] || 0);
+}
+function applyRoleGating() {
+  document.querySelectorAll(".nav-item[data-min-role]").forEach(b => {
+    b.hidden = !jmRoleAllows(b.dataset.minRole);
+  });
+}
+// /auth/me 가 resolve되면 role 반영 + 메뉴 재계산 (비동기 로드 대응)
+jmMe().then(me => {
+  _jmRole = jmNormalizeRole((me || {}).role);
+  _jmRoleRank = JM_ROLE_RANK[_jmRole];
+  applyRoleGating();
+});
+
 /* ── 뷰 전환 ── */
 const VIEWS = { gmail: loadGmail,
                 office: () => { officeApplyProvider(); officeRefresh(); loadOffice(); },
@@ -1935,10 +2092,14 @@ const VIEWS = { gmail: loadGmail,
                 cost: loadCostView, developer: loadDeveloper,
                 playbooks: () => {}, connectors: () => {},
                 triggers: () => {}, builder: () => {},
-                team: () => {}, audit: () => {} };
+                team: () => {}, audit: () => {},
+                projects: () => {}, sessionlog: () => {},
+                risks: () => {}, approvals: () => {}, perf: () => {} };
 const loaded = {};
 document.querySelectorAll(".nav-item").forEach(b =>
   b.addEventListener("click", () => {
+    // 역할 게이팅 — 권한 없는 뷰는 deep-link/프로그램 클릭도 차단
+    if (b.dataset.minRole && !jmRoleAllows(b.dataset.minRole)) return;
     document.querySelectorAll(".nav-item").forEach(x =>
       x.classList.toggle("active", x === b));
     document.querySelectorAll("main > section").forEach(s =>
@@ -5912,6 +6073,7 @@ async function loadTeam() {
   try {
     const me = await jmMe();
     const meEmail = (me.email || "").toLowerCase();
+    const isAdmin = jmNormalizeRole(me.role) === "admin";
     const d = await api("/team");
     const items = d.items || [];
     if (!items.length) {
@@ -5920,15 +6082,34 @@ async function loadTeam() {
     }
     tb.innerHTML = items.map(u => {
       const isMe = meEmail && (u.email || "").toLowerCase() === meEmail;
-      const role = u.role === "admin"
-        ? '<span class="badge failed">admin</span>'
-        : badge(u.role || "member");
+      const uRole = jmNormalizeRole(u.role);
+      const role = isAdmin
+        ? `<select class="role-sel" data-uid="${esc(u.id || u.email || "")}" ` +
+          `data-email="${esc(u.email || "")}" aria-label="역할 변경" ` +
+          `style="font-size:12px;padding:3px 6px">` +
+          ["member", "lead", "admin"].map(r =>
+            `<option value="${r}"${r === uRole ? " selected" : ""}>${r}</option>`
+          ).join("") + `</select>`
+        : `<span class="badge role-${uRole}">${uRole}</span>`;
       return `<tr${isMe ? ' class="me-row"' : ""}>` +
         `<td>${esc(u.email || "-")}${isMe ? ' <span class="badge">나</span>' : ""}</td>` +
         `<td>${esc(u.name || "-")}</td><td>${role}</td>` +
         `<td>${esc(u.run_count ?? 0)}</td>` +
         `<td class="card-meta">${esc(officeFmtTs(u.last_active_at))}</td></tr>`;
     }).join("");
+    // admin — 역할 변경 시 PATCH /users/{id}/role
+    tb.querySelectorAll(".role-sel").forEach(sel =>
+      sel.addEventListener("change", async () => {
+        const uid = sel.dataset.uid;
+        if (!uid) { alert("사용자 ID가 없습니다"); sel.value = jmNormalizeRole(sel.value); return; }
+        try {
+          await api("/users/" + encodeURIComponent(uid) + "/role",
+            {method: "PATCH",
+             headers: {"Content-Type": "application/json"},
+             body: JSON.stringify({role: sel.value})});
+          loadTeam();
+        } catch (e) { alert(e.message); loadTeam(); }
+      }));
   } catch (e) {
     tb.innerHTML = `<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;
   }
@@ -5974,11 +6155,545 @@ const NEW_VIEW_LOADERS = {
   playbooks: loadPlaybooks, connectors: loadConnectors,
   triggers: loadTriggers, builder: loadBuilder,
   team: loadTeam, audit: loadAudit,
+  projects: loadProjects, sessionlog: loadSessionlog,
+  risks: loadRisks, approvals: loadApprovals, perf: loadPerf,
 };
 Object.entries(NEW_VIEW_LOADERS).forEach(([v, fn]) => {
   document.querySelector(`.nav-item[data-view="${v}"]`)
     ?.addEventListener("click", fn);
 });
+
+/* ══ lead+ 뷰: 프로젝트 / 세션 기록 / 리스크 / 승인 / 성과 ══ */
+
+// 경과 시간 → "N분 전 / N시간 전 / N일 전"
+function jmFmtAge(sec) {
+  sec = Number(sec);
+  if (!isFinite(sec) || sec < 0) return "-";
+  if (sec < 60) return "방금 전";
+  if (sec < 3600) return Math.floor(sec / 60) + "분 전";
+  if (sec < 86400) return Math.floor(sec / 3600) + "시간 전";
+  return Math.floor(sec / 86400) + "일 전";
+}
+// 뷰 이동 헬퍼 — nav 클릭 후 선택적 후속 동작
+function jmGoView(view, after) {
+  document.querySelector(`.nav-item[data-view="${view}"]`)?.click();
+  if (after) setTimeout(after, 400);
+}
+// {stage:count} 또는 [{stage,count}] → "stage:count · ..." top N
+function jmTopStages(sf, n) {
+  if (!sf) return "-";
+  let entries;
+  if (Array.isArray(sf)) {
+    entries = sf.map(x => [x.stage || x.stage_key || x.key || "?", x.count ?? x.failures ?? 0]);
+  } else if (typeof sf === "object") {
+    entries = Object.entries(sf);
+  } else return "-";
+  return entries
+    .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+    .slice(0, n || 3)
+    .map(([k, c]) => `${k}:${c}`).join(" · ") || "-";
+}
+
+/* ── 프로젝트 (/projects/overview) ── */
+async function loadProjects() {
+  const el = $("#proj-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const [d, me] = await Promise.all([api("/projects/overview"), jmMe()]);
+    const items = d.items || [];
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">프로젝트가 없습니다 — 위 폼에서 추가하세요</div>';
+      return;
+    }
+    const myEmail = String(me.email || "").toLowerCase();
+    const myRole = jmNormalizeRole(me.role);
+    el.innerHTML = `<div class="proj-grid">` + items.map(p =>
+      projCardHtml(p, myEmail, myRole)).join("") + `</div>`;
+    el.querySelectorAll(".proj-detail-btn").forEach(b =>
+      b.addEventListener("click", () => toggleProjDetail(b)));
+    el.querySelectorAll(".proj-del-btn").forEach(b =>
+      b.addEventListener("click", async () => {
+        if (!confirm("이 프로젝트를 삭제할까요?")) return;
+        try {
+          await api("/projects/" + encodeURIComponent(b.dataset.pid),
+            {method: "DELETE"});
+          loadProjects();
+        } catch (e) { alert(e.message); }
+      }));
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function projCardHtml(p, myEmail, myRole) {
+  const pid = p.id ?? "";
+  const color = p.color || "#94a3b8";
+  const target = Number(p.target_count) || 0;
+  const sess = Number(p.session_count) || 0;
+  const pct = target > 0 ? Math.min(100, Math.round(sess / target * 100)) : null;
+  const acts = (p.recent_activity || []).slice(0, 3)
+    .map(a => `<div><span class="card-meta">${esc(officeFmtTs(a.at))}</span> ` +
+      `${esc(a.text || a.kind || "")}</div>`).join("");
+  const owner = p.owner || p.owner_email || p.created_by || "";
+  const canDel = myRole === "admin" || !owner ||
+    String(owner).toLowerCase() === myEmail;
+  return `<div class="card proj-card" data-pid="${esc(pid)}">
+    <div class="card-top">
+      <span class="proj-dot" style="background:${esc(color)}"></span>
+      <b style="font-size:15px">${esc(p.name || "(기타)")}</b>
+      ${p.goal ? `<span class="card-meta">${esc(p.goal)}</span>` : ""}
+      <span style="margin-left:auto"></span>
+      <button class="secondary proj-detail-btn" data-pid="${esc(pid)}"
+              style="padding:3px 10px;font-size:12px">상세</button>
+      ${canDel ? `<button class="secondary proj-del-btn" data-pid="${esc(pid)}"
+              style="padding:3px 10px;font-size:12px;color:var(--err)">삭제</button>` : ""}
+    </div>
+    ${target > 0 ? `<div class="proj-bar"><span style="width:${pct}%"></span></div>
+      <div class="card-meta" style="margin-top:0">세션 ${sess}/${target} (${pct}%)</div>` : ""}
+    <div class="proj-chips">
+      <span class="proj-chip">활성 세션 ${p.active_sessions ?? 0}</span>
+      <span class="proj-chip">실행 ${p.run_count ?? 0}</span>
+      <span class="proj-chip">성공률 ${p.success_rate ?? "-"}%</span>
+      <span class="proj-chip">비용 ${usd(p.total_cost_usd)}</span>
+      ${p.open_approvals ? `<span class="proj-chip" style="color:var(--warn)">승인 대기 ${p.open_approvals}</span>` : ""}
+    </div>
+    ${acts ? `<div class="proj-acts">${acts}</div>` : ""}
+    <div class="proj-detail" hidden></div>
+  </div>`;
+}
+
+async function toggleProjDetail(btn) {
+  const card = btn.closest(".proj-card");
+  const box = card && card.querySelector(".proj-detail");
+  if (!box) return;
+  if (!box.hidden) { box.hidden = true; btn.textContent = "상세"; return; }
+  box.hidden = false;
+  btn.textContent = "닫기";
+  const pid = btn.dataset.pid;
+  box.innerHTML = '<span class="card-meta">로딩…</span>';
+  try {
+    const d = await api("/projects/" + encodeURIComponent(pid) + "/detail");
+    box.innerHTML = projDetailHtml(d);
+  } catch (e) {
+    box.innerHTML = `<span class="card-meta" style="color:var(--err)">${esc(e.message)}</span>`;
+  }
+}
+
+function projDetailHtml(d) {
+  const parts = [];
+  const sess = d.sessions, runs = d.runs;
+  parts.push(`<div class="card-meta" style="margin-bottom:6px">` +
+    `세션 ${Array.isArray(sess) ? sess.length : (sess ?? "-")} · ` +
+    `실행 ${Array.isArray(runs) ? runs.length : (runs ?? "-")}</div>`);
+  // 타임라인 — [{at,kind,text}] 또는 [{at,text}]
+  const tl = Array.isArray(d.timeline) ? d.timeline : [];
+  if (tl.length) {
+    parts.push(`<div style="font-size:12px;font-weight:700;color:var(--muted);margin:8px 0 4px">타임라인</div>` +
+      tl.slice(-15).map(t =>
+        `<div class="card-meta">${esc(officeFmtTs(t.at))} ${esc(t.kind ? `[${t.kind}] ` : "")}${esc(t.text || "")}</div>`
+      ).join(""));
+  }
+  // 단계별 실패
+  const sf = d.stage_failures;
+  if (sf && (Array.isArray(sf) ? sf.length : Object.keys(sf).length)) {
+    const max = Math.max(1, ...Object.values(
+      Array.isArray(sf) ? Object.fromEntries(sf.map(x => [x.stage || x.stage_key || "?", x.count || 0])) : sf));
+    const rows = Array.isArray(sf)
+      ? sf.map(x => [x.stage || x.stage_key || "?", x.count || x.failures || 0])
+      : Object.entries(sf);
+    parts.push(`<div style="font-size:12px;font-weight:700;color:var(--muted);margin:8px 0 4px">단계별 실패</div>` +
+      rows.map(([k, c]) =>
+        `<div class="office-kv"><span>${esc(k)}</span>` +
+        `<b style="flex:1"><span style="display:inline-block;height:8px;` +
+        `width:${Math.max(4, Math.round(c / max * 100))}%;` +
+        `background:var(--err);border-radius:4px"></span></b><b>${c}</b></div>`).join(""));
+  }
+  // 일별 비용
+  const cbd = Array.isArray(d.cost_by_day) ? d.cost_by_day : [];
+  if (cbd.length) {
+    const maxC = Math.max(1e-9, ...cbd.map(x => Number(x.cost_usd ?? x.cost ?? x.total_cost_usd) || 0));
+    parts.push(`<div style="font-size:12px;font-weight:700;color:var(--muted);margin:8px 0 4px">일별 비용</div>` +
+      cbd.slice(-14).map(x => {
+        const c = Number(x.cost_usd ?? x.cost ?? x.total_cost_usd) || 0;
+        const w = Math.max(2, Math.round(c / maxC * 100));
+        return `<div class="office-kv"><span>${esc(x.date || x.day || "")}</span>` +
+          `<b style="flex:1"><span style="display:inline-block;height:8px;` +
+          `width:${w}%;background:var(--ok);border-radius:4px"></span></b>` +
+          `<b>${usd(c)}</b></div>`;
+      }).join(""));
+  }
+  return parts.join("") || '<span class="card-meta">상세 데이터가 없습니다</span>';
+}
+
+$("#proj-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const st = $("#proj-status");
+  st.textContent = "추가 중…"; st.className = "status-line";
+  const body = {
+    name: $("#proj-name").value.trim(),
+    color: $("#proj-color").value.trim() || undefined,
+    goal: $("#proj-goal").value.trim() || undefined,
+    target_count: Number($("#proj-target").value) || 0,
+  };
+  try {
+    await api("/projects", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)});
+    $("#proj-name").value = ""; $("#proj-color").value = "";
+    $("#proj-goal").value = ""; $("#proj-target").value = "";
+    st.textContent = "추가했습니다";
+    loadProjects();
+  } catch (err) { st.textContent = err.message; st.className = "status-line err"; }
+});
+
+/* ── 세션 기록 (/agent-sessions + /agent-sessions/{key}/history) ── */
+let _slSessions = [];
+
+async function loadSessionlog() {
+  const el = $("#sl-list");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const d = await api("/agent-sessions?limit=100&include_ended=true");
+    _slSessions = _sessionListFrom(d);
+    renderSessionlog();
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function renderSessionlog() {
+  const el = $("#sl-list");
+  if (!el) return;
+  const q = String(($("#sl-q") || {}).value || "").trim().toLowerCase();
+  const list = _slSessions.filter(s => !q ||
+    [s.tool, s.project, s.session_key, s.title, s.doing, s.ask]
+      .some(v => String(v || "").toLowerCase().includes(q)));
+  if (!list.length) {
+    el.innerHTML = `<div class="empty">${_slSessions.length ? "검색 결과가 없습니다" : "세션이 없습니다"}</div>`;
+    return;
+  }
+  el.innerHTML = list.map(s => {
+    const ended = s.status === "ended";
+    const label = `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.title || s.project || s.session_key}`;
+    return `<div class="list-row sl-row" data-tool="${esc(s.tool)}" ` +
+      `data-key="${esc(s.session_key)}">` +
+      `<div class="grow"><b>${esc(label)}</b>` +
+      ` <span class="badge ${ended ? "completed" : (s.status === "decision" ? "waiting_approval" : "running")}">` +
+      `${esc(s.status || "-")}</span>` +
+      `${s.project ? ` <span class="proj-chip">${esc(s.project)}</span>` : ""}` +
+      `<div class="card-meta">${esc(s.doing || s.ask || s.ended_summary || "")}` +
+      `${s.est_cost_usd != null ? ` · ${usd(s.est_cost_usd)}` : ""}</div></div>` +
+      `<span class="card-meta">${esc(officeFmtTs(s.updated_at || s.event_at || s.created_at))}</span>` +
+      `</div>`;
+  }).join("");
+  el.querySelectorAll(".sl-row").forEach(r =>
+    r.addEventListener("click", () => {
+      const s = _slSessions.find(x =>
+        x.tool === r.dataset.tool && x.session_key === r.dataset.key);
+      if (s) openSessionHistory(s);
+    }));
+}
+$("#sl-q")?.addEventListener("input", renderSessionlog);
+
+async function openSessionHistory(s) {
+  const dlg = $("#sl-dialog"), body = $("#sl-body");
+  $("#sl-title").textContent =
+    `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.title || s.session_key}`;
+  body.innerHTML = '<span class="empty">로딩…</span>';
+  dlg.showModal();
+  try {
+    // 계약: GET /agent-sessions/{session_key}/history — tool 한정 경로로 폴백
+    const [histR, projR] = await Promise.allSettled([
+      (async () => {
+        try {
+          return await api("/agent-sessions/" +
+            encodeURIComponent(s.session_key) + "/history");
+        } catch (e1) {
+          return await api("/agent-sessions/" + encodeURIComponent(s.tool) + "/" +
+            encodeURIComponent(s.session_key) + "/history");
+        }
+      })(),
+      api("/projects").catch(() => ({items: []})),
+    ]);
+    if (histR.status === "rejected") throw histR.reason;
+    const d = histR.value;
+    const projNames = ((projR.status === "fulfilled" ? projR.value : {}) || {})
+      .items ? (projR.value.items || []).map(p => p.name).filter(Boolean) : [];
+    body.innerHTML = sessionHistoryHtml(d, s, projNames);
+    bindSessionProjectTag(s);
+  } catch (e) {
+    body.innerHTML = `<span class="empty">${esc(e.message)}</span>`;
+  }
+}
+$("#sl-close")?.addEventListener("click", () => $("#sl-dialog").close());
+$("#sl-dialog")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();
+});
+
+function sessionHistoryHtml(d, s, projNames) {
+  const stats = d.stats || {};
+  const stateCounts = stats.state_counts || {};
+  const statChips = Object.entries(stateCounts).map(([k, v]) =>
+    `<span class="proj-chip">${esc(k)} ${v}</span>`).join("") +
+    `<span class="proj-chip">결정 ${stats.decisions ?? 0}</span>` +
+    `<span class="proj-chip">승인 ${stats.approvals ?? 0}</span>` +
+    `<span class="proj-chip">오류 ${stats.errors ?? 0}</span>` +
+    `<span class="proj-chip">토큰 in ${(stats.tokens_in ?? 0).toLocaleString()} / out ${(stats.tokens_out ?? 0).toLocaleString()}</span>` +
+    `<span class="proj-chip">비용 ${usd(stats.est_cost_usd)}</span>` +
+    `<span class="proj-chip">총 시간 ${officeFmtSecs(stats.total_seconds || 0)}</span>`;
+  const tl = (d.timeline || []).slice().reverse();
+  const tlHtml = tl.length
+    ? `<ol class="sl-tl">` + tl.map(t => {
+        const trans = t.from_state && t.to_state
+          ? `${t.from_state} → ${t.to_state}` : (t.to_state || t.from_state || "");
+        const ended = t.to_state === "ended" || t.to_state === "end";
+        return `<li${ended ? ' class="sl-end"' : ""}>` +
+          `<span class="card-meta">${esc(officeFmtTs(t.at))}</span> ` +
+          (trans ? `<b>${esc(trans)}</b> ` : "") +
+          (t.text ? `<span>${esc(t.text)}</span> ` : "") +
+          (t.duration_s != null
+            ? `<span class="card-meta">(${officeFmtSecs(t.duration_s)})</span>` : "") +
+          `</li>`;
+      }).join("") + `</ol>`
+    : '<span class="card-meta">타임라인이 없습니다</span>';
+  const files = d.files_touched;
+  let fileArr = [];
+  if (Array.isArray(files)) fileArr = files;
+  else if (files && typeof files === "object") {
+    fileArr = Object.keys(files);
+  }
+  const fileChips = fileArr.length
+    ? `<div style="margin-top:8px">` + fileArr.slice(0, 40).map(f =>
+        `<span class="proj-chip mono" style="font-size:11px">${esc(typeof f === "object" ? (f.path || JSON.stringify(f)) : f)}</span>`
+      ).join("") + (fileArr.length > 40 ? `<span class="card-meta"> 외 ${fileArr.length - 40}개</span>` : "") + `</div>`
+    : "";
+  const names = [...new Set([...(projNames || []), s.project].filter(Boolean))];
+  const cur = s.project || "";
+  const projSel = `<div class="mini-form" style="margin-bottom:10px">` +
+    `<span class="card-meta">프로젝트 태그</span>` +
+    `<select class="sl-proj-sel" aria-label="프로젝트 태그" style="font-size:12px;padding:4px 8px">` +
+    `<option value="">(없음)</option>` +
+    names.map(n => `<option value="${esc(n)}"${n === cur ? " selected" : ""}>${esc(n)}</option>`).join("") +
+    (cur && !names.includes(cur)
+      ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : "") +
+    `</select></div>`;
+  return projSel +
+    (d.summary
+      ? `<div class="card" style="margin-bottom:10px"><div class="card-title" style="font-size:14px">요약</div>` +
+        `<div class="card-body" style="font-size:13px">${esc(d.summary)}</div></div>` : "") +
+    `<div class="proj-chips" style="margin-bottom:8px">${statChips}</div>` +
+    `<div style="font-size:12px;font-weight:700;color:var(--muted);margin:8px 0 4px">상태 전이</div>` +
+    tlHtml + fileChips +
+    (d.ended_summary || s.ended_summary
+      ? `<div class="card-meta" style="margin-top:10px">종료 요약: ${esc(d.ended_summary || s.ended_summary)}</div>` : "");
+}
+
+// 세션 다이얼로그 — 프로젝트 태그 PATCH 바인딩
+async function bindSessionProjectTag(s) {
+  const sel = $("#sl-body .sl-proj-sel");
+  if (!sel) return;
+  sel.addEventListener("change", async () => {
+    try {
+      await api("/agent-sessions/" + encodeURIComponent(s.session_key),
+        {method: "PATCH",
+         headers: {"Content-Type": "application/json"},
+         body: JSON.stringify({project: sel.value || null})});
+      s.project = sel.value || "";
+    } catch (e) { alert(e.message); }
+  });
+}
+
+/* ── 리스크 (/risks) ── */
+const RISK_SEV_RANK = {high: 0, critical: 0, med: 1, medium: 1, low: 2};
+const RISK_SEV_CLS = {high: "risk-high", critical: "risk-high",
+                      med: "risk-med", medium: "risk-med", low: "risk-low"};
+const RISK_TYPE_ICON = {error: "🔴", failure: "🔴", timeout: "⏱",
+  stale: "🕰", idle: "💤", cost: "💰", budget: "💰", security: "🛡",
+  approval: "✅", trigger: "⚡"};
+
+async function loadRisks() {
+  const el = $("#risk-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const d = await api("/risks");
+    const items = (d.items || [])
+      .slice()
+      .sort((a, b) =>
+        (RISK_SEV_RANK[String(a.severity || "").toLowerCase()] ?? 3) -
+        (RISK_SEV_RANK[String(b.severity || "").toLowerCase()] ?? 3));
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">감지된 리스크 없음</div>';
+      return;
+    }
+    el.innerHTML = items.map(r => {
+      const sev = String(r.severity || "low").toLowerCase();
+      const icon = RISK_TYPE_ICON[String(r.type || "").toLowerCase()] || "⚠";
+      const ref = r.ref_kind && r.ref_id
+        ? `<button class="secondary risk-ref" data-kind="${esc(r.ref_kind)}" ` +
+          `data-id="${esc(r.ref_id)}" style="padding:2px 8px;font-size:11px">` +
+          `${esc(r.ref_kind)} 보기</button>` : "";
+      return `<div class="card risk-card ${RISK_SEV_CLS[sev] || "risk-low"}">` +
+        `<div class="card-top"><span style="font-size:15px">${icon}</span>` +
+        `<b>${esc(r.title || r.type || "리스크")}</b>` +
+        `<span class="badge ${sev === "high" || sev === "critical" ? "failed" : sev === "med" || sev === "medium" ? "waiting_approval" : ""}">` +
+        `${esc(r.severity || "-")}</span>` +
+        `<span class="card-meta" style="margin-left:auto">${jmFmtAge(r.age_seconds)} · ${esc(officeFmtTs(r.at))}</span></div>` +
+        `${r.detail ? `<div class="card-body" style="font-size:13px">${esc(r.detail)}</div>` : ""}` +
+        `${ref ? `<div style="margin-top:6px">${ref}</div>` : ""}</div>`;
+    }).join("");
+    el.querySelectorAll(".risk-ref").forEach(b =>
+      b.addEventListener("click", () => jmGoRiskRef(b.dataset.kind, b.dataset.id)));
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+$("#risk-reload")?.addEventListener("click", loadRisks);
+
+function jmGoRiskRef(kind, id) {
+  const k = String(kind || "").toLowerCase();
+  if (k.includes("run")) {
+    jmGoView("runs", () => { if (typeof showDetail === "function") showDetail(id); });
+  } else if (k.includes("session")) {
+    jmGoView("sessionlog");
+  } else if (k.includes("trigger")) {
+    jmGoView("triggers");
+  } else {
+    jmGoView("inbox");
+  }
+}
+
+/* ── 승인 대기 (/approvals) ── */
+async function loadApprovals() {
+  const el = $("#appr-body");
+  if (!el) return;
+  el.innerHTML = '<div class="empty">로딩…</div>';
+  try {
+    const d = await api("/approvals");
+    const items = (d.items || [])
+      .slice()
+      .sort((a, b) => (b.age_seconds || 0) - (a.age_seconds || 0));  // 오래된 순
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">대기 중인 승인이 없습니다</div>';
+      return;
+    }
+    el.innerHTML = items.map(a => {
+      const kind = String(a.kind || "").toLowerCase();
+      const kindLabel = kind.includes("run") ? "실행"
+        : kind.includes("session") ? "세션"
+        : kind.includes("trigger") ? "트리거"
+        : (a.kind || "승인");
+      return `<div class="list-row">
+        <span class="inbox-kind ${kind.includes("run") ? "k-approval" : kind.includes("session") ? "k-session_attention" : "k-schedule"}">${esc(kindLabel)}</span>
+        <div class="grow"><b>${esc(a.title || a.id || "-")}</b>
+          ${a.project ? `<span class="proj-chip" style="margin-left:6px">${esc(a.project)}</span>` : ""}
+          <div class="card-meta">대기 ${jmFmtAge(a.age_seconds)} · ${esc(officeFmtTs(a.waiting_since))}</div></div>
+        <button class="secondary appr-go" data-kind="${esc(a.kind || "")}" data-id="${esc(a.id || "")}">처리하러 가기</button>
+      </div>`;
+    }).join("");
+    el.querySelectorAll(".appr-go").forEach(b =>
+      b.addEventListener("click", () => jmGoApproval(b.dataset.kind, b.dataset.id)));
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+$("#appr-reload")?.addEventListener("click", loadApprovals);
+
+function jmGoApproval(kind, id) {
+  const k = String(kind || "").toLowerCase();
+  if (k.includes("run")) {
+    jmGoView("runs", () => { if (typeof showDetail === "function") showDetail(id); });
+  } else if (k.includes("session")) {
+    jmGoView("sessionlog");
+  } else if (k.includes("trigger")) {
+    jmGoView("triggers");
+  } else {
+    jmGoView("office");
+  }
+}
+// 승인 뷰가 보이는 동안 30초마다 자동 갱신
+setInterval(() => {
+  const s = document.getElementById("view-approvals");
+  if (s && !s.hidden && typeof loadApprovals === "function") loadApprovals();
+}, 30000);
+
+/* ── 성과 (/perf/compare) ── */
+let _perfWfLoaded = false;
+
+async function loadPerf() {
+  const body = $("#perf-body");
+  if (!body) return;
+  if (!_perfWfLoaded) {
+    _perfWfLoaded = true;
+    try {
+      const keys = await _allWorkflowKeys();
+      const sel = $("#perf-wf");
+      if (sel) sel.innerHTML =
+        '<option value="">전체 워크플로</option>' +
+        keys.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join("");
+    } catch (e) { /* 워크플로 목록 실패 시 전체로 진행 */ }
+  }
+  await loadPerfCompare();
+}
+$("#perf-reload")?.addEventListener("click", loadPerfCompare);
+$("#perf-group")?.addEventListener("change", loadPerfCompare);
+$("#perf-wf")?.addEventListener("change", loadPerfCompare);
+
+async function loadPerfCompare() {
+  const body = $("#perf-body");
+  if (!body) return;
+  body.innerHTML = '<div class="empty">로딩…</div>';
+  const wf = ($("#perf-wf") || {}).value || "";
+  const gb = ($("#perf-group") || {}).value || "model";
+  try {
+    const d = await api("/perf/compare?workflow=" + encodeURIComponent(wf) +
+      "&group_by=" + encodeURIComponent(gb));
+    body.innerHTML = perfCompareHtml(d);
+  } catch (e) {
+    body.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function perfCompareHtml(d) {
+  const items = (d.items || []);
+  const sess = ((d.sessions || {}).items) || [];
+  if (!items.length && !sess.length) {
+    return '<div class="empty">비교 데이터가 없습니다</div>';
+  }
+  let html = "";
+  if (items.length) {
+    const maxRate = Math.max(1, ...items.map(x => Number(x.success_rate) || 0));
+    html += `<div class="card"><h3 style="margin:0 0 8px;font-size:15px">` +
+      `${esc(d.workflow || "전체")} — ${esc(d.group_by || "")}별 비교</h3>` +
+      `<div class="table-scroll"><table><thead><tr>` +
+      `<th>그룹</th><th>실행</th><th>성공률</th><th>평균 시간</th>` +
+      `<th>토큰</th><th>비용</th><th>실패 단계 (상위)</th></tr></thead><tbody>` +
+      items.map(x => {
+        const rate = Number(x.success_rate) || 0;
+        return `<tr><td><b>${esc(x.group ?? "-")}</b></td>` +
+          `<td>${x.run_count ?? 0}</td>` +
+          `<td><span class="perf-bar" style="width:${Math.max(2, Math.round(rate / maxRate * 60))}px"></span> ` +
+          `${rate}%</td>` +
+          `<td>${officeFmtSecs(x.avg_seconds || 0)}</td>` +
+          `<td>${(x.total_tokens ?? 0).toLocaleString()}</td>` +
+          `<td>${usd(x.total_cost_usd)}</td>` +
+          `<td class="card-meta">${esc(jmTopStages(x.failures_by_stage, 3))}</td></tr>`;
+      }).join("") + `</tbody></table></div></div>`;
+  }
+  if (sess.length) {
+    html += `<div class="card"><h3 style="margin:0 0 8px;font-size:15px">도구별 세션 통계</h3>` +
+      `<div class="table-scroll"><table><thead><tr>` +
+      `<th>도구</th><th>세션 수</th><th>활성</th><th>종료</th><th>평균 작업 시간</th></tr></thead><tbody>` +
+      sess.map(x => `<tr><td><b>${esc(x.tool ?? "-")}</b></td>` +
+        `<td>${x.session_count ?? 0}</td><td>${x.active ?? 0}</td>` +
+        `<td>${x.ended ?? 0}</td>` +
+        `<td>${officeFmtSecs(x.avg_work_seconds || 0)}</td></tr>`).join("") +
+      `</tbody></table></div></div>`;
+  }
+  return html;
+}
 
 /* ── 실행 댓글 (/runs/{id}/comments) ── */
 let _rcRunId = null; // 상세 전환 레이스 방지 — 최신 선택 run의 댓글만 렌더
@@ -6264,13 +6979,9 @@ _mobMq.addEventListener?.("change", _mobTick);
 setInterval(_mobTick, 60000);
 if (_mobMq.matches) mobRefresh();
 
-/* ── 감사 로그 nav — admin에게만 표시 (/auth/me role 확인) ── */
-jmMe().then(me => {
-  if ((me || {}).role === "admin") {
-    const nav = $("#nav-audit");
-    if (nav) nav.hidden = false;
-  }
-});
+/* ── 역할 기반 nav 게이팅 — 상단의 applyRoleGating()이 /auth/me resolve 후
+   data-min-role="lead|admin" 항목(감사 로그 #nav-audit 포함)을 일괄 제어한다.
+   구 admin 전용 분기(jmMe → #nav-audit.hidden=false)는 이 메커니즘으로 대체. ── */
 
 /* ── iOS '홈 화면에 추가' 안내 배너 ── */
 (() => {

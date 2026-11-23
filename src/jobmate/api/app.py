@@ -186,7 +186,35 @@ class AskRequest(BaseModel):
 
 
 class ReportGenerateRequest(BaseModel):
-    kind: Literal["daily", "weekly"] = "daily"
+    kind: Literal["daily", "weekly", "exec_daily", "exec_weekly"] = "daily"
+
+
+class RunPatchRequest(BaseModel):
+    """PATCH /runs/{id}, /agent-sessions/{key} — project 태그만 지원."""
+
+    project: str | None = Field(default=None, max_length=500)
+
+
+class UserRoleRequest(BaseModel):
+    """PATCH /users/{id}/role — member|lead|admin ('user'는 member 별칭)."""
+
+    role: str = Field(min_length=1, max_length=20)
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    color: str = Field(default="", max_length=32)
+    description: str = Field(default="", max_length=2000)
+    goal: str = Field(default="", max_length=500)
+    target_count: int = Field(default=0, ge=0)
+
+
+class ProjectPatchRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    color: str | None = Field(default=None, max_length=32)
+    description: str | None = Field(default=None, max_length=2000)
+    goal: str | None = Field(default=None, max_length=500)
+    target_count: int | None = Field(default=None, ge=0)
 
 
 class CommentCreateRequest(BaseModel):
@@ -784,6 +812,7 @@ def create_app(
             "metadata": run.metadata,
             "created_at": run.created_at.isoformat(),
             "updated_at": run.updated_at.isoformat(),
+            "project": run.project,
             "stages": [s.model_dump(mode="json") for s in store.get_stage_runs(run_id)],
             "approvals": [a.model_dump(mode="json") for a in store.get_approvals(run_id)],
             "audit": [a.model_dump(mode="json") for a in store.get_audit(run_id)],
@@ -848,15 +877,26 @@ def create_app(
         user = store.get_session_user(hash_token(token))
         return user if user and email_allowed(user["email"]) else None
 
-    def _effective_role(user: dict[str, Any]) -> str:
-        """저장된 role + JOBMATE_ADMIN_EMAILS env 오버라이드."""
-        from ..security import admin_emails
+    def _normalize_role(role: Any) -> str:
+        """role 정규화 — member|lead|admin. 레거시 'user'는 member로 취급."""
+        r = str(role or "").strip().lower()
+        if r == "user":
+            r = "member"
+        return r if r in ("member", "lead", "admin") else "member"
 
-        if str(user.get("role") or "user") == "admin":
+    def _effective_role(user: dict[str, Any], role_override: str | None = None) -> str:
+        """저장된 role(정규화) + JOBMATE_ADMIN_EMAILS/LEAD_EMAILS env 오버라이드.
+
+        env admin > 저장 admin > env lead > 저장 lead > member 순."""
+        from ..security import admin_emails, lead_emails
+
+        stored = _normalize_role(role_override if role_override is not None else user.get("role"))
+        email = (user.get("email") or "").strip().lower()
+        if stored == "admin" or email in admin_emails():
             return "admin"
-        if (user.get("email") or "").strip().lower() in admin_emails():
-            return "admin"
-        return "user"
+        if stored == "lead" or email in lead_emails():
+            return "lead"
+        return "member"
 
     def _admin_user(request: Request) -> dict[str, Any] | None:
         """관리자 판정 — 세션 사용자 role=admin, 유효 API 키(머신), 또는
@@ -867,6 +907,23 @@ def create_app(
         if user is not None:
             if _effective_role(user) == "admin":
                 return {**user, "role": "admin"}
+            return None
+        if api_key() and authorized(request):
+            return {"id": "api-key", "email": "", "role": "admin"}
+        if not api_key() and not allowed_emails() and not os.environ.get("VERCEL"):
+            return {"id": "local", "email": "", "role": "admin"}
+        return None
+
+    def _lead_user(request: Request) -> dict[str, Any] | None:
+        """팀장(lead) 이상 판정 — 세션 role이 lead/admin이거나,
+        유효 API 키(머신), 또는 인증 비활성 로컬 개발 모드일 때 허용."""
+        from ..security import allowed_emails, api_key, authorized
+
+        user = _session_user(request)
+        if user is not None:
+            role = _effective_role(user)
+            if role in ("lead", "admin"):
+                return {**user, "role": role}
             return None
         if api_key() and authorized(request):
             return {"id": "api-key", "email": "", "role": "admin"}
@@ -948,6 +1005,7 @@ def create_app(
                 "id": r.id,
                 "workflow": r.workflow_key,
                 "status": r.status.value,
+                "project": r.project,
                 "created_at": r.created_at.isoformat(),
             }
             for r in store.list_runs(limit, workflow=workflow)
@@ -1040,6 +1098,20 @@ def create_app(
             for e in store.get_audit(run_id)[-200:][::-1]
         ]
         return JSONResponse(content=events)
+
+    @app.patch("/api/v1/runs/{run_id}")
+    def patch_run(run_id: str, body: RunPatchRequest, request: Request) -> JSONResponse:
+        """run의 project 태그 설정/해제 (null/빈 문자열 → 해제)."""
+        run = store.get_run(run_id)
+        if run is None:
+            return err(404, "not_found", "run not found", request)
+        project = "" if body.project is None else body.project.strip()[:200]
+        if not store.set_run_project(run_id, project):
+            return err(404, "not_found", "run not found", request)
+        _audit_api(request, "run_project_set", run_id, {"project": project})
+        logger.info("run %s project set to %r", run_id, project)
+        d = run_detail(run_id)
+        return JSONResponse(content=d or {"ok": True})
 
     # ---- workflow schedules (주기적 run 자동 생성) ----
     @app.get("/api/v1/schedules")
@@ -1279,13 +1351,20 @@ def create_app(
     # ---- 리포트 ----
     from ..reports import build_report
 
+    _REPORT_KINDS = ("daily", "weekly", "exec_daily", "exec_weekly")
+
     @app.get("/api/v1/reports")
     def get_report(kind: str = "daily") -> JSONResponse:
         """온디맨드 리포트 — 저장 없이 즉시 생성."""
-        if kind not in ("daily", "weekly"):
+        if kind not in _REPORT_KINDS:
             return JSONResponse(
                 status_code=422,
-                content={"error": {"code": "validation", "message": "kind must be daily|weekly"}},
+                content={
+                    "error": {
+                        "code": "validation",
+                        "message": "kind must be daily|weekly|exec_daily|exec_weekly",
+                    }
+                },
             )
         try:
             content = build_report(store, kind, settings)
@@ -1300,7 +1379,7 @@ def create_app(
     @app.get("/api/v1/reports/latest")
     def latest_report(request: Request, kind: str = "daily") -> JSONResponse:
         """저장된 최신 리포트. 없으면 온디맨드 생성 결과를 반환(404 없음)."""
-        if kind not in ("daily", "weekly"):
+        if kind not in _REPORT_KINDS:
             return err(422, "validation", "kind must be daily|weekly", request)
         rep = store.latest_report(kind)
         if rep is None:
@@ -1376,6 +1455,44 @@ def create_app(
                 }
             )
         return JSONResponse(content={"users": users})
+
+    @app.patch("/api/v1/users/{user_id}/role")
+    def patch_user_role(user_id: str, body: UserRoleRequest, request: Request) -> JSONResponse:
+        """사용자 role 변경 (관리자 전용) — 마지막 admin 강등 차단 + 감사 로그."""
+        admin = _admin_user(request)
+        if admin is None:
+            return err(403, "forbidden", "admin role required", request)
+        target = store.get_user_by_id(user_id)
+        if target is None:
+            return err(404, "not_found", "user not found", request)
+        new_role = _normalize_role(body.role)
+        old_role = _normalize_role(target.get("role"))
+        if new_role == old_role:
+            return JSONResponse(content={"id": user_id, "role": new_role, "changed": False})
+        # 마지막 admin 강등 방지 — 저장된 role 기준 admin 수가 1명뿐이면 차단
+        if old_role == "admin" and new_role != "admin":
+            admin_count = sum(
+                1 for u in store.list_users() if _normalize_role(u.get("role")) == "admin"
+            )
+            if admin_count <= 1:
+                return err(
+                    409,
+                    "last_admin",
+                    "cannot demote the last admin",
+                    request,
+                )
+        store.set_user_role(user_id, new_role)
+        detail = {
+            "email": target.get("email", ""),
+            "old_role": old_role,
+            "new_role": new_role,
+        }
+        store.audit(
+            str(admin.get("email") or admin.get("id") or "api"), "api", "user_role", user_id, detail
+        )
+        _audit_api(request, "user_role", user_id, detail)
+        logger.info("user role changed id=%s %s->%s", user_id, old_role, new_role)
+        return JSONResponse(content={"id": user_id, "role": new_role, "changed": True})
 
     @app.get("/api/v1/event-links")
     def event_links(limit: int = 50) -> list[dict[str, Any]]:
@@ -1510,10 +1627,51 @@ def create_app(
 
     @app.get("/api/v1/agent-sessions/{tool}/{session_key}/history")
     def agent_session_history(tool: str, session_key: str, limit: int = 100) -> dict[str, Any]:
-        """세션 상태 전이 이력 (시간순)."""
-        return {
-            "events": store.agent_session_history(tool, session_key, limit=min(max(limit, 1), 500))
-        }
+        """세션 상태 전이 이력 + 회고 요약 (시간순)."""
+        from ..lead import session_history
+
+        hist = session_history(store, tool, session_key)
+        if hist is None:
+            return {"events": [], "timeline": [], "stats": {}, "summary": ""}
+        # limit은 기존 이벤트 목록에만 적용 — timeline은 전체 유지
+        hist["events"] = hist["events"][: min(max(limit, 1), 500)]
+        return hist
+
+    @app.get("/api/v1/agent-sessions/{session_key}/history")
+    def agent_session_history_by_key(session_key: str, limit: int = 100) -> dict[str, Any]:
+        """tool 미지정 세션 히스토리 — session_key로 최신 세션을 찾아 회고."""
+        from ..lead import session_history
+
+        sess = store.find_agent_session_by_key(session_key)
+        if sess is None:
+            return {"events": [], "timeline": [], "stats": {}, "summary": ""}
+        hist = session_history(store, str(sess.get("tool") or ""), session_key)
+        if hist is None:
+            return {"events": [], "timeline": [], "stats": {}, "summary": ""}
+        hist["events"] = hist["events"][: min(max(limit, 1), 500)]
+        return hist
+
+    @app.patch("/api/v1/agent-sessions/{session_key}")
+    def patch_agent_session(
+        session_key: str, body: RunPatchRequest, request: Request
+    ) -> JSONResponse:
+        """세션 project 태그 설정 (lead 이상). tool 미지정 — 최신 세션 우선."""
+        lead = _lead_user(request)
+        if lead is None:
+            return err(403, "forbidden", "lead role required", request)
+        if "project" not in body.model_fields_set:
+            return err(422, "validation", "project field required", request)
+        sess = store.set_agent_session_project(session_key, body.project or "")
+        if sess is None:
+            return err(404, "not_found", "session not found", request)
+        _audit_api(
+            request,
+            "session_project_set",
+            f"{sess.get('tool')}:{session_key}",
+            {"project": sess.get("project") or ""},
+        )
+        logger.info("agent session %s project set", session_key)
+        return JSONResponse(content=_session_view(sess))
 
     @app.get("/api/v1/agent-sessions/{tool}/{session_key}/activity")
     def agent_session_activity(tool: str, session_key: str, limit: int = 200) -> dict[str, Any]:
@@ -1521,6 +1679,123 @@ def create_app(
         return {
             "activity": store.session_activity(tool, session_key, limit=min(max(limit, 1), 500))
         }
+
+    # ---- 프로젝트 마스터 + 태깅 (lead 이상) ----
+    from ..lead import (
+        approval_queue,
+        detect_risks,
+        perf_compare,
+        project_detail,
+        project_overview,
+    )
+
+    def _lead_or_403(request: Request) -> Any:
+        """lead 이상이면 사용자 dict, 아니면 403 JSONResponse."""
+        lead = _lead_user(request)
+        if lead is None:
+            return err(403, "forbidden", "lead role required", request)
+        return lead
+
+    @app.get("/api/v1/projects")
+    def list_projects(request: Request) -> JSONResponse:
+        """프로젝트 마스터 목록 (lead 이상)."""
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        return JSONResponse(content={"items": store.list_projects()})
+
+    @app.post("/api/v1/projects", status_code=201)
+    def create_project(body: ProjectCreateRequest, request: Request) -> JSONResponse:
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        proj = store.create_project(
+            body.name,
+            color=body.color,
+            description=body.description,
+            goal=body.goal,
+            target_count=body.target_count,
+            created_by=str(lead.get("email") or lead.get("id") or ""),
+        )
+        if proj is None:
+            return err(409, "conflict", "project name already exists or invalid", request)
+        _audit_api(request, "project_create", proj["id"], {"name": proj["name"]})
+        logger.info("project created id=%s", proj["id"])
+        return JSONResponse(status_code=201, content=proj)
+
+    @app.get("/api/v1/projects/overview")
+    def projects_overview(request: Request) -> JSONResponse:
+        """프로젝트별 세션/run/승인/비용 집계 + '(기타)' 버킷 (lead 이상)."""
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        return JSONResponse(content=project_overview(store))
+
+    @app.get("/api/v1/projects/{project_id}/detail")
+    def project_detail_view(project_id: str, request: Request) -> JSONResponse:
+        """프로젝트 상세 — 세션/run 요약 + 타임라인 + 단계 실패 + 30일 비용."""
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        detail = project_detail(store, project_id)
+        if detail is None:
+            return err(404, "not_found", "project not found", request)
+        return JSONResponse(content=detail)
+
+    @app.patch("/api/v1/projects/{project_id}")
+    def patch_project(project_id: str, body: ProjectPatchRequest, request: Request) -> JSONResponse:
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        fields = body.model_dump(exclude_unset=True)
+        proj = store.update_project(project_id, **fields)
+        if proj is None:
+            return err(404, "not_found", "project not found or name conflict", request)
+        _audit_api(request, "project_update", project_id, fields)
+        logger.info("project updated id=%s fields=%s", project_id, sorted(fields))
+        return JSONResponse(content=proj)
+
+    @app.delete("/api/v1/projects/{project_id}")
+    def delete_project(project_id: str, request: Request) -> JSONResponse:
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        if not store.delete_project(project_id):
+            return err(404, "not_found", "project not found", request)
+        _audit_api(request, "project_delete", project_id, {})
+        logger.info("project deleted id=%s", project_id)
+        return JSONResponse(content={"ok": True})
+
+    # ---- 리드 대시보드: 리스크 / 승인 큐 / 성과 비교 ----
+    @app.get("/api/v1/risks")
+    def risks(request: Request) -> JSONResponse:
+        """라이브 리스크 탐지 — 심각도+최신순 최대 50건 (lead 이상)."""
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        return JSONResponse(content=detect_risks(store))
+
+    @app.get("/api/v1/approvals")
+    def approvals(request: Request) -> JSONResponse:
+        """통합 승인 큐 — run waiting_* + 세션 decision/ask + 트리거 오류."""
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        return JSONResponse(content=approval_queue(store))
+
+    @app.get("/api/v1/perf/compare")
+    def perf_compare_view(
+        request: Request,
+        workflow: str = "",
+        group_by: str = "model",
+    ) -> JSONResponse:
+        """run 성과 비교 — model/agent/tool 그룹별 성공률·비용 + 세션 tool 통계."""
+        lead = _lead_or_403(request)
+        if isinstance(lead, JSONResponse):
+            return lead
+        if group_by not in ("model", "agent", "tool"):
+            return err(422, "validation", "group_by must be model|agent|tool", request)
+        return JSONResponse(content=perf_compare(store, workflow=workflow, group_by=group_by))
 
     @app.get("/api/v1/usage/llm")
     def llm_usage(days: int = 7) -> dict[str, Any]:
@@ -2460,6 +2735,7 @@ def create_app(
         try:
             if len(store.list_users()) == 1:
                 store.set_user_role(user["id"], "admin")
+                user["role"] = "admin"  # 응답용 dict도 동기화 (조회 시점 이후 승격)
                 store.audit(
                     "",
                     "system",
@@ -2981,8 +3257,13 @@ def create_app(
             return err(404, "not_found", "action.playbook_id not found", request)
         if atype == "report":
             rk = str(action.get("report_kind") or "daily")
-            if rk not in ("daily", "weekly"):
-                return err(422, "validation", "report_kind must be daily|weekly", request)
+            if rk not in ("daily", "weekly", "exec_daily", "exec_weekly"):
+                return err(
+                    422,
+                    "validation",
+                    "report_kind must be daily|weekly|exec_daily|exec_weekly",
+                    request,
+                )
         return None
 
     @app.get("/api/v1/triggers")
@@ -3762,7 +4043,12 @@ def _maybe_daily_radar(
         logger.info("radar daily collect scheduled: %s", ",".join(scheduled))
 
 
-_REPORT_MAX_AGE = {"daily": timedelta(hours=20), "weekly": timedelta(days=7)}
+_REPORT_MAX_AGE = {
+    "daily": timedelta(hours=20),
+    "exec_daily": timedelta(hours=20),
+    "weekly": timedelta(days=7),
+    "exec_weekly": timedelta(days=7),
+}
 
 
 def _report_is_stale(store: Store, kind: str) -> bool:
@@ -3780,11 +4066,11 @@ def _report_is_stale(store: Store, kind: str) -> bool:
 
 
 def _maybe_generate_reports(store: Store, settings: Settings, adapters: dict[str, Any]) -> None:
-    """daily 리포트 20시간/weekly 리포트 7일 주기로 자동 생성.
+    """daily/exec_daily 20시간·weekly/exec_weekly 7일 주기로 자동 생성.
     생성 시 reports 테이블 저장 + 인박스 kind='report' + 메신저 알림(best-effort)."""
     from ..reports import build_report
 
-    for kind in ("daily", "weekly"):
+    for kind in ("daily", "exec_daily", "weekly", "exec_weekly"):
         try:
             if not _report_is_stale(store, kind):
                 continue

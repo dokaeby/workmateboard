@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS runs (
   error TEXT NOT NULL DEFAULT '',
   metadata TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
+  project TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -439,6 +440,19 @@ CREATE TABLE IF NOT EXISTS dashboard_cards (
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+-- projects: 팀장 프로젝트 마스터 — 세션/run의 project 태그와 ci 매칭
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  goal TEXT NOT NULL DEFAULT '',
+  target_count INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -453,6 +467,7 @@ CREATE TABLE IF NOT EXISTS runs (
   error TEXT NOT NULL DEFAULT '',
   metadata TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
+  project TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -834,6 +849,19 @@ CREATE TABLE IF NOT EXISTS dashboard_cards (
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+-- projects: 팀장 프로젝트 마스터 — 세션/run의 project 태그와 ci 매칭
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  goal TEXT NOT NULL DEFAULT '',
+  target_count INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -931,8 +959,11 @@ class Store:
             (psycopg.errors.IntegrityError,) if self._pg else (sqlite3.IntegrityError,)
         )
         self._lock = threading.Lock()
+        self._local = threading.local()
+        self._sqlite_conns: list[Any] = []
+        self._closed = False
         if self._pg:
-            self._conn: Any = _PGConn(dsn)
+            self._pg_conn = _PGConn(dsn)
             for stmt in SCHEMA_PG.split(";"):
                 if stmt.strip():
                     self._conn.execute(stmt)
@@ -940,10 +971,6 @@ class Store:
             self._path = Path(path)
             self._path.parent.mkdir(parents=True, exist_ok=True)
             # CPython #118172: shared statement caches can mix concurrent query results.
-            self._conn = sqlite3.connect(
-                str(self._path), check_same_thread=False, cached_statements=0
-            )
-            self._conn.row_factory = sqlite3.Row
             with self._conn:
                 self._conn.executescript(SCHEMA)
         self._migrate_agent_session_columns()
@@ -1004,11 +1031,61 @@ class Store:
         self._ensure_columns("users", {"role": "TEXT NOT NULL DEFAULT 'user'"})
 
     def _migrate_run_columns(self) -> None:
-        """기존 DB의 runs에 created_by 컬럼 보강 (팀 뷰/export용)."""
-        self._ensure_columns("runs", {"created_by": "TEXT NOT NULL DEFAULT ''"})
+        """기존 DB의 runs에 created_by/project 컬럼 보강."""
+        self._ensure_columns(
+            "runs",
+            {"created_by": "TEXT NOT NULL DEFAULT ''", "project": "TEXT NOT NULL DEFAULT ''"},
+        )
+
+    @property
+    def _conn(self) -> Any:
+        """스레드별 커넥션.
+
+        요청 스레드와 _automation_loop 스레드가 같은 sqlite3.Connection을
+        동시에 쓰면 간헐적 segfault이 나므로(CPython sqlite3는 연결 단위
+        스레드 안전이 없다) 스레드마다 연결을 하나씩 둔다. WAL + busy_timeout으로
+        읽기/쓰기 동시성을 확보한다."""
+        if self._pg:
+            return self._pg_conn
+        if self._closed:
+            raise RuntimeError("store is closed")
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(
+                str(self._path),
+                check_same_thread=False,
+                timeout=30,
+                cached_statements=0,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn = conn
+            self._sqlite_conns.append(conn)
+        return conn
 
     def close(self) -> None:
-        self._conn.close()
+        """호출 스레드의 커넥션만 닫는다.
+
+        다른 스레드(automation loop 등)의 커넥션을 여기서 닫으면 사용
+        중인 연결을 닫아 segfault가 난다 — 각 스레드는 자기 커넥션을
+        쓰는 동안 살아 있고, 프로세스 종료 시 함께 회수된다.
+        새 커넥션 생성은 _closed 플래그로 차단한다."""
+        self._closed = True
+        if self._pg:
+            self._pg_conn.close()
+            return
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            self._local.conn = None
+            try:
+                self._sqlite_conns.remove(conn)
+            except ValueError:
+                pass
+            try:
+                conn.close()
+            except Exception as e:
+                logger.debug("sqlite conn close failed: %s", e)
 
     @contextmanager
     def tx(self) -> Iterator[Any]:
@@ -1025,6 +1102,11 @@ class Store:
         metadata: dict[str, Any] | None = None,
         created_by: str = "",
     ) -> Run:
+        # input.project 자유 태그를 컬럼으로도 유지 (PATCH /runs/{id}와 동일 경로)
+        project = ""
+        pv = input_data.get("project")
+        if isinstance(pv, str):
+            project = pv.strip()[:200]
         run = Run(
             id=uuid.uuid4().hex[:12],
             workflow_key=workflow_key,
@@ -1036,12 +1118,13 @@ class Store:
             updated_at=_now(),
             metadata=metadata or {},
             created_by=created_by,
+            project=project,
         )
         with self.tx() as c:
             c.execute(
                 "INSERT INTO runs(id,workflow_key,workflow_version,input,status,trace_id,"
-                "error,metadata,created_by,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "error,metadata,created_by,project,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run.id,
                     run.workflow_key,
@@ -1052,6 +1135,7 @@ class Store:
                     run.error,
                     json.dumps(run.metadata),
                     run.created_by,
+                    project,
                     _iso(run.created_at),
                     _iso(run.updated_at),
                 ),
@@ -1111,6 +1195,7 @@ class Store:
             error=row["error"],
             metadata=_loads(row["metadata"]),
             created_by=row["created_by"] if "created_by" in row.keys() else "",
+            project=row["project"] if "project" in row.keys() else "",
             created_at=_dt(row["created_at"]) or _now(),
             updated_at=_dt(row["updated_at"]) or _now(),
         )
@@ -1919,13 +2004,21 @@ class Store:
 
     # ---- users / auth_sessions ----
     @staticmethod
+    def _norm_role(role: Any) -> str:
+        """users.role 정규화 — member|lead|admin. 레거시 'user'는 member."""
+        r = str(role or "").strip().lower()
+        if r == "user":
+            r = "member"
+        return r if r in ("member", "lead", "admin") else "member"
+
+    @staticmethod
     def _user_json(r: Any) -> dict[str, Any]:
         return {
             "id": r["id"],
             "email": r["email"],
             "display_name": r["display_name"],
             "google_sub": r["google_sub"],
-            "role": r["role"] if "role" in r.keys() else "user",
+            "role": Store._norm_role(r["role"] if "role" in r.keys() else "user"),
             "created_at": r["created_at"],
         }
 
@@ -2948,7 +3041,12 @@ class Store:
         rows = self._conn.execute(
             "SELECT id,email,display_name,role,created_at FROM users ORDER BY created_at"
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["role"] = self._norm_role(d.get("role"))
+            out.append(d)
+        return out
 
     def set_user_role(self, user_id: str, role: str) -> None:
         with self.tx() as c:
@@ -3366,7 +3464,7 @@ class Store:
                     "id": uid,
                     "email": email,
                     "name": u.get("display_name", ""),
-                    "role": u.get("role", "user"),
+                    "role": Store._norm_role(u.get("role", "user")),
                     "run_count": int((rr or {}).get("n") or 0),
                     "session_count": int((sr or {}).get("n") or 0),
                     "last_active_at": last_active or None,
@@ -3419,6 +3517,191 @@ class Store:
             "content": _loads(row["content"]),
             "created_at": row["created_at"],
         }
+
+    # ---- projects (팀장 프로젝트 마스터/태깅) ----
+    @staticmethod
+    def _project_json(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        try:
+            d["target_count"] = int(d.get("target_count") or 0)
+        except (TypeError, ValueError):
+            d["target_count"] = 0
+        return d
+
+    def create_project(
+        self,
+        name: str,
+        color: str = "",
+        description: str = "",
+        goal: str = "",
+        target_count: int = 0,
+        created_by: str = "",
+    ) -> dict[str, Any] | None:
+        """프로젝트 생성. name은 trim 후 lower() 기준 중복 시 None."""
+        name = name.strip()[:200]
+        if not name:
+            return None
+        if self.find_project_by_name(name) is not None:
+            return None
+        pid = uuid.uuid4().hex[:12]
+        now = _iso(_now())
+        try:
+            with self.tx() as c:
+                c.execute(
+                    "INSERT INTO projects(id,name,color,description,goal,target_count,"
+                    "created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        pid,
+                        name,
+                        color.strip()[:32],
+                        description.strip()[:2000],
+                        goal.strip()[:500],
+                        int(target_count or 0),
+                        created_by[:200],
+                        now,
+                    ),
+                )
+        except self._integrity_errors:
+            return None
+        return self.get_project(pid)
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute("SELECT * FROM projects ORDER BY lower(name), name").fetchall()
+        return [self._project_json(r) for r in rows]
+
+    def get_project(self, project_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        return self._project_json(row) if row else None
+
+    def find_project_by_name(self, name: str) -> dict[str, Any] | None:
+        """프로젝트 이름 조회 — trim + case-insensitive."""
+        row = self._conn.execute(
+            "SELECT * FROM projects WHERE lower(name)=lower(?)",
+            (name.strip()[:200],),
+        ).fetchone()
+        return self._project_json(row) if row else None
+
+    def update_project(self, project_id: str, **fields: Any) -> dict[str, Any] | None:
+        """name/color/description/goal/target_count 부분 갱신. name 변경 시 ci 중복 검사."""
+        proj = self.get_project(project_id)
+        if proj is None:
+            return None
+        updates: dict[str, Any] = {}
+        if "name" in fields:
+            new_name = str(fields["name"] or "").strip()[:200]
+            if not new_name:
+                return None
+            other = self.find_project_by_name(new_name)
+            if other is not None and other["id"] != project_id:
+                return None
+            updates["name"] = new_name
+        if "color" in fields:
+            updates["color"] = str(fields["color"] or "").strip()[:32]
+        if "description" in fields:
+            updates["description"] = str(fields["description"] or "").strip()[:2000]
+        if "goal" in fields:
+            updates["goal"] = str(fields["goal"] or "").strip()[:500]
+        if "target_count" in fields:
+            try:
+                updates["target_count"] = max(0, int(fields["target_count"] or 0))
+            except (TypeError, ValueError):
+                return None
+        if not updates:
+            return proj
+        sets = ", ".join(f"{k}=?" for k in updates)
+        try:
+            with self.tx() as c:
+                c.execute(
+                    f"UPDATE projects SET {sets} WHERE id=?",  # noqa: S608 - keys는 고정 허용 목록
+                    (*updates.values(), project_id),
+                )
+        except self._integrity_errors:
+            return None
+        return self.get_project(project_id)
+
+    def delete_project(self, project_id: str) -> bool:
+        """프로젝트 삭제 — 세션/run의 태그 값은 그대로 둔다(고아 태그 허용)."""
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        return cur.rowcount > 0
+
+    # ---- 프로젝트 태깅 (runs.project / agent_sessions.project) ----
+    def set_run_project(self, run_id: str, project: str) -> bool:
+        """run의 project 태그 설정. ''이면 태그 해제. updated_at은 건드리지 않는다."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE runs SET project=? WHERE id=?",
+                (project.strip()[:200], run_id),
+            )
+        return cur.rowcount > 0
+
+    def find_agent_session_by_key(self, session_key: str) -> dict[str, Any] | None:
+        """session_key만으로 세션 조회 — 복수 tool이 같은 key를 쓰면 최신 updated_at 우선."""
+        row = self._conn.execute(
+            "SELECT * FROM agent_sessions WHERE session_key=?"
+            " ORDER BY updated_at DESC, last_event_at DESC LIMIT 1",
+            (session_key,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_agent_session_project(
+        self, session_key: str, project: str, tool: str | None = None
+    ) -> dict[str, Any] | None:
+        """세션 project 태그 설정 (PATCH /agent-sessions/{key}).
+
+        tool이 주어지면 (tool, session_key) 정확 매칭, 아니면 최신 세션을 고른다.
+        변경 시 agent_session_events에 project 전이 이벤트 1건을 남긴다.
+        반환: 갱신된 세션 행 또는 None(세션 없음)."""
+        sess = (
+            self.get_agent_session(tool, session_key)
+            if tool
+            else self.find_agent_session_by_key(session_key)
+        )
+        if sess is None:
+            return None
+        new_project = project.strip()[:500] if project else ""
+        old_project = sess.get("project") or ""
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "UPDATE agent_sessions SET project=?, updated_at=? WHERE tool=? AND session_key=?",
+                (new_project or None, now, sess["tool"], sess["session_key"]),
+            )
+            if new_project != old_project:
+                c.execute(
+                    "INSERT INTO agent_session_events(id,tool,session_key,status,"
+                    "project,doing,ask,event_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex[:12],
+                        sess["tool"],
+                        sess["session_key"],
+                        sess.get("status") or "",
+                        new_project or None,
+                        sess.get("doing"),
+                        sess.get("ask"),
+                        now,
+                        now,
+                    ),
+                )
+        return self.get_agent_session(sess["tool"], sess["session_key"])
+
+    # ---- 리드 대시보드 집계용 raw row 조회 ----
+    def stage_run_rows(self, since_iso: str) -> list[dict[str, Any]]:
+        """since 이후 생성된 run의 stage_runs + run 컨텍스트 JOIN.
+
+        리스크(7d 단계 실패)·성과 비교·프로젝트 상세(30d 비용) 집계용.
+        반환 dict: stage 필드 + workflow_key/project/run_status/run_created_at/
+        run_updated_at."""
+        rows = self._conn.execute(
+            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.model,"
+            " sr.tokens_in, sr.tokens_out, sr.started_at, sr.finished_at, sr.error,"
+            " r.workflow_key, r.project, r.status AS run_status,"
+            " r.created_at AS run_created_at, r.updated_at AS run_updated_at"
+            " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
+            " WHERE r.created_at >= ? ORDER BY sr.started_at",
+            (since_iso,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # ---- db 메타 (헬스 상세) ----
     def db_info(self) -> dict[str, Any]:

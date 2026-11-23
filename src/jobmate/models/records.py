@@ -22,6 +22,8 @@ class Run(BaseModel):
     error: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_by: str = ""
+    # 프로젝트 태그 — 자유 형식 문자열(마스터 projects.name과 ci 매칭)
+    project: str = ""
 
 
 class StageRun(BaseModel):
