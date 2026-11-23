@@ -239,7 +239,10 @@
     background: var(--accent); border-color: var(--accent); color: #fff;
   }
   .jmo-summary { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
-  #jmo-wrap { display: flex; flex-direction: column; min-height: 0; }
+  #jmo-wrap {
+    display: flex; flex-direction: column; min-height: 0;
+    height: calc(100vh - 230px); min-height: 480px;
+  }
   #jmo-wrap[hidden] { display: none; }
   #jmo-main { flex: 1; min-height: 320px; display: flex; }
   #jmo-stage { flex: 1; min-width: 0; position: relative; overflow: hidden; }
