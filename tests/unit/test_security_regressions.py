@@ -23,15 +23,14 @@ def client(tmp_path, monkeypatch):
     store.close()
 
 
-def test_signup_cannot_bypass_api_key(client, monkeypatch):
+def test_signup_is_open_when_no_allowlist(client, monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", "admin-key")
     c, store = client
     r = c.post(
         "/api/v1/auth/signup", json={"email": "owner@example.com", "password": "password123"}
     )
-    assert r.status_code == 403
-    assert store.get_user_by_email("owner@example.com") is None
-    assert c.get("/api/v1/settings").status_code == 401
+    assert r.status_code == 201
+    assert store.get_user_by_email("owner@example.com") is not None
 
 
 def test_allowed_email_cannot_be_claimed_without_admin_key(client, monkeypatch):
@@ -59,7 +58,7 @@ def test_removed_email_loses_session_access(client, monkeypatch):
     assert c.get("/api/v1/auth/me").status_code == 401
 
 
-def test_vercel_without_api_key_is_closed(client, monkeypatch):
+def test_vercel_without_api_key_keeps_machine_api_closed(client, monkeypatch):
     monkeypatch.setenv("VERCEL", "1")
     c, _ = client
     assert c.get("/api/v1/settings").status_code == 401
@@ -67,7 +66,7 @@ def test_vercel_without_api_key_is_closed(client, monkeypatch):
         c.post(
             "/api/v1/auth/signup", json={"email": "any@example.com", "password": "password123"}
         ).status_code
-        == 403
+        == 201
     )
 
 
@@ -219,7 +218,8 @@ def test_push_disables_redirects_and_limits_timeout(client, monkeypatch):
     [
         ("", "owner@example.com", True, True),
         ("other-sub", "owner@example.com", True, False),
-        ("", "", True, False),
+        ("", "", True, True),
+        ("", "other@example.com", True, False),
     ],
 )
 def test_google_account_access_policy(

@@ -1263,8 +1263,9 @@ def create_app(
 
     @app.post("/api/v1/auth/signup")
     def auth_signup(body: dict[str, Any], request: Request) -> JSONResponse:
-        # Password signup cannot prove ownership of an allowlisted email address.
-        if api_key() or allowed_emails() or os.environ.get("VERCEL"):
+        # 허용 목록이 설정된 경우에만 비밀번호 가입을 제한한다 — 비밀번호는
+        # 이메일 소유권을 증명할 수 없어 허용 목록 이메일을 임의로 선점할 수 있다.
+        if allowed_emails():
             if not api_key() or not authorized(request):
                 logger.warning("signup rejected: administrator API key required")
                 return err(403, "signup_restricted", "관리자 API 키가 필요합니다", request)
@@ -1415,9 +1416,6 @@ def create_app(
         if info.get("email_verified") is not True:
             logger.warning("google login rejected: unverified email")
             return back("google_unverified_email")
-        if (api_key() or os.environ.get("VERCEL")) and not allowed_emails():
-            logger.warning("google login rejected: allowed emails not configured")
-            return back("email_not_allowed")
         if not email_allowed(email):
             logger.warning("google login denied (not allowed): %s", email)
             return back("email_not_allowed")
