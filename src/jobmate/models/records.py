@@ -48,6 +48,8 @@ class Approval(BaseModel):
     comment: str = ""
     decided_by: str = "local"
     decided_at: datetime
+    # 행 생성 시각 — 구 DB 행은 NULL, store가 decided_at으로 폴백
+    created_at: datetime | None = None
 
 
 class AuditEvent(BaseModel):

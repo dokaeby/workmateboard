@@ -47,6 +47,7 @@ class WorkflowSpec(BaseModel):
 
     key: str
     version: str
+    description: str = ""
     stages: list[StageSpec]
     entry: str
     # 분기 규칙: stage_key -> {output_field: {value: next_stage}}

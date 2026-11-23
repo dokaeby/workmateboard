@@ -99,12 +99,13 @@
     color: var(--ink-2); background: var(--surface);
   }
   .badge.completed, .badge.registered, .badge.processed,
-  .badge.notified, .badge.delivered, .badge.confirmed { color: var(--ok);
+  .badge.notified, .badge.delivered, .badge.confirmed, .badge.succeeded { color: var(--ok);
     border-color: var(--ok-border); background: var(--ok-soft); }
   .badge.failed, .badge.rejected, .badge.cancelled { color: var(--err);
     border-color: var(--err-border); background: var(--err-soft); }
   .badge.running, .badge.queued, .badge.pending, .badge.candidate,
-  .badge.needs_confirmation, .badge.needs_review { color: var(--warn);
+  .badge.needs_confirmation, .badge.needs_review,
+  .badge.waiting_approval, .badge.waiting_review { color: var(--warn);
     border-color: var(--warn-border); background: var(--warn-soft); }
   .card-title { font-size: 16px; font-weight: 700; margin: 0 0 4px;
                 overflow-wrap: anywhere; }
@@ -306,6 +307,63 @@
     .office-edges { display: none; }
     .office-node { position: relative; transform: none; width: auto; flex: 1 1 40%; }
   }
+  /* ── 실행 관리 확장 (새 실행/승인/통계/스케줄/감사) ── */
+  .office-newrun {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .office-newrun select, .office-newrun input,
+  #sched-wf, #sched-interval, #sched-task, #stats-wf {
+    font: inherit; font-size: 13px; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); color: var(--ink);
+  }
+  .office-newrun input { flex: 1 1 220px; min-width: 160px; }
+  .office-newrun .card-meta, .office-newrun .status-line { margin: 0; }
+  .office-waiting {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-bottom: 12px; padding: 5px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 700; color: #b45309;
+    background: #fef3c7; border: 1px solid #fcd34d;
+  }
+  .office-waiting[hidden] { display: none; }
+  .office-waiting-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #d97706;
+    animation: office-attn-pulse 1.2s ease-in-out infinite;
+  }
+  .office-waiting b { font-variant-numeric: tabular-nums; }
+  .office-err-box {
+    background: var(--err-soft); border: 1px solid var(--err-border);
+    border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    color: var(--err); margin: 6px 0 8px;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .office-diff-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 8px; margin-top: 6px;
+    cursor: pointer; font-size: 13px;
+  }
+  .office-diff-head:hover { background: var(--surface-hover); }
+  .office-diff-pre { max-height: 340px; }
+  .office-sched-row {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .office-sched-row:last-child { border-bottom: none; }
+  .office-sched-row .card-meta { margin: 0; }
+  .office-sched-row button { padding: 3px 10px; font-size: 12px; }
+  .office-sched-row button.sched-on { color: var(--ok); border-color: var(--ok-border); }
+  .office-sched-row button.sched-off { color: var(--muted); }
+  .office-spark {
+    display: flex; align-items: flex-end; gap: 3px; height: 56px;
+    padding: 6px 4px 0; border-bottom: 1px solid var(--border);
+  }
+  .office-spark > div {
+    flex: 1; min-width: 3px; background: var(--accent); opacity: .75;
+    border-radius: 3px 3px 0 0;
+  }
+  .office-spark > div:hover { opacity: 1; }
+  .run-cmp { width: 16px; height: 16px; accent-color: var(--accent); }
   /* ── Skill Radar (skillRadar UI 포팅) ── */
   #view-radar { padding: 0; }
   .sr-root {
@@ -668,6 +726,8 @@
             <button class="office-mode-btn office-tool-btn" data-office-tool="devin" aria-pressed="false">Devin</button>
             <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="true">전체</button>
           </div>
+          <button class="office-mode-btn" id="office-hidden-hint" hidden
+                  title="필터에 숨겨진 활성 세션을 전체 보기로 전환"></button>
           <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
             <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
             <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
@@ -679,6 +739,17 @@
         <span class="office-chip">실행시간 <b id="office-elapsed">-</b></span>
         <span class="office-chip">총 토큰 <b id="office-tokens">-</b></span>
         <span class="office-chip">진행률 <b id="office-progress">-</b></span>
+      </div>
+      <div id="office-waiting" class="office-waiting" hidden>
+        <span class="office-waiting-dot"></span>승인 대기
+        <b id="office-waiting-elapsed"></b>
+      </div>
+      <div class="office-newrun" id="office-newrun">
+        <select id="office-wf-select" aria-label="워크플로 선택"></select>
+        <span class="card-meta" id="office-wf-stages"></span>
+        <input id="office-task-input" placeholder="실행할 작업 (task)" autocomplete="off">
+        <button id="office-run-btn" class="secondary">실행</button>
+        <span class="status-line" id="office-run-msg" role="status"></span>
       </div>
       <div id="office-stage" class="office-stage">
         <div class="empty">실행된 dev_review 워크플로가 없습니다</div>
@@ -705,6 +776,28 @@
         <div id="office-detail" class="card"><span class="empty">선택 에이전트</span></div>
         <div id="office-log" class="card"><span class="empty">이벤트 로그</span></div>
       </div>
+      <div class="card" id="office-audit-card">
+        <h3 style="margin:0 0 8px;font-size:15px">실시간 감사 로그
+          <span class="card-meta">선택된 실행 · 최근 30건 · 3초 갱신</span></h3>
+        <div id="office-audit-list" style="max-height:240px;overflow-y:auto">
+          <span class="empty">표시할 실행이 없습니다</span></div>
+      </div>
+      <details class="card" id="office-sched-card">
+        <summary style="cursor:pointer;font-weight:700;font-size:15px">스케줄 관리
+          <span class="card-meta">주기적으로 워크플로를 자동 실행</span></summary>
+        <div id="office-sched-list" style="margin-top:10px">
+          <span class="card-meta">불러오는 중…</span></div>
+        <form id="office-sched-form" class="grid-form" style="margin-top:12px">
+          <select id="sched-wf" aria-label="스케줄 워크플로"></select>
+          <input id="sched-interval" type="number" min="1" step="1" value="60"
+                 placeholder="간격(분)">
+          <input id="sched-task" placeholder="작업 내용 (선택)" autocomplete="off">
+          <div>
+            <button type="submit" class="secondary">스케줄 추가</button>
+            <span class="status-line" id="sched-status" role="status"></span>
+          </div>
+        </form>
+      </details>
       <div id="office-sessions-empty" class="empty" hidden>
         활성 에이전트 세션이 없습니다 — 로컬에서 <code>jobmate agent-bridge</code>를 실행하세요
       </div>
@@ -865,17 +958,40 @@
           </div>
         </form>
       </div>
+      <details class="card" id="runs-stats-card">
+        <summary style="cursor:pointer;font-weight:700;font-size:15px">실행 통계
+          <span class="card-meta">최근 30일 · 열면 로드</span></summary>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="stats-wf" aria-label="통계 워크플로 필터"></select>
+          <button class="secondary" id="stats-reload"
+                  style="padding:4px 10px;font-size:12px">새로고침</button>
+        </div>
+        <div id="runs-stats-body" style="margin-top:10px">
+          <span class="empty">통계를 보려면 새로고침을 누르세요</span></div>
+      </details>
       <div class="card">
-        <h3 style="margin:0 0 12px;font-size:15px">실행 이력</h3>
+        <h3 style="margin:0 0 12px;font-size:15px">실행 이력
+          <button id="runs-compare-btn" class="secondary"
+                  style="margin-left:8px;padding:4px 10px;font-size:12px">비교</button>
+          <span class="card-meta">체크박스로 최대 5개 선택</span></h3>
         <div class="table-scroll"><table>
-          <thead><tr><th>ID</th><th>워크플로</th><th>상태</th><th>생성</th><th></th></tr></thead>
-          <tbody id="runs-body"><tr><td colspan="5" class="empty">로딩…</td></tr></tbody>
+          <thead><tr><th style="width:30px"><input type="checkbox" id="runs-cmp-all"
+            title="전체 선택"></th><th>ID</th><th>워크플로</th><th>상태</th><th>생성</th><th></th></tr></thead>
+          <tbody id="runs-body"><tr><td colspan="6" class="empty">로딩…</td></tr></tbody>
         </table></div>
       </div>
       <div id="detail-body" class="card"><span class="empty">실행을 선택하세요.</span></div>
     </section>
   </main>
 </div>
+
+<dialog id="compare-dialog" style="width:min(960px,94vw);padding:24px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="font-size:18px;margin:0">실행 비교</h2>
+    <button class="secondary" id="compare-close" style="padding:4px 12px">✕</button>
+  </div>
+  <div id="compare-body" class="table-scroll"><span class="empty">로딩…</span></div>
+</dialog>
 
 <dialog id="settings-dialog" style="width:420px;padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -1061,7 +1177,10 @@ async function api(path, opts, _retried) {
     const j = await r.json().catch(() => ({}));
     throw new Error(j.error ? j.error.message : r.statusText);
   }
-  return r.json();
+  // 202 등 빈 바디 응답 허용 — JSON이 아니면 빈 객체로 처리
+  const text = await r.text();
+  if (!text) return {};
+  try { return JSON.parse(text); } catch (e) { return {}; }
 }
 const badge = (s) => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 
@@ -1188,12 +1307,17 @@ const OFFICE_ORCH_CLS = {completed:"succeeded", failed:"failed",
   rejected:"failed", budget_exhausted:"failed", cancelled:"skipped",
   running:"running"};
 const officeState = {run:null, stages:new Map(), stageRuns:[], selected:null,
-                     detailSig:"", logSig:"", lastAuditLen:0};
+                     detailSig:"", logSig:"", lastAuditLen:0,
+                     diffKey:"", diffHtml:null, diffFiles:[],
+                     auditRid:"", auditSig:""};
 
 function renderOfficeEmpty() {
   officeState.run = null; officeState.stages.clear(); officeState.stageRuns = [];
   officeState.selected = null; officeState.detailSig = "";
   officeState.logSig = ""; officeState.lastAuditLen = 0;
+  officeState.diffKey = ""; officeState.diffHtml = null;
+  officeState.diffFiles = []; officeState.auditRid = "";
+  officeState.auditSig = "";
   $("#office-stage").innerHTML =
     '<div class="empty">실행된 dev_review 워크플로가 없습니다</div>';
   $("#office-detail").innerHTML = '<span class="empty">선택 에이전트</span>';
@@ -1402,6 +1526,22 @@ function officeRenderHeader(run) {
   $("#office-tokens").textContent = tokens.toLocaleString();
   $("#office-progress").textContent =
     Math.round(done / OFFICE_STAGES.length * 100) + "%";
+  // 승인 대기 펄스 배지 — approval.created_at(없으면 updated_at) 기준 경과시간
+  const w = $("#office-waiting");
+  if (w) {
+    if (run.status === "waiting_approval") {
+      w.hidden = false;
+      const aps = run.approvals || [];
+      const pend = aps.find(a => !a.decided_at) || aps[aps.length - 1];
+      const ts = pend && (pend.created_at || pend.requested_at || pend.decided_at)
+        ? Date.parse(pend.created_at || pend.requested_at || pend.decided_at)
+        : Date.parse(run.updated_at);
+      $("#office-waiting-elapsed").textContent =
+        isNaN(ts) ? "대기 중" : "대기 " + officeFmtSecs((Date.now() - ts) / 1000);
+    } else {
+      w.hidden = true;
+    }
+  }
 }
 
 // ── 3D 보드 렌더링 ──
@@ -1470,8 +1610,17 @@ function officeRenderStage() {
       ((sel.type === "orch" && n.code === "ORCH") ||
        (sel.type === "stage" && n.code === sel.code));
     const stCls = n.code === "ORCH" ? ` office-st-${info.statusText}` : "";
+    // 실패 단계는 툴팁에 오류 요약 — 마우스오버로 원인 확인 가능
+    let tip = n.label;
+    if (n.key) {
+      const fsr = officeState.stages.get(n.key);
+      if (fsr && fsr.status === "failed" && fsr.error) {
+        tip += " — " + String(fsr.error).slice(0, 160);
+      }
+    }
     return `<div class="office-node office-node-${info.cls}` +
       `${isSel ? " office-node-selected" : ""}" data-node="${n.code}" ` +
+      `title="${esc(tip)}" ` +
       `style="left:${n.x}%;top:${n.y}%">` +
       `<div class="office-node-code">${n.code}</div>` +
       `<div class="office-node-label">${esc(n.label)}</div>` +
@@ -1501,6 +1650,12 @@ function officeStageDetail(n, sr) {
       `<div class="card-meta">아직 실행되지 않은 단계입니다.</div>`;
   }
   const tokens = (sr.tokens_in || 0) + (sr.tokens_out || 0);
+  // 실패 단계: 오류를 빨간 박스로 강조 + 출력 앞부분 함께 표시
+  const failBox = sr.status === "failed"
+    ? `<div class="office-err-box"><b>실패 원인</b>\n` +
+      `${esc(sr.error || "(오류 메시지 없음)")}</div>`
+    : "";
+  const outSlice = sr.status === "failed" ? 800 : 1200;
   return head +
     officeKv("Stage", n.key) +
     officeKv("상태", sr.status) +
@@ -1510,11 +1665,12 @@ function officeStageDetail(n, sr) {
     officeKv("소요시간", officeFmtDuration(sr)) +
     officeKv("시작", officeFmtTs(sr.started_at)) +
     officeKv("완료", officeFmtTs(sr.finished_at)) +
-    (sr.error ? officeKv("오류", sr.error) : "") +
+    failBox +
+    (sr.error && sr.status !== "failed" ? officeKv("오류", sr.error) : "") +
     `<div class="office-kv" style="align-items:flex-start">` +
       `<span>입력</span><b>${esc(officeJsonSummary(sr.input, 300))}</b></div>` +
     `<div class="office-kv"><span>출력</span></div>` +
-    `<pre class="office-pre">${esc(JSON.stringify(sr.output || {}, null, 2).slice(0, 1200))}</pre>`;
+    `<pre class="office-pre">${esc(JSON.stringify(sr.output || {}, null, 2).slice(0, outSlice))}</pre>`;
 }
 
 function officeOrchDetail(run) {
@@ -1604,16 +1760,28 @@ function officeRenderDetail() {
   const run = officeState.run;
   if (!run) { el.innerHTML = '<span class="empty">선택 에이전트</span>'; return; }
   const sel = officeState.selected;
+  const waiting = run.status === "waiting_approval";
+  // 승인 대기 시 diff 미리보기 컨테이너 — officeLoadDiff()가 채운다
+  const diffBox = waiting ? '<div id="office-diff"></div>' : "";
   if (!sel || sel.type === "orch") {
-    el.innerHTML = officeOrchDetail(run) + officeApprovalButtons();
+    el.innerHTML = officeOrchDetail(run) + diffBox + officeApprovalButtons();
   } else {
     const n = OFFICE_NODES.find(x => x.code === sel.code);
     const sr = n && n.key ? officeState.stages.get(n.key) : null;
     el.innerHTML = officeStageDetail(n, sr) +
+      ((sel.code === "HUM" || n && n.key === "approval") ? diffBox : "") +
       (sel.code === "HUM" ? officeApprovalButtons() : "");
   }
   officeBindApproval();
 }
+
+// diff 파일 행 클릭 → <pre> 토글 (이벤트 위임 — 폴링 리렌더 후에도 유지)
+$("#office-detail").addEventListener("click", (e) => {
+  const head = e.target.closest(".office-diff-head");
+  if (!head) return;
+  const pre = head.parentElement && head.parentElement.querySelector(".office-diff-pre");
+  if (pre) pre.hidden = !pre.hidden;
+});
 
 // ── 이벤트 로그 (run.audit 시간순, 최신 하단) ──
 function officeRenderLog() {
@@ -1647,6 +1815,7 @@ function officeRenderLog() {
 async function loadOffice() {
   officeUpdateSessionBadge();
   officeUpdateSessionStats();
+  officeEnsureRunForm();   // 워크플로 셀렉트/스케줄 최초 1회 로드 (비동기)
   try {
     // workflow 필터로 다른 workflow의 활성 run이 limit 윈도우를
     // 밀어내 dev_review run을 놓치는 것을 방지한다
@@ -1660,6 +1829,8 @@ async function loadOffice() {
         const live = await officeLiveSessionsState();
         if (live) officeRenderFakeRun(live); else renderOfficeEmpty();
       }
+      officeLoadDiff();
+      officeAuditRefresh();
       return;
     }
     const detail = await api(`/runs/${summary.id}`);
@@ -1677,20 +1848,315 @@ async function loadOffice() {
     officeRenderStage();
     officeRenderDetail();
     officeRenderLog();
+    officeLoadDiff();
+    officeAuditRefresh();
   } catch (e) {
     // 폴링 실패 시 이전 성공 로드의 통계가 남지 않도록 상태/칩을 리셋
     officeState.run = null; officeState.stages.clear(); officeState.stageRuns = [];
     officeState.selected = null; officeState.detailSig = "";
     officeState.logSig = ""; officeState.lastAuditLen = 0;
+    officeState.diffKey = ""; officeState.diffHtml = null;
+    officeState.diffFiles = []; officeState.auditRid = "";
+    officeState.auditSig = "";
     $("#office-elapsed").textContent = "-";
     $("#office-tokens").textContent = "-";
     $("#office-progress").textContent = "-";
+    const _w = $("#office-waiting"); if (_w) _w.hidden = true;
     $("#office-stage").innerHTML =
       `<div class="empty">${esc(e.message)}</div>`;
     $("#office-detail").innerHTML = '<span class="empty">선택 에이전트</span>';
     $("#office-log").innerHTML = '<span class="empty">이벤트 로그</span>';
   }
 }
+
+/* ── 워크플로 목록 + 새 실행 + 스케줄 + diff + 감사 로그 ── */
+let _workflows = null;          // GET /workflows 캐시 (null=미로드)
+let officeRunFormReady = false;
+
+// /api/v1/workflows → [{key,version,description,stages:[...]}] (배열 또는 {workflows:[...]} 모두 허용)
+async function loadWorkflows() {
+  if (_workflows) return _workflows;
+  try {
+    const d = await api("/workflows");
+    const arr = Array.isArray(d) ? d : (d.workflows || d.items || []);
+    _workflows = arr.map(w => ({
+      key: w.key || w.name || w.id || "?",
+      desc: w.description || "",
+      stages: w.stages || [],
+    }));
+  } catch (e) { _workflows = []; }
+  return _workflows;
+}
+
+const wfOptionLabel = w => esc(w.key) + (w.desc ? ` — ${esc(w.desc)}` : "");
+
+// 모든 워크플로 셀렉트를 동기화 — 현재 선택값 유지
+async function syncWorkflowSelects() {
+  const wfs = await loadWorkflows();
+  if (!wfs.length) return;
+  const fill = (id, allLabel) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = (allLabel ? '<option value="">전체</option>' : "") +
+      wfs.map(w => `<option value="${esc(w.key)}">${wfOptionLabel(w)}</option>`).join("");
+    if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+  };
+  fill("office-wf-select", false);
+  fill("sched-wf", false);
+  fill("workflow", false);       // 실행 이력 탭의 run-form
+  fill("stats-wf", true);        // 통계 탭은 '전체' 옵션 포함
+  officeWfStageCount();
+}
+
+function officeWfStageCount() {
+  const el = $("#office-wf-stages");
+  const sel = $("#office-wf-select");
+  if (!el || !sel) return;
+  const w = (_workflows || []).find(x => x.key === sel.value);
+  el.textContent = w && w.stages.length ? `${w.stages.length}단계` : "";
+}
+
+// office 뷰 최초 로드 시 1회 — 셀렉트 채우고 스케줄 목록 로드
+async function officeEnsureRunForm() {
+  if (officeRunFormReady) return;
+  officeRunFormReady = true;
+  try {
+    await syncWorkflowSelects();
+    loadSchedules();
+  } catch (e) { /* 셀렉트 미로드는 폼 기본값으로 동작 */ }
+  // /workflows 실패/빈 응답 시에도 실행 버튼이 동작하도록 dev_review fallback
+  const sel = $("#office-wf-select");
+  if (sel && !sel.options.length) {
+    sel.innerHTML = '<option value="dev_review">dev_review</option>';
+    officeWfStageCount();
+  }
+}
+
+/* ── 새 실행 (워크플로 탭) ── */
+$("#office-run-btn").addEventListener("click", officeSubmitRun);
+$("#office-task-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") officeSubmitRun();
+});
+$("#office-wf-select").addEventListener("change", officeWfStageCount);
+
+async function officeSubmitRun() {
+  const msg = $("#office-run-msg");
+  const task = ($("#office-task-input").value || "").trim();
+  if (!task) { msg.textContent = "작업 내용을 입력하세요"; return; }
+  msg.textContent = "실행 중…"; msg.className = "status-line";
+  try {
+    const r = await api("/runs", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        workflow: $("#office-wf-select").value,
+        input: {task},
+      })});
+    msg.textContent = `실행 시작: ${r.id || ""}`;
+    $("#office-task-input").value = "";
+    loadOffice();
+  } catch (e) {
+    msg.textContent = e.message; msg.className = "status-line err";
+  }
+}
+
+/* ── 승인 diff 미리보기 (waiting_approval) ── */
+function diffCap200(diff) {
+  const s = String(diff ?? "");
+  const lines = s.split("\n");
+  return lines.length > 200
+    ? lines.slice(0, 200).join("\n") + "\n… (이하 생략)"
+    : s;
+}
+
+function officeRenderDiff(d) {
+  const files = d.files || [];
+  const summary = d.summary
+    ? `<div class="card-meta" style="margin-bottom:6px">` +
+      `${esc(typeof d.summary === "string" ? d.summary : JSON.stringify(d.summary).slice(0, 400))}</div>`
+    : "";
+  const filesHtml = files.length ? files.map((f, i) => `
+    <div class="office-diff-file" data-i="${i}">
+      <div class="office-diff-head">
+        <span class="mono" style="overflow-wrap:anywhere">${esc(f.path)}</span>
+        ${badge(f.status || "modified")}
+        <span class="card-meta" style="margin-left:auto;flex:none">` +
+        `+${f.additions || 0} / −${f.deletions || 0}</span>
+      </div>
+      <pre class="office-pre office-diff-pre" hidden>${esc(diffCap200(f.diff))}</pre>
+    </div>`).join("")
+    : '<div class="card-meta">변경된 파일이 없습니다</div>';
+  return `<div style="margin-top:12px">` +
+    `<div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px">` +
+    `승인 대상 변경 사항 (diff)</div>${summary}${filesHtml}</div>`;
+}
+
+// run.id+updated_at 키로 캐시 — 3초 폴링마다 재요청하지 않음
+async function officeLoadDiff() {
+  const box = $("#office-diff");
+  const run = officeState.run;
+  const real = run && run.id &&
+    !String(run.id).startsWith("demo") && run.id !== "live-sessions";
+  if (!box || !real || run.status !== "waiting_approval") {
+    if (box) box.innerHTML = "";
+    officeState.diffKey = ""; officeState.diffHtml = null;
+    officeState.diffFiles = [];
+    return;
+  }
+  const key = run.id + "|" + (run.updated_at || "");
+  if (key === officeState.diffKey && officeState.diffHtml != null) {
+    box.innerHTML = officeState.diffHtml;
+    return;
+  }
+  box.innerHTML = '<div class="card-meta">변경 사항(diff) 로딩…</div>';
+  const rid = run.id;
+  try {
+    const d = await api(`/runs/${encodeURIComponent(rid)}/diff`);
+    // 응답 대기 중 run이 바뀌었으면 폐기
+    if (!officeState.run || officeState.run.id !== rid) return;
+    officeState.diffKey = key;
+    officeState.diffFiles = d.files || [];
+    officeState.diffHtml = officeRenderDiff(d);
+  } catch (e) {
+    if (!officeState.run || officeState.run.id !== rid) return;
+    officeState.diffKey = key;
+    officeState.diffFiles = [];
+    officeState.diffHtml =
+      `<div class="card-meta">diff를 불러올 수 없습니다 — ${esc(e.message)}</div>`;
+  }
+  const b2 = $("#office-diff");
+  if (b2) b2.innerHTML = officeState.diffHtml;
+}
+
+/* ── 실시간 감사 로그 (GET /runs/{id}/audit, 3초 폴링) ── */
+// loadOffice가 office 뷰 표시 중에만 호출되므로 별도 타이머 불필요 —
+// 뷰를 떠나면 loadOffice가 멈춰 폴링도 자동 중단된다.
+async function officeAuditRefresh() {
+  const box = $("#office-audit-list");
+  if (!box) return;
+  const run = officeState.run;
+  const rid = run && run.id &&
+    !String(run.id).startsWith("demo") && run.id !== "live-sessions"
+    ? run.id : "";
+  if (rid !== officeState.auditRid) {
+    officeState.auditRid = rid;
+    officeState.auditSig = "";
+    box.innerHTML = rid
+      ? '<span class="card-meta">로딩…</span>'
+      : '<span class="empty">표시할 실행이 없습니다</span>';
+  }
+  if (!rid) return;
+  try {
+    const d = await api(`/runs/${encodeURIComponent(rid)}/audit`);
+    const arr = Array.isArray(d) ? d : (d.audit || d.events || []);
+    const sig = arr.length + "|" +
+      (arr.length ? JSON.stringify(arr[0]).slice(0, 80) : "");
+    if (sig === officeState.auditSig) return;
+    officeState.auditSig = sig;
+    box.innerHTML = arr.length ? arr.slice(0, 30).map(a => {
+      const raw = a.detail && typeof a.detail === "object"
+        ? JSON.stringify(a.detail) : (a.detail || "");
+      const det = raw ? String(raw).slice(0, 160) : "";
+      return `<div class="office-log-row">` +
+        `<span class="office-log-time">${esc(officeFmtTs(a.created_at))}</span>` +
+        `<span class="office-log-actor">${esc(a.actor || "-")}</span>` +
+        `<span class="office-log-action">${esc(a.action || "-")}</span>` +
+        (a.object_ref
+          ? `<span class="office-log-ref">${esc(a.object_ref)}</span>` : "") +
+        (det ? `<span class="office-log-detail">${esc(det)}</span>` : "") +
+        `</div>`;
+    }).join("") : '<span class="empty">감사 기록 없음</span>';
+    box.scrollTop = 0;   // 최신이 위 — 항상 최신부터 표시
+  } catch (e) { /* 일시적 폴링 실패는 무시 — 다음 주기에 재시도 */ }
+}
+
+/* ── 스케줄 관리 (GET/POST/DELETE /schedules) ── */
+async function loadSchedules() {
+  const list = $("#office-sched-list");
+  if (!list) return;
+  try {
+    const d = await api("/schedules");
+    const arr = Array.isArray(d) ? d : (d.schedules || []);
+    renderSchedules(arr);
+  } catch (e) {
+    list.innerHTML = `<span class="card-meta">${esc(e.message)}</span>`;
+  }
+}
+
+function renderSchedules(arr) {
+  const list = $("#office-sched-list");
+  if (!list) return;
+  if (!arr || !arr.length) {
+    list.innerHTML = '<span class="card-meta">등록된 스케줄이 없습니다</span>';
+    return;
+  }
+  list.innerHTML = arr.map(s => {
+    let inputTxt = "-";
+    if (s.input && typeof s.input === "object") {
+      inputTxt = s.input.task || s.input.summary ||
+        JSON.stringify(s.input).slice(0, 80);
+    } else if (s.input) {
+      inputTxt = String(s.input).slice(0, 80);
+    }
+    return `<div class="office-sched-row">` +
+      `<span class="mono">${esc(s.workflow)}</span>` +
+      `<span class="card-meta" style="flex:1;min-width:120px">${esc(inputTxt)}</span>` +
+      `<span>${esc(s.interval_minutes)}분</span>` +
+      `<button class="secondary sched-toggle ${s.enabled ? "sched-on" : "sched-off"}" ` +
+        `data-id="${esc(s.id)}" data-en="${s.enabled ? 1 : 0}">` +
+        `${s.enabled ? "켜짐" : "꺼짐"}</button>` +
+      `<span class="card-meta">다음 ${esc(officeFmtTs(s.next_run_at))}</span>` +
+      `<span class="card-meta">마지막 ${esc(officeFmtTs(s.last_run_at))}</span>` +
+      `<button class="secondary sched-del" data-id="${esc(s.id)}">삭제</button>` +
+      `</div>`;
+  }).join("");
+}
+
+// 스케줄 행 버튼 위임 — 토글/삭제
+$("#office-sched-list").addEventListener("click", async (e) => {
+  const tgl = e.target.closest(".sched-toggle");
+  const del = e.target.closest(".sched-del");
+  try {
+    if (tgl) {
+      await api(`/schedules/${encodeURIComponent(tgl.dataset.id)}/toggle`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({enabled: tgl.dataset.en !== "1"}),
+      });
+      loadSchedules();
+    } else if (del) {
+      await api(`/schedules/${encodeURIComponent(del.dataset.id)}`, {
+        method: "DELETE",
+      });
+      loadSchedules();
+    }
+  } catch (err) { alert(err.message); }
+});
+
+$("#office-sched-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const st = $("#sched-status");
+  const task = ($("#sched-task").value || "").trim();
+  st.textContent = "추가 중…"; st.className = "status-line";
+  try {
+    await api("/schedules", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        workflow: $("#sched-wf").value,
+        input: task ? {task} : {},
+        interval_minutes: Number($("#sched-interval").value) || 60,
+      })});
+    st.textContent = "추가했습니다"; st.className = "status-line";
+    $("#sched-task").value = "";
+    loadSchedules();
+  } catch (err) {
+    st.textContent = err.message; st.className = "status-line err";
+  }
+});
+// details를 처음 열 때 목록 로드
+$("#office-sched-card").addEventListener("toggle", (e) => {
+  if (e.target.open) loadSchedules();
+});
 
 /* ── Agent-Office 스프라이트 사무실 모드 ── */
 // claude-3d-frog-office(web/) 포팅 — /static/office/ 아래 classic script.
@@ -1737,13 +2203,26 @@ async function officeUpdateSessionBadge() {
   try {
     const d = await api("/agent-sessions?limit=50");
     const list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
-    const n = (Array.isArray(list) ? list : []).filter(
+    const arr = Array.isArray(list) ? list : [];
+    const n = arr.filter(
       s => s.status === "decision" || (s.ask || "").trim()).length;
     const badge = $("#office-attn");
     badge.hidden = n === 0;
     $("#office-attn-n").textContent = n;
+    // 단일 도구 필터에 숨겨진 활성 세션이 있으면 전체 보기 힌트 표시
+    const hint = $("#office-hidden-hint");
+    if (hint) {
+      const hidden = officeTab !== "sessions" || officeTool === "all" ? 0 : arr.filter(
+        s => s.tool !== officeTool &&
+          (s.status === "working" || s.status === "decision")).length;
+      hint.hidden = hidden === 0;
+      if (hidden) hint.textContent = `숨김 ${hidden}`;
+    }
   } catch (e) { /* 일시적 폴링 실패는 무시 */ }
 }
+$("#office-hidden-hint")?.addEventListener("click", () => {
+  document.querySelector('.office-tool-btn[data-office-tool="all"]')?.click();
+});
 
 function _sessionArtifacts(s) {
   let a = s && s.artifacts;
@@ -1950,6 +2429,10 @@ function officeRefresh() {
   $("#office-view-toggle").hidden = sessions;
   $("#office-tool-filter").hidden = !sessions;
   $("#office-split").hidden = sessions;
+  $("#office-newrun").hidden = sessions;
+  $("#office-waiting").hidden = sessions ? true : $("#office-waiting").hidden;
+  $("#office-audit-card").hidden = sessions;
+  $("#office-sched-card").hidden = sessions;
   $("#office-stage").hidden = sprites || sessions;
   $("#jmo-wrap").hidden = !sprites;
   if (sprites) office2dEnsure();
@@ -2441,9 +2924,12 @@ async function submitDevReview(item, btn, msg) {
   btn.textContent = "실행 중…";
   if (msg) { msg.textContent = ""; msg.className = "sr-run-msg"; }
   try {
+    const taskText = devReviewTask(item);
     const r = await api("/runs", {method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({workflow: "dev_review", task: devReviewTask(item),
+      // 계약: input:{task} — 구버전 호환을 위해 task도 함께 전송
+      body: JSON.stringify({workflow: "dev_review", task: taskText,
+        input: {task: taskText},
         metadata: {source: "skill_radar", repo: name}})});
     if (msg) {
       msg.innerHTML = `실행됨 <button class="sr-run-link" data-office>Agent-Office</button>`;
@@ -2768,7 +3254,9 @@ window.loadRadar = loadRadar;
 })();
 
 /* ── Runs ── */
-async function loadRuns() { refreshRuns(); loadLlmUsage(); }
+async function loadRuns() {
+  refreshRuns(); loadLlmUsage(); syncWorkflowSelects();
+}
 async function loadLlmUsage() {
   const el = $("#llm-usage-body");
   try {
@@ -2801,21 +3289,184 @@ async function loadLlmUsage() {
       (bars ? `<div style="font-size:12px;color:var(--muted);margin-bottom:4px">일별 토큰</div>` + bars : "");
   } catch (e) { el.innerHTML = `<span class="empty">${esc(e.message)}</span>`; }
 }
+/* ── 실행 비교 (체크박스 최대 5개 → 모달 테이블) ── */
+const _cmpSel = new Set();
+const CMP_MAX = 5;
+
+function runTotalTokens(d) {
+  let t = 0;
+  for (const s of (d.stages || [])) t += (s.tokens_in || 0) + (s.tokens_out || 0);
+  return t;
+}
+// stages[] 전체에서 stage_key별 최신 attempt 상태 요약
+function runStageSummary(d) {
+  const m = new Map();
+  for (const s of (d.stages || [])) {
+    const cur = m.get(s.stage_key);
+    if (!cur || (s.attempt || 1) > (cur.attempt || 1)) m.set(s.stage_key, s);
+  }
+  return [...m.entries()].map(([k, s]) => `${k}:${s.status}`).join(" · ");
+}
+function runDurationSec(d) {
+  let min = Infinity, max = 0;
+  for (const s of (d.stages || [])) {
+    for (const t of [s.started_at, s.finished_at]) {
+      const p = Date.parse(t);
+      if (!isNaN(p)) { min = Math.min(min, p); max = Math.max(max, p); }
+    }
+  }
+  if (min === Infinity) {
+    const a = Date.parse(d.created_at), b = Date.parse(d.updated_at || d.created_at);
+    if (isNaN(a) || isNaN(b)) return null;
+    return Math.max(0, (b - a) / 1000);
+  }
+  return Math.max(0, (max - min) / 1000);
+}
+
+async function showRunCompare() {
+  if (_cmpSel.size < 2) { alert("비교할 실행을 2개 이상 선택하세요"); return; }
+  const body = $("#compare-body");
+  $("#compare-dialog").showModal();
+  body.innerHTML = '<span class="empty">로딩…</span>';
+  const ids = [..._cmpSel];
+  const details = await Promise.all(ids.map(id =>
+    api("/runs/" + encodeURIComponent(id))
+      .then(d => ({d}))
+      .catch(e => ({id, __err: e.message}))));
+  const cols = details.map(x =>
+    `<th class="mono" style="vertical-align:top">${esc(((x.d && x.d.id) || x.id || "").slice(0, 8))}</th>`).join("");
+  const cell = fn => details.map(x =>
+    x.__err ? `<td class="card-meta">${esc(x.__err)}</td>`
+            : `<td>${fn(x.d)}</td>`).join("");
+  body.innerHTML = `<table><thead><tr><th>지표</th>${cols}</tr></thead><tbody>` +
+    `<tr><td>실행 ID</td>${cell(d => `<span class="mono" style="font-size:11px">${esc(d.id)}</span>`)}</tr>` +
+    `<tr><td>워크플로</td>${cell(d => `${esc(d.workflow)} v${esc(d.version ?? "-")}`)}</tr>` +
+    `<tr><td>상태</td>${cell(d => badge(d.status))}</tr>` +
+    `<tr><td>소요시간</td>${cell(d => { const s = runDurationSec(d); return s == null ? "-" : officeFmtSecs(s); })}</tr>` +
+    `<tr><td>총 토큰</td>${cell(d => runTotalTokens(d).toLocaleString())}</tr>` +
+    `<tr><td>단계별 상태</td>${cell(d => `<span style="font-size:12px">${esc(runStageSummary(d) || "-")}</span>`)}</tr>` +
+    `</tbody></table>`;
+}
+$("#runs-compare-btn").addEventListener("click", showRunCompare);
+$("#compare-close").addEventListener("click", () => $("#compare-dialog").close());
+$("#compare-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();
+});
+
+/* ── 실행 통계 (GET /runs/stats) ── */
+let _statsLoaded = false;
+$("#runs-stats-card").addEventListener("toggle", (e) => {
+  if (e.target.open && !_statsLoaded) { _statsLoaded = true; loadRunStats(); }
+});
+$("#stats-reload").addEventListener("click", loadRunStats);
+$("#stats-wf").addEventListener("change", loadRunStats);
+
+async function loadRunStats() {
+  const body = $("#runs-stats-body");
+  if (!body) return;
+  body.innerHTML = '<span class="empty">로딩…</span>';
+  try {
+    await syncWorkflowSelects();
+    const wf = ($("#stats-wf") || {}).value || "";
+    const d = await api("/runs/stats?days=30" +
+      (wf ? "&workflow=" + encodeURIComponent(wf) : ""));
+    renderRunStats(d);
+  } catch (e) {
+    body.innerHTML = `<span class="empty">${esc(e.message)}</span>`;
+  }
+}
+
+function renderRunStats(d) {
+  const body = $("#runs-stats-body");
+  if (!body) return;
+  const chips = [["총 실행", d.runs], ["성공", d.succeeded], ["실패", d.failed],
+                 ["진행중", d.running], ["승인대기", d.waiting_approval]]
+    .map(([k, v]) => `<span class="office-chip">${k} <b>${v || 0}</b></span>`).join("");
+  const avg = d.avg_duration_s != null ? officeFmtSecs(d.avg_duration_s) : "-";
+  const tokIn = (d.total_tokens_in || 0).toLocaleString();
+  const tokOut = (d.total_tokens_out || 0).toLocaleString();
+  // 단계별 실패 — 최대값 대비 바 차트
+  const sf = d.stage_failures || {};
+  const sfMax = Math.max(1, ...Object.values(sf));
+  const sfHtml = Object.keys(sf).length
+    ? Object.entries(sf).map(([k, c]) =>
+        `<div class="office-kv"><span>${esc(k)}</span>` +
+        `<b style="flex:1"><span style="display:inline-block;height:8px;` +
+        `width:${Math.max(4, Math.round(c / sfMax * 100))}%;` +
+        `background:var(--err);border-radius:4px"></span></b>` +
+        `<b>${c}</b></div>`).join("")
+    : '<span class="card-meta">단계 실패 기록 없음</span>';
+  // 최근 30일 daily runs 스파크라인 (div 바 — 차트 라이브러리 없음)
+  const daily = d.daily || [];
+  const dMax = Math.max(1, ...daily.map(x => x.runs || 0));
+  const spark = daily.length
+    ? `<div class="office-spark">` + daily.map(x => {
+        const h = Math.max(4, Math.round((x.runs || 0) / dMax * 100));
+        return `<div style="height:${h}%" title="${esc(x.date)} · ` +
+          `${x.runs || 0}회 · 토큰 ${(x.tokens || 0).toLocaleString()}"></div>`;
+      }).join("") + `</div>` +
+      `<div class="card-meta" style="display:flex;justify-content:space-between">` +
+      `<span>${esc(daily[0].date)}</span><span>${esc(daily[daily.length - 1].date)}</span></div>`
+    : '<span class="card-meta">데이터 없음</span>';
+  body.innerHTML =
+    `<div class="office-status" style="margin-bottom:8px">${chips}</div>` +
+    `<div class="office-kv"><span>평균 소요시간</span><b>${esc(avg)}</b></div>` +
+    `<div class="office-kv"><span>총 토큰</span><b>in ${tokIn} / out ${tokOut}</b></div>` +
+    `<div style="margin:12px 0 4px;font-size:12px;font-weight:700;color:var(--muted)">일별 실행</div>` +
+    spark +
+    `<div style="margin:12px 0 4px;font-size:12px;font-weight:700;color:var(--muted)">단계별 실패</div>` +
+    sfHtml;
+}
+
 async function refreshRuns() {
   try {
     const runs = await api("/runs?limit=30");
     const tb = $("#runs-body");
-    if (!runs.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">실행 없음</td></tr>'; return; }
+    if (!runs.length) {
+      tb.innerHTML = '<tr><td colspan="6" class="empty">실행 없음</td></tr>'; return;
+    }
     tb.innerHTML = runs.map(r => `<tr>
+      <td><input type="checkbox" class="run-cmp" data-id="${esc(r.id)}"></td>
       <td class="mono">${r.id}</td><td>${r.workflow}</td>
       <td>${badge(r.status)}</td><td class="card-meta">${(r.created_at||"").slice(0,19).replace("T"," ")}</td>
       <td><button class="secondary" data-id="${r.id}" style="padding:4px 10px;font-size:12px">상세</button></td></tr>`).join("");
     tb.querySelectorAll("button[data-id]").forEach(b =>
       b.addEventListener("click", () => showDetail(b.dataset.id)));
+    tb.querySelectorAll(".run-cmp").forEach(cb => {
+      if (_cmpSel.has(cb.dataset.id)) cb.checked = true;
+      cb.addEventListener("change", () => {
+        const id = cb.dataset.id;
+        if (cb.checked) {
+          if (_cmpSel.size >= CMP_MAX) {
+            cb.checked = false;
+            alert(`최대 ${CMP_MAX}개까지 비교할 수 있습니다`);
+            return;
+          }
+          _cmpSel.add(id);
+        } else {
+          _cmpSel.delete(id);
+        }
+      });
+    });
   } catch (e) {
-    $("#runs-body").innerHTML = `<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;
+    $("#runs-body").innerHTML = `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
+// '전체 선택' — 최대 5개까지만 체크
+$("#runs-cmp-all").addEventListener("change", (e) => {
+  const boxes = [...document.querySelectorAll("#runs-body .run-cmp")];
+  if (e.target.checked) {
+    let n = _cmpSel.size;
+    for (const cb of boxes) {
+      if (n >= CMP_MAX) { cb.checked = false; continue; }
+      if (!_cmpSel.has(cb.dataset.id)) { _cmpSel.add(cb.dataset.id); n++; }
+      cb.checked = true;
+    }
+    if (boxes.length > CMP_MAX) alert(`최대 ${CMP_MAX}개까지 비교할 수 있습니다`);
+  } else {
+    boxes.forEach(cb => { cb.checked = false; _cmpSel.delete(cb.dataset.id); });
+  }
+});
 async function showDetail(id) {
   const el = $("#detail-body");
   el.innerHTML = '<span class="empty">로딩…</span>';
@@ -2857,9 +3508,12 @@ $("#run-form").addEventListener("submit", async (e) => {
   const st = $("#form-status");
   st.textContent = "제출 중…"; st.className = "status-line";
   try {
+    const task = $("#task").value;
     const r = await api("/runs", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({workflow: $("#workflow").value, task: $("#task").value})});
+      // 계약: {workflow, input:{task}} — 구버전 호환을 위해 task도 함께 전송
+      body: JSON.stringify({workflow: $("#workflow").value, task,
+        input: {task}})});
     st.textContent = `실행 시작: ${r.id}`;
     $("#task").value = "";
     refreshRuns();

@@ -33,7 +33,7 @@ from ..config import (
     get_settings,
 )
 from ..llm import CompositeLLM, MeteredLLM
-from ..models import RunStatus
+from ..models import RunStatus, StageStatus
 from ..radar import GitHubAPI
 from ..sensors import (
     allowed_identifier,
@@ -68,6 +68,16 @@ class RunCreateRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     decision: str = Field(pattern="^(approve|reject)$")
     comment: str = ""
+
+
+class ScheduleCreateRequest(BaseModel):
+    workflow: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    interval_minutes: int = Field(ge=5)
+
+
+class ScheduleToggleRequest(BaseModel):
+    enabled: bool
 
 
 class EventReviewRequest(BaseModel):
@@ -297,18 +307,7 @@ def create_app(
     def execute_run(
         run_id: str, workflow: str, payload: dict[str, Any], ctx: dict[str, Any] | None = None
     ) -> None:
-        try:
-            runner = build_runner(
-                workflow, store=store, llm=llm, settings=settings, adapters=adapters
-            )
-            runner.invoke(run_id, payload, gmail_ctx=ctx)
-        except Exception as e:
-            store.update_run(run_id, status=RunStatus.FAILED, error=str(e)[:500])
-            store.audit(run_id, "system", "runner_error", "", {"error": str(e)[:300]})
-            logger.warning("run %s failed: %s", run_id, str(e)[:200])
-            return
-        run = store.get_run(run_id)
-        logger.info("run %s finished status=%s", run_id, getattr(run, "status", "?"))
+        _execute_run_job(store, settings, llm, adapters, run_id, workflow, payload, ctx)
 
     def _run_jobs_parallel(
         jobs: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]],
@@ -376,8 +375,25 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/api/v1/workflows")
-    def list_workflows() -> list[dict[str, str]]:
-        return [{"key": w.key, "version": w.version} for w in WORKFLOWS.values()]
+    def list_workflows() -> list[dict[str, Any]]:
+        return [
+            {
+                "key": w.key,
+                "version": w.version,
+                "description": w.description,
+                "stages": [
+                    {
+                        "key": s.key,
+                        "kind": s.kind,
+                        "description": s.description,
+                        "agent": s.agent,
+                        "function": s.function,
+                    }
+                    for s in w.stages
+                ],
+            }
+            for w in WORKFLOWS.values()
+        ]
 
     @app.post("/api/v1/runs", status_code=202)
     def create_run(
@@ -406,6 +422,11 @@ def create_app(
             }
             for r in store.list_runs(limit, workflow=workflow)
         ]
+
+    @app.get("/api/v1/runs/stats")
+    def run_stats(workflow: str | None = None, days: int = 30) -> dict[str, Any]:
+        """workflow별 run 성공/실패/토큰/단계 실패율 집계 (최대 365일)."""
+        return store.run_stats(workflow, max(1, min(days, 365)))
 
     @app.get("/api/v1/runs/{run_id}")
     def get_run(run_id: str, request: Request) -> JSONResponse:
@@ -437,6 +458,89 @@ def create_app(
         logger.info("run %s resume decision=%s", run_id, body.decision)
         d = run_detail(run_id)
         return JSONResponse(content=d or {})
+
+    @app.get("/api/v1/runs/{run_id}/diff")
+    def run_diff(run_id: str, request: Request) -> JSONResponse:
+        """implement 단계 최신 산출물의 unified diff를 파일 단위로 집계."""
+        if store.get_run(run_id) is None:
+            return err(404, "not_found", "run not found", request)
+        files_by_path: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        summary = ""
+        for sr in store.get_stage_runs(run_id):
+            if sr.stage_key != "implement" or sr.status != StageStatus.SUCCEEDED:
+                continue
+            out = sr.output or {}
+            summary = str(out.get("summary") or summary)
+            for f in _parse_diff_files(str(out.get("diff") or "")):
+                if f["path"] not in files_by_path:
+                    order.append(f["path"])
+                files_by_path[f["path"]] = f
+        return JSONResponse(
+            content={"files": [files_by_path[p] for p in order], "summary": summary}
+        )
+
+    @app.get("/api/v1/runs/{run_id}/audit")
+    def run_audit(run_id: str, request: Request) -> JSONResponse:
+        """run의 audit_events — 최신순, 최대 200건."""
+        if store.get_run(run_id) is None:
+            return err(404, "not_found", "run not found", request)
+        events = [
+            {
+                "id": e.id,
+                "actor": e.actor,
+                "action": e.action,
+                "object_ref": e.object_ref,
+                "detail": e.detail,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in store.get_audit(run_id)[-200:][::-1]
+        ]
+        return JSONResponse(content=events)
+
+    # ---- workflow schedules (주기적 run 자동 생성) ----
+    @app.get("/api/v1/schedules")
+    def list_schedules() -> list[dict[str, Any]]:
+        return store.list_schedules()
+
+    @app.post("/api/v1/schedules", status_code=201)
+    def create_schedule(body: ScheduleCreateRequest, request: Request) -> JSONResponse:
+        if body.workflow not in WORKFLOWS:
+            return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
+        sched = store.create_schedule(body.workflow, body.input, body.interval_minutes)
+        store.audit(
+            "",
+            "api",
+            "schedule_create",
+            sched["id"],
+            {"workflow": body.workflow, "interval_minutes": body.interval_minutes},
+        )
+        logger.info(
+            "schedule created id=%s workflow=%s interval=%dm",
+            sched["id"],
+            body.workflow,
+            body.interval_minutes,
+        )
+        return JSONResponse(status_code=201, content=sched)
+
+    @app.post("/api/v1/schedules/{schedule_id}/toggle")
+    def toggle_schedule(
+        schedule_id: str, body: ScheduleToggleRequest, request: Request
+    ) -> JSONResponse:
+        sched = store.set_schedule_enabled(schedule_id, body.enabled)
+        if sched is None:
+            return err(404, "not_found", "schedule not found", request)
+        store.audit("", "api", "schedule_toggle", schedule_id, {"enabled": body.enabled})
+        logger.info("schedule %s toggled enabled=%s", schedule_id, body.enabled)
+        return JSONResponse(content=sched)
+
+    @app.delete("/api/v1/schedules/{schedule_id}")
+    def delete_schedule(schedule_id: str, request: Request) -> JSONResponse:
+        if not store.delete_schedule(schedule_id):
+            return err(404, "not_found", "schedule not found", request)
+        store.audit("", "api", "schedule_delete", schedule_id, {})
+        logger.info("schedule %s deleted", schedule_id)
+        return JSONResponse(content={"ok": True})
 
     @app.get("/api/v1/notifications")
     def notifications(limit: int = 50) -> list[dict[str, Any]]:
@@ -678,6 +782,9 @@ def create_app(
             return err(401, "unauthorized", "invalid cron credentials", request)
         _process_pending_messages(store, settings, llm, adapters)
         _process_due_notification_jobs(store, adapters)
+        schedule_jobs: list = []
+        _process_due_schedules(store, settings, llm, adapters, defer=schedule_jobs)
+        _schedule_run_jobs(schedule_jobs, background_tasks)
         _check_waiting_approvals(store, adapters)
         _maybe_poll_gmail(store, settings, adapters)
         radar_jobs: list = []
@@ -1500,6 +1607,133 @@ def create_app(
 _WAITING_APPROVAL_FP: dict[str, str] = {}
 
 
+def _execute_run_job(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    run_id: str,
+    workflow: str,
+    payload: dict[str, Any],
+    ctx: dict[str, Any] | None = None,
+) -> None:
+    """run 1건을 동기 실행 — automation loop/스레드/cron tick 공용."""
+    try:
+        runner = build_runner(workflow, store=store, llm=llm, settings=settings, adapters=adapters)
+        runner.invoke(run_id, payload, gmail_ctx=ctx)
+    except Exception as e:
+        store.update_run(run_id, status=RunStatus.FAILED, error=str(e)[:500])
+        store.audit(run_id, "system", "runner_error", "", {"error": str(e)[:300]})
+        logger.warning("run %s failed: %s", run_id, str(e)[:200])
+        return
+    run = store.get_run(run_id)
+    logger.info("run %s finished status=%s", run_id, getattr(run, "status", "?"))
+
+
+def _process_due_schedules(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
+) -> None:
+    """workflow_schedules 중 next_run_at이 지난 enabled 스케줄을 run으로 발사.
+
+    defer가 주어지면 job을 defer에 추가(호출자가 _schedule_run_jobs로 실행),
+    None이면 daemon thread로 즉시 실행. 발사 시각/다음 실행 시각을 갱신하고
+    run의 audit에 scheduled_run 이벤트를 남긴다."""
+    for sched in store.due_schedules():
+        sid = str(sched.get("id") or "")
+        workflow = str(sched.get("workflow") or "")
+        try:
+            interval = max(int(sched.get("interval_minutes") or 0), 1)
+            fired = datetime.now(UTC)
+            nxt = fired + timedelta(minutes=interval)
+            if workflow not in WORKFLOWS:
+                worker_logger.warning("schedule %s skipped: unknown workflow %s", sid, workflow)
+                store.mark_schedule_fired(sid, fired.isoformat(), nxt.isoformat())
+                continue
+            payload = dict(sched.get("input") or {})
+            payload.setdefault("task", f"scheduled {workflow}")
+            run = store.create_run(
+                workflow, WORKFLOWS[workflow].version, payload, trace_id=uuid.uuid4().hex
+            )
+            store.mark_schedule_fired(sid, fired.isoformat(), nxt.isoformat())
+            store.audit(
+                run.id,
+                "system",
+                "scheduled_run",
+                sid,
+                {"interval_minutes": interval},
+            )
+            job = (run.id, workflow, payload, None)
+            if defer is not None:
+                defer.append(job)
+            else:
+                threading.Thread(
+                    target=_execute_run_job,
+                    args=(store, settings, llm, adapters, *job),
+                    daemon=True,
+                ).start()
+            worker_logger.info("schedule %s fired run=%s workflow=%s", sid, run.id, workflow)
+        except Exception as e:
+            worker_logger.warning("schedule %s fire failed: %s", sid, str(e)[:200])
+
+
+def _parse_diff_files(diff_text: str) -> list[dict[str, Any]]:
+    """unified diff 텍스트를 파일 단위 [{path,status,additions,deletions,diff}]로 분해."""
+    files: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            if cur is not None:
+                files.append(cur)
+            cur = {
+                "path": "",
+                "status": "modified",
+                "additions": 0,
+                "deletions": 0,
+                "_lines": [line],
+            }
+            # "diff --git a/<old> b/<new>" — best-effort 경로 (마커 라인이 보정)
+            rest = line[len("diff --git ") :]
+            if " b/" in rest:
+                cur["path"] = rest.rsplit(" b/", 1)[1].strip().strip('"')
+            continue
+        if cur is None:
+            continue
+        cur["_lines"].append(line)
+        if line.startswith("new file mode"):
+            cur["status"] = "added"
+        elif line.startswith("deleted file mode"):
+            cur["status"] = "deleted"
+        elif line.startswith("rename from ") or line.startswith("rename to "):
+            cur["status"] = "renamed"
+        elif line.startswith("+++ ") or line.startswith("--- "):
+            marker = line[4:].strip()
+            if marker != "/dev/null":
+                path = marker[2:] if marker[:2] in ("a/", "b/") else marker
+                path = path.strip('"')
+                if line.startswith("+++ ") or not cur["path"]:
+                    cur["path"] = path
+        elif line.startswith("+"):
+            cur["additions"] += 1
+        elif line.startswith("-"):
+            cur["deletions"] += 1
+    if cur is not None:
+        files.append(cur)
+    return [
+        {
+            "path": f["path"] or "unknown",
+            "status": f["status"],
+            "additions": f["additions"],
+            "deletions": f["deletions"],
+            "diff": "\n".join(f["_lines"]),
+        }
+        for f in files
+    ]
+
+
 def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
     """dev_review run이 waiting_approval에 '전이'할 때만 웹 푸시.
 
@@ -1638,6 +1872,7 @@ def _automation_loop(
         try:
             _process_pending_messages(store, settings, llm, adapters)
             _process_due_notification_jobs(store, adapters)
+            _process_due_schedules(store, settings, llm, adapters)
             _check_waiting_approvals(store, adapters)
             _maybe_poll_gmail(store, settings, adapters)
             _maybe_daily_radar(store, settings, llm, adapters)

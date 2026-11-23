@@ -11,6 +11,7 @@ from ..models import StageSpec, WorkflowSpec
 SPEC = WorkflowSpec(
     key="gmail_calendar",
     version="0.2.0",
+    description="메일/메시지에서 일정 추출→검증→충돌확인→등록→알림",
     entry="extract",
     stages=[
         StageSpec(

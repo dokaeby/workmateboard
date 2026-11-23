@@ -10,6 +10,7 @@ from ..models import StageSpec, WorkflowSpec
 SPEC = WorkflowSpec(
     key="skill_radar",
     version="0.2.0",
+    description="GitHub skill/plugin 저장소 일일 수집·요약·랭킹·승인·발행",
     entry="collect",
     stages=[
         StageSpec(

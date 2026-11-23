@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   decision TEXT NOT NULL,
   comment TEXT NOT NULL DEFAULT '',
   decided_by TEXT NOT NULL DEFAULT 'local',
-  decided_at TEXT NOT NULL
+  decided_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -296,6 +297,19 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
+
+-- workflow_schedules: 주기적 workflow run 자동 생성
+CREATE TABLE IF NOT EXISTS workflow_schedules (
+  id TEXT PRIMARY KEY,
+  workflow TEXT NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  interval_minutes INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  next_run_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_schedules_next ON workflow_schedules(next_run_at);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -339,7 +353,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   decision TEXT NOT NULL,
   comment TEXT NOT NULL DEFAULT '',
   decided_by TEXT NOT NULL DEFAULT 'local',
-  decided_at TEXT NOT NULL
+  decided_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -551,6 +566,19 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
+
+-- workflow_schedules: 주기적 workflow run 자동 생성
+CREATE TABLE IF NOT EXISTS workflow_schedules (
+  id TEXT PRIMARY KEY,
+  workflow TEXT NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  interval_minutes INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  next_run_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_schedules_next ON workflow_schedules(next_run_at);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -664,39 +692,46 @@ class Store:
             with self._conn:
                 self._conn.executescript(SCHEMA)
         self._migrate_agent_session_columns()
+        self._migrate_approval_columns()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
-    def _migrate_agent_session_columns(self) -> None:
-        """기존 DB의 agent_sessions에 신규 컬럼 보강.
-
-        CREATE TABLE IF NOT EXISTS는 기존 테이블을 변경하지 않으므로
-        ended_summary/artifacts처럼 나중에 추가된 컬럼은 ALTER로 보강한다."""
-        wanted = {"ended_summary", "artifacts"}
+    def _ensure_columns(self, table: str, wanted: dict[str, str]) -> None:
+        """CREATE TABLE IF NOT EXISTS는 기존 테이블을 변경하지 않으므로
+        나중에 추가된 컬럼은 ALTER로 보강한다.
+        wanted: {컬럼명: 컬럼 DDL} — 테이블/컬럼명은 내부 상수만 사용."""
         try:
             if self._pg:
                 rows = self._conn.execute(
-                    "SELECT column_name FROM information_schema.columns"
-                    " WHERE table_name='agent_sessions'"
+                    "SELECT column_name FROM information_schema.columns WHERE table_name=?",
+                    (table,),
                 ).fetchall()
                 have = {r["column_name"] for r in rows}
             else:
-                rows = self._conn.execute("PRAGMA table_info(agent_sessions)").fetchall()
+                rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
                 have = {r["name"] for r in rows}
         except Exception as e:
-            logger.warning("agent_sessions column check failed: %s", e)
+            logger.warning("%s column check failed: %s", table, e)
             return
-        for col in sorted(wanted - have):
+        for col, ddl in sorted(wanted.items()):
+            if col in have:
+                continue
             try:
                 if self._pg:
-                    self._conn.execute(
-                        f"ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS {col} TEXT"
-                    )
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ddl}")
                 else:
-                    self._conn.execute(f"ALTER TABLE agent_sessions ADD COLUMN {col} TEXT")
-                logger.info("agent_sessions column added: %s", col)
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+                logger.info("%s column added: %s", table, col)
             except Exception as e:
-                logger.warning("agent_sessions add column %s failed: %s", col, e)
+                logger.warning("%s add column %s failed: %s", table, col, e)
+
+    def _migrate_agent_session_columns(self) -> None:
+        """기존 DB의 agent_sessions에 신규 컬럼 보강."""
+        self._ensure_columns("agent_sessions", {"ended_summary": "TEXT", "artifacts": "TEXT"})
+
+    def _migrate_approval_columns(self) -> None:
+        """기존 DB의 approvals에 created_at 컬럼 보강."""
+        self._ensure_columns("approvals", {"created_at": "TEXT"})
 
     def close(self) -> None:
         self._conn.close()
@@ -923,6 +958,7 @@ class Store:
         comment: str = "",
         decided_by: str = "local",
     ) -> Approval:
+        now = _now()
         ap = Approval(
             id=uuid.uuid4().hex[:12],
             run_id=run_id,
@@ -930,12 +966,13 @@ class Store:
             decision=decision,
             comment=comment,
             decided_by=decided_by,
-            decided_at=_now(),
+            decided_at=now,
+            created_at=now,
         )
         with self.tx() as c:
             c.execute(
                 "INSERT INTO approvals(id,run_id,stage_key,decision,comment,"
-                "decided_by,decided_at) VALUES(?,?,?,?,?,?,?)",
+                "decided_by,decided_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     ap.id,
                     ap.run_id,
@@ -944,6 +981,7 @@ class Store:
                     ap.comment,
                     ap.decided_by,
                     _iso(ap.decided_at),
+                    _iso(ap.created_at),
                 ),
             )
         self.audit(
@@ -964,6 +1002,7 @@ class Store:
                 comment=r["comment"],
                 decided_by=r["decided_by"],
                 decided_at=_dt(r["decided_at"]) or _now(),
+                created_at=_dt(r["created_at"]) or _dt(r["decided_at"]),
             )
             for r in rows
         ]
@@ -2054,4 +2093,170 @@ class Store:
         return {
             "models": models,
             "daily": [{"date": k, **daily[k]} for k in sorted(daily)],
+        }
+
+    # ---- workflow_schedules (주기적 workflow run) ----
+    @staticmethod
+    def _schedule_json(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        d["input"] = _loads(d.get("input") or "{}")
+        d["enabled"] = bool(d.get("enabled"))
+        return d
+
+    def create_schedule(
+        self, workflow: str, input_data: dict[str, Any], interval_minutes: int
+    ) -> dict[str, Any]:
+        now = _now()
+        nxt = now + timedelta(minutes=interval_minutes)
+        sid = uuid.uuid4().hex[:12]
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO workflow_schedules(id,workflow,input,interval_minutes,"
+                "enabled,last_run_at,next_run_at,created_at) VALUES(?,?,?,?,1,NULL,?,?)",
+                (
+                    sid,
+                    workflow,
+                    json.dumps(input_data or {}),
+                    int(interval_minutes),
+                    _iso(nxt),
+                    _iso(now),
+                ),
+            )
+        sched = self.get_schedule(sid)
+        return sched if sched is not None else {"id": sid}
+
+    def list_schedules(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM workflow_schedules ORDER BY created_at DESC"
+        ).fetchall()
+        return [self._schedule_json(r) for r in rows]
+
+    def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM workflow_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        return self._schedule_json(row) if row else None
+
+    def set_schedule_enabled(self, schedule_id: str, enabled: bool) -> dict[str, Any] | None:
+        """enabled 토글. 활성화 시 next_run_at을 now+interval로 재계산."""
+        sched = self.get_schedule(schedule_id)
+        if sched is None:
+            return None
+        next_run = sched.get("next_run_at")
+        if enabled:
+            nxt = _now() + timedelta(minutes=int(sched["interval_minutes"]))
+            next_run = _iso(nxt)
+        with self.tx() as c:
+            c.execute(
+                "UPDATE workflow_schedules SET enabled=?, next_run_at=? WHERE id=?",
+                (1 if enabled else 0, next_run, schedule_id),
+            )
+        return self.get_schedule(schedule_id)
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM workflow_schedules WHERE id=?", (schedule_id,))
+        return cur.rowcount > 0
+
+    def due_schedules(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM workflow_schedules WHERE enabled=1"
+            " AND next_run_at IS NOT NULL AND next_run_at <= ?"
+            " ORDER BY next_run_at",
+            (_iso(_now()),),
+        ).fetchall()
+        return [self._schedule_json(r) for r in rows]
+
+    def mark_schedule_fired(self, schedule_id: str, last_run_at: str, next_run_at: str) -> None:
+        with self.tx() as c:
+            c.execute(
+                "UPDATE workflow_schedules SET last_run_at=?, next_run_at=? WHERE id=?",
+                (last_run_at, next_run_at, schedule_id),
+            )
+
+    # ---- run stats (GET /runs/stats) ----
+    _STATS_FAILED = {"failed", "rejected", "budget_exhausted", "needs_human", "cancelled"}
+    _STATS_TERMINAL = _STATS_FAILED | {"completed"}
+
+    def run_stats(self, workflow_key: str | None, days: int) -> dict[str, Any]:
+        """최근 days일 run/stage_runs 집계. created_at 기준 윈도우."""
+        days = max(1, min(int(days), 365))
+        cutoff = _iso(_now() - timedelta(days=days))
+        # workflow_key=None이면 전체 — "? IS NULL OR" 패턴으로 분기 없이 처리
+        run_params: list[Any] = [cutoff, workflow_key, workflow_key]
+        stage_params: list[Any] = [cutoff, workflow_key, workflow_key]
+        run_rows = self._conn.execute(
+            "SELECT id,status,created_at,updated_at FROM runs"
+            " WHERE created_at >= ? AND (? IS NULL OR workflow_key=?)",
+            run_params,
+        ).fetchall()
+        stage_rows = self._conn.execute(
+            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.tokens_in,"
+            " sr.tokens_out, sr.started_at FROM stage_runs sr"
+            " JOIN runs r ON r.id = sr.run_id"
+            " WHERE r.created_at >= ? AND (? IS NULL OR r.workflow_key=?)",
+            stage_params,
+        ).fetchall()
+
+        counts = {"succeeded": 0, "failed": 0, "running": 0, "waiting_approval": 0}
+        durations: list[float] = []
+        daily: dict[str, dict[str, int]] = {}
+        for row in run_rows:
+            st = row["status"]
+            if st == "completed":
+                counts["succeeded"] += 1
+            elif st in self._STATS_FAILED:
+                counts["failed"] += 1
+            elif st in ("queued", "running"):
+                counts["running"] += 1
+            elif st == "waiting_approval":
+                counts["waiting_approval"] += 1
+            created = _dt(row["created_at"])
+            updated = _dt(row["updated_at"])
+            if st in self._STATS_TERMINAL and created and updated:
+                durations.append((updated - created).total_seconds())
+            day = (row["created_at"] or "")[:10]
+            if day:
+                daily.setdefault(day, {"runs": 0, "tokens": 0})["runs"] += 1
+
+        tokens_in = tokens_out = 0
+        latest_attempt: dict[tuple[str, str], tuple[int, str]] = {}
+        for row in stage_rows:
+            tin = int(row["tokens_in"] or 0)
+            tout = int(row["tokens_out"] or 0)
+            tokens_in += tin
+            tokens_out += tout
+            skey = (row["run_id"], row["stage_key"])
+            attempt = int(row["attempt"] or 0)
+            if skey not in latest_attempt or attempt > latest_attempt[skey][0]:
+                latest_attempt[skey] = (attempt, row["status"])
+            day = (row["started_at"] or "")[:10]
+            if day:
+                daily.setdefault(day, {"runs": 0, "tokens": 0})["tokens"] += tin + tout
+
+        stage_failures: dict[str, int] = {}
+        for (_run_id, stage_key), (_attempt, st) in latest_attempt.items():
+            if st == "failed":
+                stage_failures[stage_key] = stage_failures.get(stage_key, 0) + 1
+
+        today = _now().date()
+        start = today - timedelta(days=days - 1)
+        out_daily: list[dict[str, Any]] = []
+        d = start
+        while d <= today:
+            key = d.isoformat()
+            bucket = daily.get(key, {"runs": 0, "tokens": 0})
+            out_daily.append({"date": key, "runs": bucket["runs"], "tokens": bucket["tokens"]})
+            d += timedelta(days=1)
+
+        return {
+            "workflow": workflow_key,
+            "days": days,
+            "runs": len(run_rows),
+            **counts,
+            "avg_duration_s": (round(sum(durations) / len(durations), 1) if durations else None),
+            "total_tokens_in": tokens_in,
+            "total_tokens_out": tokens_out,
+            "stage_failures": stage_failures,
+            "daily": out_daily,
         }

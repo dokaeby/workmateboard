@@ -7,6 +7,7 @@ from ..models import StageSpec, WorkflowSpec
 SPEC = WorkflowSpec(
     key="dev_review",
     version="0.1.0",
+    description="요구사항 분석→구현→자동검사→보안→코드리뷰→QA→사람 승인",
     entry="analysis",
     stages=[
         StageSpec(key="analysis", kind="llm", agent="analysis", description="요구사항·설계 분석"),

@@ -2,12 +2,39 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+
 from ..config import Settings
 from ..engine.registry import Registry, default_agents
 from ..engine.runner import WorkflowRunner, build_checkpointer_for
 from ..llm import LLMClient
 from ..store.db import Store
 from . import WORKFLOWS
+
+logger = logging.getLogger("jobmate.workflows")
+
+_AGENT_MODEL_ROLES = ("analysis", "implementer", "security", "reviewer", "qa", "extractor")
+
+
+def _agent_model_overrides() -> dict[str, str]:
+    """JOBMATE_AGENT_MODELS env JSON — agent 키 또는 stage 키 → 모델명.
+
+    예: {"security": "gpt-5", "qa": "claude-sonnet"}. 잘못된 JSON/형식은
+    경고만 남기고 무시한다."""
+    raw = os.environ.get("JOBMATE_AGENT_MODELS", "")
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logger.warning("JOBMATE_AGENT_MODELS is not valid JSON — ignored")
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("JOBMATE_AGENT_MODELS must be a JSON object — ignored")
+        return {}
+    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
 
 
 def build_registry(settings: Settings) -> Registry:
@@ -20,11 +47,29 @@ def build_registry(settings: Settings) -> Registry:
     for agent in default_agents(base_default, base_important).values():
         reg.register_agent(agent)
     # 역할별 오버라이드가 있으면 model 교체
-    for role in ("analysis", "implementer", "security", "reviewer", "qa", "extractor"):
+    for role in _AGENT_MODEL_ROLES:
         if role in settings.role_models:
             agent = reg.agent(role)
             tier = "important" if agent.tier == "important" else "default"
             reg.register_agent(agent.model_copy(update={"model": settings.model_for(role, tier)}))
+    # JOBMATE_AGENT_MODELS — agent/stage 키 → 모델명 직접 지정 (ModelConfig 나머지 유지)
+    overrides = _agent_model_overrides()
+    if overrides:
+        stage_agents = {
+            st.key: st.agent for spec in reg.workflows() for st in spec.stages if st.agent
+        }
+        for key, model_name in overrides.items():
+            try:
+                agent = reg.agent(key)
+            except KeyError:
+                agent_key = stage_agents.get(key)
+                if not agent_key:
+                    logger.warning("JOBMATE_AGENT_MODELS unknown key ignored: %s", key)
+                    continue
+                agent = reg.agent(agent_key)
+            new_model = agent.model.model_copy(update={"model": model_name})
+            reg.register_agent(agent.model_copy(update={"model": new_model}))
+            logger.info("agent model override key=%s agent=%s model=%s", key, agent.key, model_name)
     return reg
 
 
