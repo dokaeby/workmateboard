@@ -320,6 +320,27 @@
     ctx.fillText(b.text, lx + (b.kind === "work" ? 12 : 8), ty + b.h / 2 + 1);
   }
 
+  // 세션 건강도 — stale = 머리 위 주황 "!", long_idle = 옅은 "zZ". 화면 좌표로 작게 그린다.
+  function healthBadges(ctx) {
+    const fs = st.view.small ? 9 : 10;
+    ctx.font = `700 ${fs}px ${FONT}`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (const p of L.people.values()) {
+      const h = p.health;
+      if ((h !== "stale" && h !== "long_idle") || !p.box || p.alpha < 0.3) continue;
+      const [x, y] = scr(p.box.x + p.box.w - 3, p.box.top + 7);
+      ctx.globalAlpha = Math.min(1, p.alpha);
+      if (h === "stale") {
+        ctx.fillStyle = "#F5A623"; ctx.strokeStyle = "rgba(255, 255, 255, .95)"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, fs * 0.85, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#1E2622"; ctx.fillText("!", x, y + 0.5);
+      } else {
+        ctx.fillStyle = "rgba(86, 97, 91, .85)"; ctx.fillText("zZ", x + 4, y - 2);
+      }
+    }
+    ctx.globalAlpha = 1; ctx.textAlign = "start";
+  }
+
   // ---------- 한 장 그리기 ----------
   function layout() {
     const cv = $("jmo-canvas"), box = $("jmo-box");
@@ -362,6 +383,7 @@
     ctx.globalAlpha = 1;
     nameTags(ctx);
     bubbles(ctx);
+    healthBadges(ctx);
     for (const p of L.people.values()) {
       if (p.extra > 0 && p.box) {
         const [mx, my] = scr(p.x + 30 + 6 * 21, p.y + 34);
@@ -463,7 +485,7 @@
   }
   const toLife = d => ({
     id: d.id, name: d.name, status: d.status, ask: d.ask, kid: d.kid, home: d.home, commits: d.commits, path: d.path,
-    project: d.project || "",
+    project: d.project || "", health: d.health || "",
     doing: JMO_I18N.act(d.doing), subCount: d.subCount || 0,
     subs: d.subs.map(s => ({ id: String(s.id), type: s.type || "", desc: s.desc || "", doing: JMO_I18N.act(s.doing) })),
   });

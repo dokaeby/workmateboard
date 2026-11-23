@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import time
@@ -50,6 +51,16 @@ class SessionState:
     path: str
     ended_summary: str = ""  # 종료 시 수집한 repo 요약 (ended push 전용)
     artifacts: list[str] | None = None  # 종료 시 수집한 산출물 짧은 문자열 목록
+    tokens_in: int | None = None  # 누적 입력 토큰 (수집 가능 시)
+    tokens_out: int | None = None  # 누적 출력 토큰
+
+
+def _machine_name() -> str:
+    """짧은 호스트명 (서버 측 machine 필터용). 실패 시 'unknown'."""
+    try:
+        return socket.gethostname().split(".")[0][:128] or "unknown"
+    except Exception:
+        return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +191,31 @@ def _claude_slug_project(slug: str) -> str:
     return decoded.rsplit("/", 1)[-1] if decoded else slug
 
 
+def _usage_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _claude_tokens(entries: Iterable[dict]) -> tuple[int | None, int | None]:
+    """assistant 메시지의 usage 합산 (head+tail 스캔 범위 내 best-effort)."""
+    tin = tout = 0
+    seen = False
+    for e in entries:
+        if e.get("type") != "assistant":
+            continue
+        msg = e.get("message")
+        usage = msg.get("usage") if isinstance(msg, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        i = _usage_int(usage.get("input_tokens"))
+        o = _usage_int(usage.get("output_tokens"))
+        if i is None and o is None:
+            continue
+        tin += i or 0
+        tout += o or 0
+        seen = True
+    return (tin, tout) if seen else (None, None)
+
+
 def scan_claude(root: Path, now: float) -> list[SessionState]:
     """root = ~/.claude/projects 디렉터리."""
     states: list[SessionState] = []
@@ -228,6 +264,12 @@ def scan_claude(root: Path, now: float) -> list[SessionState]:
                 pending.clear()
         decision = bool(pending)
 
+        tokens_in = tokens_out = None
+        try:
+            tokens_in, tokens_out = _claude_tokens(head_entries + tail_entries)
+        except Exception as e:
+            logger.debug("claude token scan failed %s: %s", path, e)
+
         status = "decision" if decision else _base_status(mtime, now)
         states.append(
             SessionState(
@@ -240,6 +282,8 @@ def scan_claude(root: Path, now: float) -> list[SessionState]:
                 ask=pending[-1] if pending else "",
                 event_at=_iso(mtime),
                 path=str(path),
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
             )
         )
     return states
@@ -398,6 +442,12 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
         else:
             status = _base_status(mtime, now)
 
+        tokens_in = tokens_out = None
+        try:
+            tokens_in, tokens_out = _codex_tokens(head_entries + tail_entries)
+        except Exception as e:
+            logger.debug("codex token scan failed %s: %s", path, e)
+
         states.append(
             SessionState(
                 tool="codex",
@@ -409,6 +459,8 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
                 ask=pending_calls[-1] if pending_calls else "",
                 event_at=_iso(mtime),
                 path=str(path),
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
             )
         )
 
@@ -479,6 +531,30 @@ def _codex_title_entry(entry: dict) -> str:
     if p.get("type") == "message" and p.get("role") == "user":
         return _clip(_codex_text(p), 60)
     return ""
+
+
+def _codex_tokens(entries: Iterable[dict]) -> tuple[int | None, int | None]:
+    """event_msg/token_count의 total_token_usage — 누적값이라 마지막 것을 취한다.
+
+    head+tail을 시간순으로 넘기면 tail의 최신 이벤트가 마지막에 온다."""
+    tokens_in = tokens_out = None
+    for e in entries:
+        if e.get("type") != "event_msg":
+            continue
+        p = _payload(e)
+        if p.get("type") != "token_count":
+            continue
+        info = p.get("info")
+        total = info.get("total_token_usage") if isinstance(info, dict) else None
+        if not isinstance(total, dict):
+            continue
+        i = _usage_int(total.get("input_tokens"))
+        o = _usage_int(total.get("output_tokens"))
+        if i is not None:
+            tokens_in = i
+        if o is not None:
+            tokens_out = o
+    return tokens_in, tokens_out
 
 
 # ---------------------------------------------------------------------------
@@ -922,6 +998,7 @@ class Bridge:
         self._repo_roots = repo_roots if repo_roots is not None else _default_repo_roots()
         self._repo_cache: dict[str, Path | None] = {}
         self._ended_cache: dict[tuple[str, str], tuple[str, list[str]]] = {}
+        self._machine = _machine_name()
 
     def _repo_for(self, project: str) -> Path | None:
         """project명(basename) → git repo 경로. 결과는 프로젝트별 캐시."""
@@ -995,7 +1072,12 @@ class Bridge:
                 "doing": state.doing,
                 "ask": state.ask,
                 "event_at": state.event_at,
+                "machine": self._machine,
             }
+            if state.tokens_in is not None:
+                body["tokens_in"] = state.tokens_in
+            if state.tokens_out is not None:
+                body["tokens_out"] = state.tokens_out
             if state.ended_summary:
                 body["ended_summary"] = state.ended_summary
             if state.artifacts:
@@ -1037,6 +1119,8 @@ class Bridge:
                 ask="",
                 event_at=prev.event_at,
                 path=prev.path,
+                tokens_in=prev.tokens_in,
+                tokens_out=prev.tokens_out,
             )
             # 종료 전이 시점에만 경량 repo 산출물 수집 (프로젝트→repo 매핑 실패 시 스킵)
             ended.ended_summary, ended.artifacts = self._ended_artifacts(prev)

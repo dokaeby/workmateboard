@@ -266,6 +266,9 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   ask TEXT,
   ended_summary TEXT,
   artifacts TEXT,
+  machine TEXT,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
   last_event_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -536,6 +539,9 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   ask TEXT,
   ended_summary TEXT,
   artifacts TEXT,
+  machine TEXT,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
   last_event_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -727,7 +733,16 @@ class Store:
 
     def _migrate_agent_session_columns(self) -> None:
         """기존 DB의 agent_sessions에 신규 컬럼 보강."""
-        self._ensure_columns("agent_sessions", {"ended_summary": "TEXT", "artifacts": "TEXT"})
+        self._ensure_columns(
+            "agent_sessions",
+            {
+                "ended_summary": "TEXT",
+                "artifacts": "TEXT",
+                "machine": "TEXT",
+                "tokens_in": "INTEGER",
+                "tokens_out": "INTEGER",
+            },
+        )
 
     def _migrate_approval_columns(self) -> None:
         """기존 DB의 approvals에 created_at 컬럼 보강."""
@@ -1824,11 +1839,15 @@ class Store:
         event_at: str | None = None,
         ended_summary: str | None = None,
         artifacts: list[str] | None = None,
+        machine: str | None = None,
+        tokens_in: int | None = None,
+        tokens_out: int | None = None,
     ) -> None:
         """(tool, session_key) 기준 upsert.
 
         선택 필드가 None이면 기존 값을 유지한다(COALESCE) — 브릿지가 부분
         상태만 보내도 이전 값이 지워지지 않게 하기 위함.
+        tokens_in/out은 브릿지가 누적 카운터를 보내므로 MAX로 갱신한다.
         status/doing/ask/project/title이 실제로 바뀐 경우에만
         agent_session_events에 전이 이벤트를 남긴다 (60초 내 동일 이벤트는 생략)."""
         now_dt = _now()
@@ -1855,8 +1874,9 @@ class Store:
             )
             c.execute(
                 "INSERT INTO agent_sessions(id,tool,session_key,project,title,status,"
-                "doing,ask,ended_summary,artifacts,last_event_at,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                "doing,ask,ended_summary,artifacts,machine,tokens_in,tokens_out,"
+                "last_event_at,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(tool,session_key) DO UPDATE SET"
                 " project=COALESCE(excluded.project, agent_sessions.project),"
                 " title=COALESCE(excluded.title, agent_sessions.title),"
@@ -1866,6 +1886,15 @@ class Store:
                 " ended_summary=COALESCE(excluded.ended_summary,"
                 " agent_sessions.ended_summary),"
                 " artifacts=COALESCE(excluded.artifacts, agent_sessions.artifacts),"
+                " machine=COALESCE(excluded.machine, agent_sessions.machine),"
+                " tokens_in=CASE WHEN excluded.tokens_in IS NOT NULL"
+                " AND (agent_sessions.tokens_in IS NULL"
+                " OR excluded.tokens_in>agent_sessions.tokens_in)"
+                " THEN excluded.tokens_in ELSE agent_sessions.tokens_in END,"
+                " tokens_out=CASE WHEN excluded.tokens_out IS NOT NULL"
+                " AND (agent_sessions.tokens_out IS NULL"
+                " OR excluded.tokens_out>agent_sessions.tokens_out)"
+                " THEN excluded.tokens_out ELSE agent_sessions.tokens_out END,"
                 " last_event_at=COALESCE(excluded.last_event_at,"
                 " agent_sessions.last_event_at),"
                 " updated_at=excluded.updated_at",
@@ -1880,6 +1909,9 @@ class Store:
                     ask,
                     ended_summary,
                     artifacts_json,
+                    machine,
+                    tokens_in,
+                    tokens_out,
                     event_at,
                     now,
                     now,
@@ -1942,17 +1974,28 @@ class Store:
         return dict(row) if row else None
 
     def list_agent_sessions(
-        self, limit: int = 50, include_ended: bool = False
+        self,
+        limit: int = 50,
+        include_ended: bool = False,
+        machine: str | None = None,
     ) -> list[dict[str, Any]]:
-        """최근 이벤트 순 세션 목록. include_ended=False면 status='ended' 제외."""
+        """최근 이벤트 순 세션 목록. include_ended=False면 status='ended' 제외.
+        machine 지정 시 해당 머신의 세션만 (정확 일치)."""
         sql = (
             "SELECT id,tool,session_key,project,title,status,doing,ask,"
-            "ended_summary,artifacts,last_event_at,created_at,updated_at"
+            "ended_summary,artifacts,machine,tokens_in,tokens_out,"
+            "last_event_at,created_at,updated_at"
             " FROM agent_sessions"
         )
+        clauses: list[str] = []
         params: list[Any] = []
         if not include_ended:
-            sql += " WHERE status != 'ended'"
+            clauses.append("status != 'ended'")
+        if machine is not None:
+            clauses.append("machine=?")
+            params.append(machine)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY last_event_at DESC NULLS LAST, updated_at DESC LIMIT ?"
         params.append(limit)
         rows = self._conn.execute(sql, params).fetchall()
@@ -2055,6 +2098,60 @@ class Store:
                 "last_active": b["last_active"],
             }
         return out
+
+    def agent_session_hourly(self, day: str) -> list[dict[str, Any]]:
+        """로컬 날짜(YYYY-MM-DD)의 시간대별 working/decision 초 — 24개 버킷.
+
+        agent_session_events를 (tool, session_key)별로 시간순 정렬해,
+        working/decision 이벤트의 event_at부터 다음 이벤트의 created_at까지의
+        구간을 해당 로컬 날짜로 클립해 시간 버킷에 합산한다. 다음 이벤트가
+        없으면 그날의 끝(미래면 현재 시각)까지로 본다."""
+        try:
+            d = datetime.fromisoformat(day)
+        except ValueError as exc:
+            raise ValueError(f"bad day: {day!r}") from exc
+        # naive → 로컬 자정 aware
+        day_start = datetime(d.year, d.month, d.day).astimezone()
+        day_end = day_start + timedelta(days=1)
+        end_cap = min(day_end, _now())
+        rows = self._conn.execute(
+            "SELECT tool,session_key,status,event_at,created_at"
+            " FROM agent_session_events"
+            " ORDER BY tool, session_key, created_at, id"
+        ).fetchall()
+        per: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for r in rows:
+            row = dict(r)
+            per.setdefault((row["tool"], row["session_key"]), []).append(row)
+        seconds = [0.0] * 24
+        for evs in per.values():
+            for i, ev in enumerate(evs):
+                if (ev.get("status") or "") not in ("working", "decision"):
+                    continue
+                start = _dt(ev.get("event_at")) or _dt(ev.get("created_at"))
+                if start is None:
+                    continue
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=UTC)
+                nxt = evs[i + 1] if i + 1 < len(evs) else None
+                end = _dt(nxt.get("created_at")) if nxt else None
+                if end is not None and end.tzinfo is None:
+                    end = end.replace(tzinfo=UTC)
+                if end is None or end > end_cap:
+                    end = end_cap
+                # 해당 로컬 날짜로 클립
+                s = max(start, day_start)
+                e = min(end, day_end)
+                if e <= s:
+                    continue
+                cur = s.astimezone()
+                end_local = e.astimezone()
+                while cur < end_local:
+                    nxt_hour = cur.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                    seg_end = min(nxt_hour, end_local)
+                    seconds[cur.hour] += (seg_end - cur).total_seconds()
+                    cur = seg_end
+        return [{"hour": h, "working_seconds": int(round(seconds[h]))} for h in range(24)]
 
     # ---- llm_usage (LLM 토큰 사용량) ----
     def record_llm_usage(self, model: str, tokens_in: int, tokens_out: int) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -59,6 +60,61 @@ def _endpoint_fp(endpoint: str) -> str:
     return hashlib.sha256(endpoint.encode()).hexdigest()[:12]
 
 
+# 세션 토큰 누적치 → USD 추정치 (1M 토큰당). tool별 오버라이드, 없으면 default.
+_SESSION_TOKEN_PRICES: dict[str, tuple[float, float]] = {
+    "default": (3.0, 15.0),
+    "claude": (3.0, 15.0),
+    "codex": (1.5, 6.0),
+    "gemini": (1.0, 4.0),
+}
+
+_SESSION_STALE_SECONDS = 300.0
+_SESSION_LONG_IDLE_SECONDS = 43200.0
+
+
+def _parse_session_ts(value: Any) -> datetime | None:
+    """ISO 타임스탬프 파싱 — 실패/naive는 UTC 간주."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _session_health(row: dict[str, Any]) -> str:
+    """세션 상태 건강도 — ended/stale/long_idle/active (Python 계산, SQL 아님)."""
+    status = str(row.get("status") or "")
+    if status == "ended":
+        return "ended"
+    ts = _parse_session_ts(row.get("last_event_at")) or _parse_session_ts(row.get("updated_at"))
+    age = (datetime.now(UTC) - ts).total_seconds() if ts is not None else 0.0
+    if status in ("working", "decision"):
+        return "stale" if age > _SESSION_STALE_SECONDS else "active"
+    if status == "rest":
+        return "long_idle" if age > _SESSION_LONG_IDLE_SECONDS else "active"
+    return "active"
+
+
+def _session_est_cost_usd(row: dict[str, Any]) -> float | None:
+    """tokens_in/out 누적치 → USD 추정. 둘 다 없으면 None."""
+    tin = row.get("tokens_in")
+    tout = row.get("tokens_out")
+    if tin is None and tout is None:
+        return None
+    price_in, price_out = _SESSION_TOKEN_PRICES.get(
+        str(row.get("tool") or ""), _SESSION_TOKEN_PRICES["default"]
+    )
+    return round(((tin or 0) * price_in + (tout or 0) * price_out) / 1_000_000, 6)
+
+
+def _session_view(row: dict[str, Any]) -> dict[str, Any]:
+    return {**row, "health": _session_health(row), "est_cost_usd": _session_est_cost_usd(row)}
+
+
 class RunCreateRequest(BaseModel):
     workflow: str = "dev_review"
     task: str = Field(min_length=1, max_length=20_000)
@@ -104,6 +160,9 @@ class AgentSessionRequest(BaseModel):
     artifacts: list[Annotated[str, Field(max_length=300)]] | None = Field(
         default=None, max_length=10
     )
+    machine: str | None = Field(default=None, max_length=128)
+    tokens_in: int | None = Field(default=None, ge=0)
+    tokens_out: int | None = Field(default=None, ge=0)
 
 
 def _token_path_for(kind: str, settings: Settings) -> str | None:
@@ -566,6 +625,32 @@ def create_app(
         send_web_push_text(adapters, title, body, "/?view=office")
         logger.info("attention push sent key=%s", key)
 
+    def _session_push_allowed(tool: str, project: str | None, status: str, ask: str | None) -> bool:
+        """prefs.notify_rules 기반 세션 어텐션 푸시 필터.
+
+        규칙 없음/빈 리스트 → 전부 허용(기존 동작). 규칙이 있으면
+        tool/project null-or-일치 AND statuses에 유효 상태(ask 우선, 없으면
+        status)가 포함된 규칙이 하나라도 있을 때만 허용."""
+        rules = _prefs().get("notify_rules")
+        if not isinstance(rules, list) or not rules:
+            return True
+        effective = "ask" if (ask or "").strip() else status
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            rtool = rule.get("tool")
+            if rtool and rtool != tool:
+                continue
+            rproject = rule.get("project")
+            if rproject and rproject != project:
+                continue
+            statuses = rule.get("statuses")
+            if not isinstance(statuses, list):
+                continue
+            if status in statuses or effective in statuses:
+                return True
+        return False
+
     @app.post("/api/v1/agent-sessions")
     def push_agent_session(body: AgentSessionRequest, request: Request) -> JSONResponse:
         """머신 push 전용 — API 키 인증만 허용. 세션 쿠키만으로는 거부."""
@@ -590,6 +675,9 @@ def create_app(
             event_at=body.event_at,
             ended_summary=body.ended_summary,
             artifacts=body.artifacts,
+            machine=body.machine,
+            tokens_in=body.tokens_in,
+            tokens_out=body.tokens_out,
         )
         # decision 진입(또는 ask 설정) '전이' 시에만 푸시 — 반복 poll은 무시
         attention = body.status == "decision" or bool((body.ask or "").strip())
@@ -597,23 +685,38 @@ def create_app(
             prev.get("status") == "decision" or bool((prev.get("ask") or "").strip())
         )
         if attention and not prev_attention:
-            who = body.project or session_key[:12]
-            detail = (body.ask or body.doing or body.title or "").strip()[:200]
-            _push_attention(
-                f"agent:{tool}:{session_key}",
-                f"승인 필요: {tool} · {who}",
-                detail,
-            )
+            if _session_push_allowed(tool, body.project, body.status, body.ask):
+                who = body.project or session_key[:12]
+                detail = (body.ask or body.doing or body.title or "").strip()[:200]
+                _push_attention(
+                    f"agent:{tool}:{session_key}",
+                    f"승인 필요: {tool} · {who}",
+                    detail,
+                )
+            else:
+                logger.debug("agent-session attention skipped by notify_rules tool=%s", tool)
         return JSONResponse(content={"ok": True})
 
     @app.get("/api/v1/agent-sessions")
-    def list_agent_sessions(limit: int = 50, include_ended: bool = False) -> list[dict[str, Any]]:
-        return store.list_agent_sessions(limit=limit, include_ended=include_ended)
+    def list_agent_sessions(
+        limit: int = 50,
+        include_ended: bool = False,
+        machine: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = store.list_agent_sessions(limit=limit, include_ended=include_ended, machine=machine)
+        return [_session_view(r) for r in rows]
 
     @app.get("/api/v1/agent-sessions/stats")
-    def agent_session_stats(since: str | None = None) -> dict[str, Any]:
-        """tool별 세션 통계 — working 시간은 이벤트 간격 기반 추정."""
-        return {"tools": store.agent_session_stats(since=since)}
+    def agent_session_stats(request: Request, since: str | None = None) -> Any:
+        """tool별 세션 통계 + since(YYYY-MM-DD, 기본 오늘)의 시간대별 working 초."""
+        day = since or datetime.now().astimezone().date().isoformat()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            return err(422, "validation_error", "since must be YYYY-MM-DD", request)
+        try:
+            hourly = store.agent_session_hourly(day)
+        except ValueError:
+            return err(422, "validation_error", "invalid since date", request)
+        return {"tools": store.agent_session_stats(since=since), "hourly": hourly}
 
     @app.get("/api/v1/agent-sessions/{tool}/{session_key}/history")
     def agent_session_history(tool: str, session_key: str, limit: int = 100) -> dict[str, Any]:
@@ -919,6 +1022,7 @@ def create_app(
         return {
             "gmail_check_minutes": p.get("gmail_check_minutes", 30),
             "radar_interval": p.get("radar_interval", "daily"),
+            "notify_rules": p.get("notify_rules", []),
         }
 
     @app.post("/api/v1/settings")
@@ -936,6 +1040,29 @@ def create_app(
                 "radar_interval": interval,
             }
         )
+        if "notify_rules" in body:
+            rules = body.get("notify_rules")
+            if not isinstance(rules, list) or len(rules) > 100:
+                return err(422, "validation", "notify_rules must be a list (max 100)", request)
+            cleaned: list[dict[str, Any]] = []
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    return err(422, "validation", "notify_rules items must be objects", request)
+                statuses = rule.get("statuses")
+                if not isinstance(statuses, list) or not all(isinstance(s, str) for s in statuses):
+                    return err(
+                        422, "validation", "notify_rules[].statuses must be a string list", request
+                    )
+                tool = rule.get("tool")
+                project = rule.get("project")
+                cleaned.append(
+                    {
+                        "tool": str(tool)[:64] if tool else None,
+                        "project": str(project)[:512] if project else None,
+                        "statuses": [str(s)[:32] for s in statuses][:16],
+                    }
+                )
+            p["notify_rules"] = cleaned
         store.set_state(PREFS_KEY, p)
         cronjob = _sync_cronjob(settings, store, p)
         return JSONResponse(content={"ok": True, "prefs": p, "cronjob": cronjob})
@@ -1362,7 +1489,6 @@ def create_app(
         return {"status": "sent", "sent": len(subs)}
 
     # ---- 계정 인증 (이메일+비밀번호 / Google OAuth) ----
-    import re
     from urllib.parse import urlencode
 
     import httpx

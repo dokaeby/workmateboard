@@ -266,6 +266,75 @@
   .jmo-session-detail .sd-time { color: var(--muted); font-family: monospace; }
   .jmo-session-detail .sd-status { font-weight: 700; }
   .jmo-session-detail .sd-ended { color: var(--muted); }
+  .jmo-session-detail .sd-head { display: flex; align-items: center; gap: 6px; }
+  .jmo-session-detail .sd-head h3 { flex: 1; min-width: 0; }
+  .sd-pin { margin-left: auto; padding: 2px 8px; font-size: 11px; flex: none; }
+  .sd-meta {
+    display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 4px 0;
+    font-size: 12px; color: var(--muted);
+  }
+  .sd-meta b { color: var(--ink-2); font-weight: 600; }
+  .sd-health { font-weight: 700; }
+  .sd-health.active { color: #2ea043; }
+  .sd-health.stale { color: var(--warn); }
+  .sd-health.long_idle, .sd-health.ended { color: var(--muted); }
+  .sd-artifacts { margin: 2px 0 0; padding-left: 16px; }
+  .sd-artifacts li { margin: 1px 0; overflow-wrap: anywhere; }
+  /* 세션 타임라인 — 점 + 세로선, 상태별 색 */
+  .jmo-timeline { list-style: none; margin: 6px 0 0; padding: 0; }
+  .jmo-timeline li {
+    position: relative; padding: 2px 0 2px 16px; font-size: 12px;
+    color: var(--ink-2); border-left: 2px solid var(--border); margin-left: 6px;
+  }
+  .jmo-timeline li::before {
+    content: ""; position: absolute; left: -5px; top: 7px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+  }
+  .jmo-timeline li.tl-working::before { background: #22c55e; }
+  .jmo-timeline li.tl-decision::before { background: #f59e0b; }
+  .jmo-timeline li.tl-rest::before { background: #9ca3af; }
+  .jmo-timeline li.tl-ended::before { background: #1f2937; }
+  .jmo-timeline .tl-trans { color: var(--muted); }
+  .jmo-timeline .tl-text { color: var(--ink-2); overflow-wrap: anywhere; }
+  /* 시간대별 활동 히트맵 — 24개 미니 바 */
+  .jmo-hourly {
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 36px; margin: 2px 0 6px;
+  }
+  .jmo-hourly[hidden] { display: none; }
+  .jmo-hourly .hh {
+    flex: 1 1 0; min-width: 0;
+    background: var(--accent); border-radius: 2px 2px 0 0; opacity: .55;
+  }
+  .jmo-hourly .hh.zero { background: var(--border); opacity: .6; }
+  /* 세션 필터 행 */
+  #office-session-filters[hidden] { display: none; }
+  #office-session-search, #office-project-filter {
+    font: inherit; font-size: 12px; padding: 4px 8px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--ink);
+  }
+  #office-session-search { width: 140px; }
+  #office-project-filter { max-width: 150px; }
+  .office-pins-chip {
+    align-self: center; font-size: 11px; color: var(--muted);
+    padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
+  }
+  .office-pins-chip[hidden] { display: none; }
+  /* 알림 규칙 (설정 다이얼로그) */
+  .nr-row {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    padding: 5px 0; border-bottom: 1px solid var(--border);
+  }
+  .nr-row:last-child { border-bottom: none; }
+  .nr-row select, .nr-row input[type="text"] {
+    font: inherit; font-size: 12px; padding: 4px 6px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--ink);
+  }
+  .nr-row input.nr-project { flex: 1 1 90px; min-width: 80px; }
+  .nr-row label { font-size: 12px; color: var(--ink-2); display: inline-flex; gap: 2px; align-items: center; }
+  .nr-del { padding: 2px 8px; font-size: 11px; }
   #jmo-wrap {
     display: flex; flex-direction: column; min-height: 0;
     height: calc(100vh - 230px); min-height: 480px;
@@ -306,6 +375,19 @@
     }
     .office-edges { display: none; }
     .office-node { position: relative; transform: none; width: auto; flex: 1 1 40%; }
+    /* 세션 탭 모바일 대응 — 컨트롤 줄바꿈, 사이드 패널 세로 스택 */
+    .office-controls { width: 100%; margin-left: 0; }
+    #office-session-search, #office-project-filter { flex: 1 1 100%; max-width: none; width: auto; }
+    #jmo-wrap { height: calc(100vh - 300px); min-height: 420px; }
+    #jmo-main { flex-direction: column; }
+    #jmo-stage { min-height: 260px; }
+    #jmo-side {
+      width: auto; max-height: 46%; border-left: none;
+      border-top: 1px solid var(--border);
+    }
+    .jmo-session-detail { max-height: 40%; }
+    .nr-row { gap: 4px; }
+    .nr-row select, .nr-row input[type="text"] { flex: 1 1 100%; }
   }
   /* ── 실행 관리 확장 (새 실행/승인/통계/스케줄/감사) ── */
   .office-newrun {
@@ -726,6 +808,16 @@
             <button class="office-mode-btn office-tool-btn" data-office-tool="devin" aria-pressed="false">Devin</button>
             <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="true">전체</button>
           </div>
+          <div class="office-mode" id="office-session-filters" role="group" aria-label="세션 필터" hidden>
+            <button class="office-mode-btn office-ended-btn" data-office-ended="0" aria-pressed="true">활성</button>
+            <button class="office-mode-btn office-ended-btn" data-office-ended="1" aria-pressed="false">종료</button>
+            <select id="office-project-filter" aria-label="프로젝트 필터">
+              <option value="">전체 프로젝트</option>
+            </select>
+            <input id="office-session-search" type="search"
+                   placeholder="세션 검색…" autocomplete="off" aria-label="세션 검색">
+            <span class="office-pins-chip" id="office-pins-chip" hidden></span>
+          </div>
           <button class="office-mode-btn" id="office-hidden-hint" hidden
                   title="필터에 숨겨진 활성 세션을 전체 보기로 전환"></button>
           <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
@@ -757,6 +849,7 @@
       <div id="jmo-wrap" hidden>
         <p id="jmo-summary" class="jmo-summary"></p>
         <p id="jmo-stats" class="jmo-summary" hidden></p>
+        <div id="jmo-hourly" class="jmo-hourly" hidden></div>
         <span id="jmo-demo" hidden></span>
         <div id="jmo-main">
           <div id="jmo-stage">
@@ -1009,6 +1102,13 @@
         <option value="daily">매일</option>
         <option value="weekly">매주</option>
       </select></label>
+    <div style="margin-top:14px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px">세션 알림 규칙
+        <span class="card-meta">규칙이 있으면 matching 세션만 알림</span></div>
+      <div id="notify-rules-list"></div>
+      <button type="button" class="secondary" id="notify-rule-add"
+              style="margin-top:6px;padding:4px 10px;font-size:12px">+ 규칙 추가</button>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button id="settings-save">저장</button>
     </div>
@@ -2178,19 +2278,104 @@ let officeDemo = localStorage.getItem("jobmate.officeDemo") !== "0";
 
 // 세션 탭 provider — GET /api/v1/agent-sessions → people 계약
 const SESSION_TOOL_LABEL = {claude:"Claude", codex:"Codex", gemini:"Gemini", devin:"Devin"};
+const SESSION_HEALTH_LABEL = {
+  active: "정상", stale: "오래됨", long_idle: "장기 유휴", ended: "종료",
+};
+// 세션 필터 상태 — localStorage 지속
+const _PINS_KEY = "jobmate.officePins";
+const _PROJ_KEY = "jobmate.officeProject";
+const _ENDED_KEY = "jobmate.officeEnded";
+function jmGetPins() {
+  try {
+    const p = JSON.parse(localStorage.getItem(_PINS_KEY) || "[]");
+    return Array.isArray(p) ? p : [];
+  } catch (e) { return []; }
+}
+function jmSetPins(p) { localStorage.setItem(_PINS_KEY, JSON.stringify(p)); }
+let officeProject = localStorage.getItem(_PROJ_KEY) || "";
+let officeEnded = localStorage.getItem(_ENDED_KEY) === "1" ? "1" : "0";
+let officeSessionQuery = "";
+let _officeProjects = [];          // 프로젝트 셀렉트 옵션 캐시
+let _jmLastSessions = [];          // 상세 패널 메타 조회용 최근 세션 원본
+let _jmDetailSel = null;           // 열린 세션 상세 {tool, key}
+
+// 프로젝트 셀렉트 — 도구/종료 필터까지 적용된 목록의 distinct project 로 채움.
+// 옵션 집합이 바뀔 때만 재구성해 열린 드롭다운/포커스를 건드리지 않는다.
+function _syncOfficeProjects(list) {
+  const projs = [...new Set(
+    list.map(s => s && s.project).filter(Boolean).map(String))].sort();
+  if (JSON.stringify(projs) === JSON.stringify(_officeProjects)) return;
+  _officeProjects = projs;
+  const sel = $("#office-project-filter");
+  if (!sel) return;
+  sel.innerHTML = `<option value="">전체 프로젝트</option>` +
+    projs.map(p =>
+      `<option value="${esc(p)}"${p === officeProject ? " selected" : ""}>` +
+      `${esc(p)}</option>`).join("");
+}
+
+function _sessionListFrom(d) {
+  const list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
+  return Array.isArray(list) ? list : [];
+}
+
 async function jmSessionProvider() {
-  const d = await api("/agent-sessions?limit=50");
-  let list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
-  list = (Array.isArray(list) ? list : []).filter(
+  // include_ended=true 로 항상 전체를 받아 활성/종료 모드·필터를 여기서 적용
+  const d = await api("/agent-sessions?limit=50&include_ended=true");
+  let list = _sessionListFrom(d);
+  list = list.filter(
     s => officeTool === "all" || s.tool === officeTool);
-  const people = list.map(s => ({
-    id: `${s.tool}:${s.session_key}`,
-    name: `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.project || s.session_key}`,
-    status: s.status === "decision" ? "decision"
-          : s.status === "working" ? "working" : "rest",
-    ask: s.ask || "", doing: s.doing || "",
-    subs: [], subCount: 0, kid: false, home: null, commits: null, log: [],
-  }));
+  const endedMode = officeEnded === "1";
+  list = list.filter(s => endedMode
+    ? s.status === "ended" : s.status !== "ended");
+  _jmLastSessions = list;
+  _syncOfficeProjects(list);
+  if (officeProject) {
+    list = list.filter(s => String(s.project || "") === officeProject);
+  }
+  const q = officeSessionQuery.trim().toLowerCase();
+  if (q) {
+    list = list.filter(s =>
+      [s.tool, s.project, s.session_key, s.title, s.doing, s.ask]
+        .some(v => String(v || "").toLowerCase().includes(q)));
+  }
+  const pins = new Set(jmGetPins());
+  const people = list.map(s => {
+    const id = `${s.tool}:${s.session_key}`;
+    const ended = s.status === "ended";
+    let doing = s.doing || "";
+    if (ended) {
+      const summ = s.ended_summary ||
+        _sessionArtifacts(s).join(", ") || s.title || "";
+      doing = summ ? `종료: ${summ}` : "종료됨";
+    }
+    return {
+      id,
+      name: `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.project || s.session_key}`,
+      status: ended ? "rest"
+            : s.status === "decision" ? "decision"
+            : s.status === "working" ? "working" : "rest",
+      ask: ended ? "" : (s.ask || ""),
+      doing,
+      subs: [], subCount: 0, kid: false, home: null, commits: null, log: [],
+      // 확장 필드 — office-panel.js 가 모르는 필드는 무시됨(계약상 안전)
+      pinned: pins.has(id),
+      machine: s.machine || "",
+      health: s.health || "active",
+      tokens_in: s.tokens_in ?? null,
+      tokens_out: s.tokens_out ?? null,
+      est_cost_usd: s.est_cost_usd ?? null,
+      project: s.project || "",
+    };
+  });
+  // 핀 고정 세션을 먼저 — 패널이 mode 순으로 재정렬하므로 여기선 안정 정렬만 보장
+  people.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+  const chip = $("#office-pins-chip");
+  if (chip) {
+    const n = people.filter(p => p.pinned).length;
+    chip.hidden = n === 0;
+    chip.textContent = n ? `📌 ${n}` : "";
+  }
   const emptyEl = $("#office-sessions-empty");
   if (emptyEl) emptyEl.hidden = people.length > 0 || officeTab !== "sessions";
   if (officeDemo) people.push(...jmDemoPeople());
@@ -2271,7 +2456,30 @@ async function officeUpdateSessionStats() {
     }
     el.textContent = parts.join(" · ");
     el.hidden = false;
-  } catch (e) { el.hidden = true; }
+    _renderHourly(stats && stats.hourly);
+  } catch (e) {
+    el.hidden = true;
+    _renderHourly(null);
+  }
+}
+
+// 시간대별 활동 히트맵 — stats.hourly=[{hour,working_seconds}] 가 있을 때만 표시
+function _renderHourly(hourly) {
+  const box = $("#jmo-hourly");
+  if (!box) return;
+  const arr = (Array.isArray(hourly) ? hourly : [])
+    .filter(h => h && Number.isFinite(Number(h.hour)))
+    .sort((a, b) => Number(a.hour) - Number(b.hour));
+  if (!arr.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const max = Math.max(...arr.map(h => Number(h.working_seconds) || 0), 1);
+  box.innerHTML = arr.map(h => {
+    const sec = Math.max(0, Number(h.working_seconds) || 0);
+    const pct = sec > 0 ? Math.max(6, Math.round(sec / max * 100)) : 4;
+    const hh = String(Math.floor(Number(h.hour)) % 24).padStart(2, "0");
+    return `<div class="hh${sec ? "" : " zero"}" style="height:${pct}%" ` +
+      `title="${hh}시 ${Math.round(sec / 60)}분"></div>`;
+  }).join("");
+  box.hidden = false;
 }
 
 // 사람 클릭 → 해당 세션의 상태 전이 이력을 #jmo-session-detail에 표시
@@ -2284,31 +2492,100 @@ $("#jmo-people").addEventListener("click", (ev) => {
   jmShowSessionHistory(id.slice(0, sep), id.slice(sep + 1));
 });
 
+function _jmSessionMeta(s, tool, key) {
+  // provider 캐시(_jmLastSessions)에서 세션 원본 조회 — 없으면 null
+  if (!s) {
+    s = (_jmLastSessions || []).find(
+      x => x.tool === tool && x.session_key === key) || null;
+  }
+  if (!s) return "";
+  const rows = [];
+  const add = (label, val) => {
+    if (val === "" || val === null || val === undefined) return;
+    rows.push(`<span>${esc(label)} <b>${val}</b></span>`);
+  };
+  if (s.machine) add("머신", esc(s.machine));
+  if (s.tokens_in != null || s.tokens_out != null) {
+    add("토큰(in/out)", esc(
+      `${s.tokens_in ?? "-"} / ${s.tokens_out ?? "-"}`));
+  }
+  if (s.est_cost_usd != null && Number.isFinite(Number(s.est_cost_usd))) {
+    add("예상 비용", esc(`$${Number(s.est_cost_usd).toFixed(4)}`));
+  }
+  if (s.health) {
+    const h = String(s.health);
+    add("건강도", `<span class="sd-health ${esc(h)}">` +
+      `${esc(SESSION_HEALTH_LABEL[h] || h)}</span>`);
+  }
+  if (s.status) add("상태", esc(s.status));
+  if (s.ended_summary) add("종료 요약", esc(s.ended_summary));
+  const arts = _sessionArtifacts(s);
+  let meta = rows.length ? `<div class="sd-meta">${rows.join("")}</div>` : "";
+  if (arts.length) {
+    meta += `<ul class="sd-artifacts">` + arts.map(a =>
+      `<li>${esc(typeof a === "string" ? a : JSON.stringify(a))}</li>`).join("") +
+      `</ul>`;
+  }
+  return meta;
+}
+
 async function jmShowSessionHistory(tool, key) {
   const box = $("#jmo-session-detail");
+  _jmDetailSel = { tool, key };
   box.hidden = false;
-  box.innerHTML = "<h3>세션 이력</h3><p>로딩…</p>";
+  const id = `${tool}:${key}`;
+  const pinned = jmGetPins().includes(id);
+  box.innerHTML =
+    `<div class="sd-head"><h3>세션 상세 · ${esc(tool)} · ${esc(key.slice(0, 18))}</h3>` +
+    `<button type="button" class="secondary sd-pin" data-pin-tool="${esc(tool)}" ` +
+    `data-pin-key="${esc(key)}">${pinned ? "📌 해제" : "📌 고정"}</button></div>` +
+    `<div class="sd-body"><p class="sd-ended">로딩…</p></div>`;
   try {
     const d = await api(
       `/agent-sessions/${encodeURIComponent(tool)}` +
       `/${encodeURIComponent(key)}/history?limit=30`);
+    // 열려 있는 동안 다른 세션을 눌렀으면 결과를 버린다
+    if (!_jmDetailSel || _jmDetailSel.tool !== tool || _jmDetailSel.key !== key) return;
     const events = (d && d.events) || [];
+    const meta = _jmSessionMeta(null, tool, key);
+    let body;
     if (!events.length) {
-      box.innerHTML = `<h3>세션 이력</h3><p class="sd-ended">기록 없음</p>`;
-      return;
-    }
-    box.innerHTML = `<h3>세션 이력 · ${esc(tool)} · ${esc(key.slice(0, 18))}</h3><ul>` +
-      events.slice().reverse().map(e => {
+      body = `<p class="sd-ended">기록 없음</p>`;
+    } else {
+      // 타임라인 — 최신이 위. 상태색: working=초록 decision=amber rest=회색 ended=검정
+      body = `<ol class="jmo-timeline">` + events.slice().reverse().map(e => {
         const when = (e.event_at || e.created_at || "").slice(5, 16).replace("T", " ");
+        const st = String(e.to_status || e.status || "");
+        const cls = st === "working" || st === "decision" ||
+          st === "rest" || st === "ended" ? st : "rest";
+        const trans = [e.from_status, e.to_status || e.status]
+          .filter(Boolean).join(" → ");
         const what = [e.doing, e.ask].filter(Boolean).join(" — ");
-        return `<li><span class="sd-time">${esc(when)}</span> ` +
-          `<span class="sd-status">${esc(e.status || "")}</span>` +
-          (what ? ` ${esc(what)}` : "") + `</li>`;
-      }).join("") + "</ul>";
+        return `<li class="tl-${cls}">` +
+          `<span class="sd-time">${esc(when)}</span> ` +
+          (trans ? `<span class="tl-trans">${esc(trans)}</span> ` : "") +
+          (what ? `<span class="tl-text">${esc(what)}</span>` : "") +
+          `</li>`;
+      }).join("") + "</ol>";
+    }
+    box.querySelector(".sd-body").innerHTML = meta + body;
   } catch (e2) {
-    box.innerHTML = `<h3>세션 이력</h3><p class="sd-ended">${esc(e2.message)}</p>`;
+    const b = box.querySelector(".sd-body");
+    if (b) b.innerHTML = `<p class="sd-ended">${esc(e2.message)}</p>`;
   }
 }
+
+// 상세 패널의 📌 고정/해제 버튼
+$("#jmo-session-detail").addEventListener("click", (ev) => {
+  const b = ev.target.closest(".sd-pin");
+  if (!b) return;
+  const pid = `${b.dataset.pinTool}:${b.dataset.pinKey}`;
+  const pins = jmGetPins();
+  const i = pins.indexOf(pid);
+  if (i >= 0) pins.splice(i, 1); else pins.push(pid);
+  jmSetPins(pins);
+  if (_jmDetailSel) jmShowSessionHistory(_jmDetailSel.tool, _jmDetailSel.key);
+});
 
 // ── 데모 사무실 (frog-office server/demo.mjs 포팅) ──
 // 가상 캐스트 7명이 10~20초 주기로 working/decision/rest를 전이하고
@@ -2428,6 +2705,7 @@ function officeRefresh() {
   $("#office-chips").hidden = sessions;
   $("#office-view-toggle").hidden = sessions;
   $("#office-tool-filter").hidden = !sessions;
+  $("#office-session-filters").hidden = !sessions;
   $("#office-split").hidden = sessions;
   $("#office-newrun").hidden = sessions;
   $("#office-waiting").hidden = sessions ? true : $("#office-waiting").hidden;
@@ -2516,6 +2794,24 @@ for (const b of document.querySelectorAll(".office-tool-btn")) {
 // 세션 탭 필터/데모 초기 상태 동기화
 for (const x of document.querySelectorAll(".office-tool-btn")) {
   x.setAttribute("aria-pressed", String(x.dataset.officeTool === officeTool));
+}
+// 세션 검색 / 프로젝트 / 활성·종료 토글
+$("#office-session-search")?.addEventListener("input", (e) => {
+  officeSessionQuery = e.target.value || "";
+});
+$("#office-project-filter")?.addEventListener("change", (e) => {
+  officeProject = e.target.value || "";
+  localStorage.setItem(_PROJ_KEY, officeProject);
+});
+for (const b of document.querySelectorAll(".office-ended-btn")) {
+  b.setAttribute("aria-pressed", String(b.dataset.officeEnded === officeEnded));
+  b.addEventListener("click", () => {
+    officeEnded = b.dataset.officeEnded === "1" ? "1" : "0";
+    localStorage.setItem(_ENDED_KEY, officeEnded);
+    for (const x of document.querySelectorAll(".office-ended-btn")) {
+      x.setAttribute("aria-pressed", String(x === b));
+    }
+  });
 }
 const _demoBtn = $("#office-demo-btn");
 _demoBtn.setAttribute("aria-pressed", String(officeDemo));
@@ -3521,12 +3817,85 @@ $("#run-form").addEventListener("submit", async (e) => {
 });
 
 /* ── 설정 ── */
+// 세션 알림 규칙 — prefs.notify_rules = [{tool, project, statuses:[working|decision|rest]}]
+// 규칙이 하나라도 있으면 매칭되는 세션만 알림(백엔드 해석). 필드가 없으면 빈 배열로 방어.
+let _notifyRules = [];
+const NOTIFY_TOOLS = ["", "codex", "claude", "gemini", "devin"];
+const NOTIFY_TOOL_LABEL = {"": "전체", codex: "Codex", claude: "Claude",
+                           gemini: "Gemini", devin: "Devin"};
+const NOTIFY_STATUS_LABEL = {working: "작업", decision: "결정", rest: "휴식"};
+
+function _notifyRuleStatuses(r) {
+  // statuses(배열) 또는 구형 status(단일 문자열) 모두 허용
+  if (Array.isArray(r.statuses)) return r.statuses;
+  if (typeof r.status === "string" && r.status) return [r.status];
+  return [];
+}
+
+function _renderNotifyRules() {
+  const box = $("#notify-rules-list");
+  if (!box) return;
+  if (!_notifyRules.length) {
+    box.innerHTML = `<p class="card-meta" style="margin:4px 0">등록된 규칙 없음</p>`;
+    return;
+  }
+  box.innerHTML = _notifyRules.map((r, i) => {
+    const sts = _notifyRuleStatuses(r);
+    const toolOpts = NOTIFY_TOOLS.map(t =>
+      `<option value="${t}"${(r.tool || "") === t ? " selected" : ""}>` +
+      `${NOTIFY_TOOL_LABEL[t]}</option>`).join("");
+    const stBoxes = ["working", "decision", "rest"].map(s =>
+      `<label><input type="checkbox" class="nr-st" value="${s}"` +
+      `${sts.includes(s) ? " checked" : ""}>${NOTIFY_STATUS_LABEL[s]}</label>`
+    ).join("");
+    return `<div class="nr-row" data-i="${i}">` +
+      `<select class="nr-tool">${toolOpts}</select>` +
+      `<input type="text" class="nr-project" placeholder="프로젝트" ` +
+      `value="${esc(r.project || "")}" autocomplete="off">` +
+      stBoxes +
+      `<button type="button" class="secondary nr-del" title="규칙 삭제">✕</button>` +
+      `</div>`;
+  }).join("");
+}
+
+function _collectNotifyRules() {
+  const out = [];
+  document.querySelectorAll("#notify-rules-list .nr-row").forEach(row => {
+    const statuses = [...row.querySelectorAll(".nr-st:checked")]
+      .map(c => c.value);
+    out.push({
+      tool: row.querySelector(".nr-tool")?.value || "",
+      project: row.querySelector(".nr-project")?.value || "",
+      statuses,
+    });
+  });
+  return out;
+}
+
+$("#notify-rule-add")?.addEventListener("click", () => {
+  _notifyRules.push({tool: "", project: "", statuses: []});
+  _renderNotifyRules();
+});
+$("#notify-rules-list")?.addEventListener("click", (e) => {
+  const row = e.target.closest(".nr-row");
+  if (row && e.target.closest(".nr-del")) {
+    _notifyRules.splice(Number(row.dataset.i), 1);
+    _renderNotifyRules();
+  }
+});
+
 $("#settings-open").addEventListener("click", async () => {
   const dlg = $("#settings-dialog");
   try {
     const s = await api("/settings");
     $("#set-gmail-minutes").value = String(s.gmail_check_minutes || 30);
     $("#set-radar-interval").value = s.radar_interval || "daily";
+    _notifyRules = Array.isArray(s.notify_rules)
+      ? s.notify_rules.map(r => ({
+          tool: r.tool || "", project: r.project || "",
+          statuses: _notifyRuleStatuses(r)}))
+      : [];
+    _renderNotifyRules();
     $("#settings-status").textContent = "";
   } catch (e) { $("#settings-status").textContent = e.message; }
   dlg.showModal();
@@ -3543,7 +3912,8 @@ $("#settings-save").addEventListener("click", async () => {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         gmail_check_minutes: Number($("#set-gmail-minutes").value),
-        radar_interval: $("#set-radar-interval").value})});
+        radar_interval: $("#set-radar-interval").value,
+        notify_rules: _collectNotifyRules()})});
     st.textContent = "저장했습니다";
   } catch (e) { st.textContent = e.message; st.className = "status-line err"; }
 });

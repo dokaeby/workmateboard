@@ -476,7 +476,7 @@ const OfficeLife = (() => {
   }
 
   // ---------- 데이터가 오면 들이고 내보낸다 ----------
-  // list = [{ id, name, status, ask, kid, home, doing(글), subCount, subs:[{id,type,desc,doing(글)}], commits, path }]
+  // list = [{ id, name, status, ask, kid, home, doing(글), subCount, subs:[{id,type,desc,doing(글)}], commits, path, project, health }]
   const START_NODES = ["inner", "la1", "B1", "B2", "C1", "C2", "A2", "A3", "ra2", "ra3"];
   function sync(list) {
     const seen = new Set();
@@ -496,7 +496,7 @@ const OfficeLife = (() => {
       const wasDesk = L.desks.get(p.id);
       Object.assign(p, { name: d.name, status: d.status, ask: d.ask || "", kid: !!d.kid, home: d.home || null,
                          doing: d.doing || "", subCount: d.subCount || 0, subs: d.subs || [], commits: d.commits,
-                         path0: d.path, project: d.project || "" });
+                         path0: d.path, project: d.project || "", health: d.health || "" });
       if (fresh) {
         if (L.synced) {                              // 나중에 켠 세션 = 문으로 출근
           p.x = OFFICE_MAP_NODES.out[0]; p.y = OFFICE_MAP_NODES.out[1]; p.alpha = 0;

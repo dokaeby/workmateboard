@@ -59,6 +59,14 @@ const OfficePanel = (() => {
     if (d.pending > 1) facts.push(t("d.pending", { n: d.pending }));
     if (d.source === "transcript") facts.push(t("d.transcript"));
     box.append(el("p", "o-facts", facts.join(" · ")));
+    // 세션 메타 — 머신·토큰·예상 비용은 있을 때만 한 줄로
+    const meta = [];
+    if (d.machine) meta.push(`${t("d.machine")} ${d.machine}`);
+    const tok = (Number(d.tokens_in) || 0) + (Number(d.tokens_out) || 0);
+    if (tok > 0) meta.push(t("d.tokens", { n: tok.toLocaleString(JMO_I18N.lang === "ko" ? "ko-KR" : "en-US") }));
+    const cost = Number(d.est_cost_usd);
+    if (d.est_cost_usd != null && isFinite(cost)) meta.push(t("d.cost", { v: cost < 0.01 ? t("d.cost.low") : "$" + cost.toFixed(4) }));
+    if (meta.length) box.append(el("p", "o-facts", meta.join(" · ")));
     const subs = d.subs || [];
     if (subs.length || d.subCount) {
       box.append(el("p", "o-k o-subhead", `${t("d.subs")} ${d.subCount || subs.length}`));
@@ -83,6 +91,7 @@ const OfficePanel = (() => {
     head.setAttribute("aria-expanded", open ? "true" : "false");
     head.append(dot(OfficeLife.colorOf(d.name)), el("b", null, d.name), el("span", `o-chip ${cls}`, t("status." + mode)));
     if (d.subCount) head.append(el("span", "o-chip sub", t("chip.subs", { n: d.subCount })));
+    if (d.health === "stale" || d.health === "long_idle") head.append(el("span", `o-chip health ${d.health}`, t("health." + d.health)));
     head.onclick = () => P.pick?.(d.id);
     li.append(head);
     const w = what(d, open);
@@ -107,8 +116,27 @@ const OfficePanel = (() => {
     const order = { decision: 0, working: 1 };
     const sorted = [...P.people].sort((a, b) => (order[modeOf(a)] ?? 2) - (order[modeOf(b)] ?? 2) || a.name.localeCompare(b.name));
     $("jmo-count").textContent = t("count", { n: sorted.length, w: sorted.filter(p => modeOf(p) === "working").length });
+    // 프로젝트별 묶기 — 일하는/결정 있는 그룹이 먼저, 나머지는 프로젝트 이름순. 그룹 안 순서는 위 정렬 그대로.
+    const groups = new Map();
+    for (const p of sorted) {
+      const k = p.project || "";
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(p);
+    }
+    const glist = [...groups.entries()].map(([proj, members]) => ({
+      proj, members, busy: members.some(m => modeOf(m) !== "rest"),
+    }));
+    glist.sort((a, b) => (a.busy === b.busy ? 0 : a.busy ? -1 : 1)
+      || (a.proj || t("group.other")).localeCompare(b.proj || t("group.other")));
+    const nodes = [];
+    for (const g of glist) {
+      const head = el("li", "o-group");
+      head.append(el("span", "o-group-name", g.proj || t("group.other")),
+                  el("span", "o-group-n", String(g.members.length)));
+      nodes.push(head, ...g.members.map(item));
+    }
     const keep = list.scrollTop;
-    list.replaceChildren(...sorted.map(item));
+    list.replaceChildren(...nodes);
     list.scrollTop = keep;
     if (o.focus && P.sel) {
       const li = list.querySelector(`li[data-id="${CSS.escape(P.sel)}"]`);

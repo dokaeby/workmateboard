@@ -48,6 +48,15 @@
 .o-chip.work { background: var(--work-bg); color: var(--work); }
 .o-chip.ask { background: var(--ask-bg); color: var(--ask); }
 .o-chip.sub { background: var(--sub-bg); color: var(--sub); }
+.o-chip.health.stale { background: #FFF3D6; color: #8A5A00; }
+.o-chip.health.long_idle { background: #EEF1EF; color: var(--ink3); }
+
+/* 프로젝트 그룹 머리줄 — 항목이 아니라 묶음 표시(data-id 없음) */
+.o-group { display: flex; align-items: baseline; gap: 6px; padding: 8px 8px 2px;
+  font-size: 12px; font-weight: 700; color: var(--ink3); border-top: 1px solid var(--line); }
+.o-group:first-child { border-top: 0; padding-top: 2px; }
+.o-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-group-n { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
 .o-doing, .o-sub { margin: 0 8px 0 23px; font-size: 13px; color: var(--ink2); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
 .o-doing.ask { color: var(--ask); font-weight: 600; }
@@ -89,4 +98,20 @@
   #jmo-side { width: auto; padding: 10px 16px 16px; border-left: 0; border-top: 1px solid var(--line); }
   #jmo-people { max-height: 50vh; }
   #jmo-log { max-height: 60vh; }
+}
+
+/* 아주 좁은 화면(폰) — 캔버스 높이 확보, 목록은 작게, 글씨는 읽히는 선에서 줄인다 */
+@media (max-width: 820px) {
+  #jmo-main { min-height: 0; }
+  #jmo-stage { min-height: 0; }
+  #jmo-box { aspect-ratio: auto; height: 58vh; min-height: 300px; max-height: 560px; }
+  #jmo-notice { font-size: 12px; }
+  #jmo-side h2 { flex-wrap: wrap; row-gap: 2px; }
+  #jmo-people { max-height: 42vh; }
+  #jmo-log { max-height: 48vh; }
+  .o-head { font-size: 13px; }
+  .o-doing, .o-sub, .o-more { font-size: 12px; }
+  .o-log { font-size: 11px; grid-template-columns: auto auto 1fr; }
+  .o-log b { display: none; }
+  .o-group { font-size: 11px; padding-top: 6px; }
 }
