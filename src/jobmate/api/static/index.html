@@ -81,6 +81,7 @@
   .nav-item .ico { width: 18px; text-align: center; }
   /* ── 메인 ── */
   .main { min-width: 0; }
+  [hidden] { display: none !important; }
   .page-head { margin-bottom: 20px; }
   .page-title { font-size: 24px; font-weight: 800; margin: 0 0 4px; }
   .page-desc { color: var(--muted); font-size: 14px; margin: 0; }
@@ -225,7 +226,11 @@
   .office-log-action { color: var(--accent); font-weight: 600; flex: none; }
   .office-log-ref { color: var(--ink-2); }
   .office-log-detail { color: var(--muted); overflow-wrap: anywhere; }
-  .office-mode { display: flex; gap: 6px; margin-left: auto; }
+  .office-mode { display: flex; gap: 6px; }
+  .office-controls {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    width: fit-content; margin-left: auto;
+  }
   .office-mode-btn {
     padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
     background: var(--surface); color: var(--ink-2); font-size: 12px; cursor: pointer;
@@ -607,21 +612,23 @@
       <div class="page-head">
         <h1 class="page-title">Agent Command</h1>
         <p class="page-desc">dev_review 워크플로 실행 관제판</p>
-        <div class="office-mode" role="group" aria-label="Agent-Office 탭">
-          <button class="office-mode-btn office-tab-btn" data-office-tab="workflow" aria-pressed="true">워크플로</button>
-          <button class="office-mode-btn office-tab-btn" data-office-tab="sessions" aria-pressed="false">세션</button>
-        </div>
-        <div class="office-mode" id="office-tool-filter" role="group" aria-label="세션 도구 필터" hidden>
-          <button class="office-mode-btn office-tool-btn" data-office-tool="codex" aria-pressed="true">Codex</button>
-          <button class="office-mode-btn office-tool-btn" data-office-tool="claude" aria-pressed="false">Claude</button>
-          <button class="office-mode-btn office-tool-btn" data-office-tool="gemini" aria-pressed="false">Gemini</button>
-          <button class="office-mode-btn office-tool-btn" data-office-tool="devin" aria-pressed="false">Devin</button>
-          <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="false">전체</button>
-          <button class="office-mode-btn" id="office-demo-btn" aria-pressed="true">데모</button>
-        </div>
-        <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
-          <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
-          <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
+        <div class="office-controls">
+          <div class="office-mode" role="group" aria-label="Agent-Office 탭">
+            <button class="office-mode-btn office-tab-btn" data-office-tab="workflow" aria-pressed="true">워크플로</button>
+            <button class="office-mode-btn office-tab-btn" data-office-tab="sessions" aria-pressed="false">세션</button>
+          </div>
+          <div class="office-mode" id="office-tool-filter" role="group" aria-label="세션 도구 필터" hidden>
+            <button class="office-mode-btn office-tool-btn" data-office-tool="codex" aria-pressed="true">Codex</button>
+            <button class="office-mode-btn office-tool-btn" data-office-tool="claude" aria-pressed="false">Claude</button>
+            <button class="office-mode-btn office-tool-btn" data-office-tool="gemini" aria-pressed="false">Gemini</button>
+            <button class="office-mode-btn office-tool-btn" data-office-tool="devin" aria-pressed="false">Devin</button>
+            <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="false">전체</button>
+            <button class="office-mode-btn" id="office-demo-btn" aria-pressed="true">데모</button>
+          </div>
+          <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
+            <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
+            <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
+          </div>
         </div>
       </div>
       <div class="office-status" id="office-chips">
@@ -1008,7 +1015,9 @@ async function api(path, opts, _retried) {
 const badge = (s) => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 
 /* ── 뷰 전환 ── */
-const VIEWS = { gmail: loadGmail, office: loadOffice, calendar: loadCalendar,
+const VIEWS = { gmail: loadGmail,
+                office: () => { officeApplyProvider(); officeRefresh(); loadOffice(); },
+                calendar: loadCalendar,
                 radar: () => window.loadRadar && window.loadRadar(), runs: loadRuns };
 const loaded = {};
 document.querySelectorAll(".nav-item").forEach(b =>
@@ -1490,7 +1499,8 @@ const OFFICE2D_FILES = [
 ];
 let office2dState = "idle";  // idle | loading | ready
 let officeMode = "board";
-let officeTab = "workflow";  // workflow | sessions
+// 마지막으로 본 탭을 기억 — 세션(데모 사무실)을 고르면 새로고침 후에도 유지
+let officeTab = localStorage.getItem("jobmate.officeTab") === "sessions" ? "sessions" : "workflow";  // workflow | sessions
 let jmWorkflowProvider = null;
 const OFFICE_TOOLS = ["codex", "claude", "gemini", "devin", "all"];
 const _savedTool = localStorage.getItem("jobmate.officeTool");
@@ -1667,7 +1677,7 @@ function office2dEnsure() {
   }
   chain.then(() => {
     office2dState = "ready";
-    jmWorkflowProvider = window.JM_OFFICE_PROVIDER || null;
+    jmWorkflowProvider = window.JM_BRIDGE_PROVIDER || window.JM_OFFICE_PROVIDER || null;
     JMOffice2D.onSelect = (id) => {
       if (officeTab !== "workflow") return;   // 세션 탭은 OfficePanel 상세에 위임
       officeState.selected = !id ? null
@@ -1696,12 +1706,17 @@ for (const b of document.querySelectorAll(".office-mode-btn[data-office-mode]"))
 for (const b of document.querySelectorAll(".office-tab-btn")) {
   b.addEventListener("click", () => {
     officeTab = b.dataset.officeTab;
+    localStorage.setItem("jobmate.officeTab", officeTab);
     for (const x of document.querySelectorAll(".office-tab-btn")) {
       x.setAttribute("aria-pressed", String(x === b));
     }
     officeApplyProvider();
     officeRefresh();
   });
+}
+// 복원된 탭의 버튼 상태 동기화 (HTML은 workflow pressed가 기본)
+for (const x of document.querySelectorAll(".office-tab-btn")) {
+  x.setAttribute("aria-pressed", String(x.dataset.officeTab === officeTab));
 }
 for (const b of document.querySelectorAll(".office-tool-btn")) {
   b.addEventListener("click", () => {

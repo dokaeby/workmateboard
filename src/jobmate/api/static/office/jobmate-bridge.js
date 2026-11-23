@@ -4,7 +4,9 @@
 // office-view.js 의 load() 가 3초마다 이 함수를 호출한다.
 // doing/ask 는 평문 문자열 — I18N.act()/ask() 가 문자열을 그대로 통과시킨다.
 
-window.JM_OFFICE_PROVIDER = async () => ({ people: jmOfficePeople() });
+const _jmBridgeProvider = async () => ({ people: jmOfficePeople() });
+window.JM_OFFICE_PROVIDER = _jmBridgeProvider;
+window.JM_BRIDGE_PROVIDER = _jmBridgeProvider;   // 세션 provider가 덮어써도 워크플로 provider를 되찾을 수 있게
 
 // 감사 로그 마지막 항목을 한 줄로 — detail 은 객체일 수 있어 JSON으로 눌러 담는다
 function jmAuditText(e) {
