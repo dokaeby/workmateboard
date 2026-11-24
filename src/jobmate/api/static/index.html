@@ -7056,10 +7056,11 @@ VIEWS.radar();
 
 /* ── SSE 실시간 스트림 (/api/v1/stream) ──
    run/stage/session 이벤트가 오면 기존 갱신 함수를 디바운스 호출한다.
-   EventSource는 헤더를 못 쓰므로 localStorage API 키는 ?api_key= 로 전달
-   (세션 쿠키 사용자는 그대로 동작). 연결 실패 시 EventSource가 자동
-   재연결하고, 아래 setInterval 폴링이 폴백으로 계속 동작한다. */
-let _sse = null, _sseKickTimer = 0;
+   EventSource는 헤더를 못 쓰므로 API 키 인증 시 POST /stream/token으로
+   단기 토큰(5분)을 받아 ?token= 으로 연결한다(장기 키는 URL에 넣지 않음).
+   세션 쿠키 사용자는 토큰 없이 동작. 토큰 만료/실패 시 재발급 재접속하고,
+   아래 setInterval 폴링이 폴백으로 계속 동작한다. */
+let _sse = null, _sseKickTimer = 0, _sseRetryTimer = 0;
 function _sseKick() {
   clearTimeout(_sseKickTimer);
   _sseKickTimer = setTimeout(() => {
@@ -7075,16 +7076,33 @@ function _sseKick() {
     if (vis("view-sessionlog") && typeof loadSessionlog === "function") loadSessionlog();
   }, 300);
 }
-try {
-  const _sseKey = localStorage.getItem("jobmate_api_key") || "";
-  _sse = new EventSource(API + "/stream" +
-    (_sseKey ? "?api_key=" + encodeURIComponent(_sseKey) : ""));
-  for (const _ev of ["run", "stage", "session"]) {
-    _sse.addEventListener(_ev, _sseKick);
+async function _sseConnect() {
+  let qs = "";
+  const key = localStorage.getItem("jobmate_api_key") || "";
+  if (key) {
+    try {
+      const r = await fetch(API + "/stream/token", {
+        method: "POST", headers: { "X-API-Key": key },
+      });
+      if (r.ok) qs = "?token=" + encodeURIComponent((await r.json()).token);
+    } catch (e) { /* 토큰 발급 실패 — 폴링 폴백으로 동작 */ }
   }
-  // snapshot/heartbeat는 무시 — 초기 로드와 폴링 폴백이 담당
-  _sse.onerror = () => { /* EventSource 자동 재연결 — 폴링 폴백 유지 */ };
-} catch (e) { _sse = null; }
+  try {
+    if (_sse) { _sse.close(); _sse = null; }
+    _sse = new EventSource(API + "/stream" + qs);
+    for (const _ev of ["run", "stage", "session"]) {
+      _sse.addEventListener(_ev, _sseKick);
+    }
+    // snapshot/heartbeat는 무시 — 초기 로드와 폴링 폴백이 담당
+    _sse.onerror = () => {
+      // 자동 재연결 대신 토큰 재발급 후 재접속 — TTL 만료 대비
+      if (_sse) { _sse.close(); _sse = null; }
+      clearTimeout(_sseRetryTimer);
+      _sseRetryTimer = setTimeout(_sseConnect, 10000);
+    };
+  } catch (e) { _sse = null; }
+}
+_sseConnect();
 
 setInterval(() => { if (!document.getElementById("view-gmail").hidden) loadGmail(); }, 10000);
 setInterval(() => { if (!document.getElementById("view-office").hidden) loadOffice(); }, 3000);

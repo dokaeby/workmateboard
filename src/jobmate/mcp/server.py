@@ -130,6 +130,12 @@ def run_stats(days: int = 7) -> str:
 
 def main() -> None:
     logging.basicConfig(level=logging.WARNING)
+    # 원격 transport 노출 금지 — stdio만 허용한다. 향후 HTTP/SSE transport를
+    # 추가할 경우 반드시 JOBMATE_MCP_AUTH_TOKEN 기반 인증을 구현한 뒤에만
+    # 활성화할 것(인증 없이 원격 노출하면 DB 조회 도구가 무방비가 된다).
+    transport = os.environ.get("JOBMATE_MCP_TRANSPORT", "stdio").strip().lower()
+    if transport != "stdio":
+        raise SystemExit(f"MCP transport '{transport}' is not supported — only stdio is allowed")
     mcp.run(transport="stdio")
 
 

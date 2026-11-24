@@ -1033,7 +1033,8 @@ def create_app(
 
     # ---- SSE 실시간 이벤트 스트림 (/api/v1/stream) ----
     # 인증은 /api/* 미들웨어와 동일 — EventSource는 헤더를 못 쓰므로
-    # 세션 쿠키(동일 출처) 또는 ?api_key=/?token= 쿼리 폴백(security.authorized).
+    # 세션 쿠키(동일 출처) 또는 단기 SSE 토큰(?token=)을 사용한다.
+    # 토큰은 POST /api/v1/stream/token으로 발급(헤더/쿠키 인증 필요).
     _SSE_MAX_CONNECTIONS = 20
     _SSE_POLL_SECONDS = 1.5
     _SSE_HEARTBEAT_LOOPS = 10  # ~15초마다 주석 하트비트
@@ -1054,6 +1055,19 @@ def create_app(
                 for r in store.list_runs(30)
             ]
         }
+
+    @app.post("/api/v1/stream/token")
+    def stream_token(request: Request) -> JSONResponse:
+        """SSE 단기 토큰 발급 — 헤더/세션 인증은 /api/* 미들웨어가 처리.
+
+        EventSource는 Authorization 헤더를 설정할 수 없으므로, API 키
+        인증 클라이언트가 이 엔드포인트로 5분짜리 토큰을 받아
+        /api/v1/stream?token= 으로 접속한다. 장기 키는 URL에 넣지 않는다.
+        """
+        from ..security import issue_stream_token
+
+        token, ttl = issue_stream_token()
+        return JSONResponse(content={"token": token, "expires_in": ttl})
 
     @app.get("/api/v1/stream")
     async def event_stream(request: Request) -> Any:

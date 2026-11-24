@@ -34,11 +34,16 @@
 - `pytest tests/unit tests/integration tests/api`: **317 passed, 4 skipped**.
 - `ruff check`/`ruff format --check`: 통과. `mypy src/jobmate`: 64 파일 이슈 없음.
 
-## 남은 권고 (미조치)
+## 후속 조치 (동일 날짜, 미조치 권고 3건 처리)
 
-- `run_tests` 허용 목록은 현재 pytest/ruff/mypy만 — 향후 `pnpm`/`npm`/`uv` 등
-  추가 시 같은 allowlist 방식으로 확장할 것. 셸 재진입 바이너리(bash/sh/cmd/
-  powershell/python -c)는 절대 추가 금지.
-- SSE 쿼리 인증은 EventSource 제약의 불가피한 트레이드오프 — 가능하면
-  단기 수명의 SSE 전용 토큰 발급 엔드포인트로 교체 검토.
-- MCP 서버(stdio)는 로컬 신뢰 경계 — 원격 노출 시 인증 계층 필요.
+| 권고 | 조치 |
+| --- | --- |
+| run_tests 허용 목록 확장 | `JOBMATE_TEST_COMMAND_PREFIXES` env(쉼표 구분) 추가 — 각 접두사는 `[A-Za-z0-9_.\-/ ]`만 허용, 메타문자 포함 시 무시. 기본 pytest/ruff/mypy는 항상 허용. 셸/인터프리터 바이너리는 env로도 불가 |
+| SSE 쿼리 인증 | `POST /api/v1/stream/token` 신설 — 헤더/쿠키 인증된 클라이언트에 300초 단기 토큰(`sse_`+32B, sha256 해시만 메모리 저장, lazy 만료) 발급. `?api_key=` 폐기, `/api/v1/stream?token=`만 수용. `index.html`은 토큰 발급→EventSource 연결, 에러 시 재발급 재접속(10s) |
+| MCP 원격 노출 | `mcp/server.py` transport 가드 — `JOBMATE_MCP_TRANSPORT`이 stdio가 아니면 `SystemExit`. HTTP/SSE transport 추가 시 인증 구현이 선행 조건임을 코드+README에 명시 |
+
+### 후속 검증
+
+- `pytest tests` 전체: **349 passed, 4 skipped**
+- 신규 테스트: `test_stream_token.py` 3개(발급/검증/만료), `test_sse.py` 토큰 플로우·발급 엔드포인트 인증·타 엔드포인트 거부, `test_executor_security.py` env 확장 2개, `test_mcp_tools.py` transport 거부 1개
+- ruff check/format, mypy: 전부 통과

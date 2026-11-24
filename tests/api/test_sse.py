@@ -89,20 +89,36 @@ def test_stream_requires_auth_when_api_key_set(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", "stream-secret")
     client, _ = _client()
     assert client.get("/api/v1/stream").status_code == 401
-    # ?api_key= 쿼리 폴백 — EventSource는 헤더를 설정할 수 없다
-    with client.stream("GET", "/api/v1/stream?api_key=stream-secret") as r:
-        assert r.status_code == 200
-        assert r.headers["content-type"].startswith("text/event-stream")
-    # 잘못된 키는 여전히 401
-    assert client.get("/api/v1/stream?api_key=wrong").status_code == 401
+    # 장기 API 키의 쿼리스트링 전달은 폐기 — 401이어야 한다
+    assert client.get("/api/v1/stream?api_key=stream-secret").status_code == 401
+    # 단기 SSE 토큰 플로우: 헤더 인증으로 발급 → ?token= 으로 접속
+    r = client.post("/api/v1/stream/token", headers={"X-API-Key": "stream-secret"})
+    assert r.status_code == 200
+    token = r.json()["token"]
+    assert token.startswith("sse_")
+    with client.stream("GET", f"/api/v1/stream?token={token}") as resp:
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+    # 잘못된 토큰은 여전히 401
+    assert client.get("/api/v1/stream?token=wrong").status_code == 401
+
+
+def test_stream_token_endpoint_requires_auth(monkeypatch):
+    """토큰 발급 엔드포인트 자체도 인증이 필요하다."""
+    monkeypatch.setenv("JOBMATE_API_KEY", "stream-secret")
+    client, _ = _client()
+    assert client.post("/api/v1/stream/token").status_code == 401
+    # 쿼리 인증은 토큰 엔드포인트에도 적용되지 않는다
+    assert client.post("/api/v1/stream/token?api_key=stream-secret").status_code == 401
 
 
 def test_query_api_key_rejected_on_other_endpoints(monkeypatch):
     """?api_key= 폴백은 /api/v1/stream에만 허용 — 다른 엔드포인트는 401."""
     monkeypatch.setenv("JOBMATE_API_KEY", "stream-secret")
     client, _ = _client()
-    # stream 외 엔드포인트에서 쿼리 키는 인증되지 않아야 한다
+    # stream 외 엔드포인트에서 쿼리 키/토큰은 인증되지 않아야 한다
     assert client.get("/api/v1/runs?api_key=stream-secret").status_code == 401
     assert client.get("/api/v1/insights?api_key=stream-secret").status_code == 401
+    assert client.get("/api/v1/runs?token=stream-secret").status_code == 401
     # 헤더 인증은 여전히 정상 동작
     assert client.get("/api/v1/runs", headers={"X-API-Key": "stream-secret"}).status_code == 200

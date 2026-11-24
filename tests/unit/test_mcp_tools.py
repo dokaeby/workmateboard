@@ -211,3 +211,15 @@ def test_mcp_extra_tools_wraps_call_kwargs(monkeypatch: pytest.MonkeyPatch) -> N
     # ToolExecutor 계약: fn(**kwargs) → MCP call은 args dict로 전달
     assert tools["mcp_s_ping"](a=1, b="x") == "pong"
     assert src.calls == [("s", "ping", {"a": 1, "b": "x"})]
+
+
+def test_mcp_server_rejects_non_stdio_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """원격 transport는 인증 없이 기동 불가 — stdio만 허용."""
+    import jobmate.mcp.server as srv
+
+    monkeypatch.setenv("JOBMATE_MCP_TRANSPORT", "http")
+    with pytest.raises(SystemExit):
+        srv.main()
+    monkeypatch.setenv("JOBMATE_MCP_TRANSPORT", "sse")
+    with pytest.raises(SystemExit):
+        srv.main()

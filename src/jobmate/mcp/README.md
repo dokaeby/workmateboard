@@ -4,8 +4,10 @@ MCP(Model Context Protocol)를 양방향으로 지원한다.
 
 ## 1. MCP 서버 — jobMate 데이터를 외부에 노출
 
-`python -m jobmate.mcp.server` (stdio transport). Claude Desktop 등 MCP
-클라이언트의 설정 예:
+`python -m jobmate.mcp.server` (stdio transport **전용**).
+`JOBMATE_MCP_TRANSPORT`을 http/sse 등으로 지정해도 인증 토큰 없이
+기동이 거부된다 — 원격 노출이 필요해지면 인증 계층을 먼저 구현할 것.
+Claude Desktop 등 MCP 클라이언트의 설정 예:
 
 ```json
 {

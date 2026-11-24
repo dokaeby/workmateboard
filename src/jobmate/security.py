@@ -14,6 +14,9 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
+import threading
+import time
 from typing import Any
 
 logger = logging.getLogger("jobmate.security")
@@ -83,11 +86,12 @@ def api_key() -> str:
 
 
 def authorized(request: Any) -> bool:
-    """Authorization: Bearer <key>, X-API-Key 헤더, 또는 ?api_key=/?token= 쿼리 검증.
+    """Authorization: Bearer <key>, X-API-Key 헤더 검증.
 
-    쿼리 파라미터 폴백은 EventSource용 /api/v1/stream에만 적용된다 —
-    쿼리스트링의 키는 브라우저 히스토리/프록시 로그/Referer로 유출될 수 있다.
-    접근 로그는 쿼리스트링을 기록하지 않으므로 키가 로그에 남지 않는다."""
+    /api/v1/stream에 한해 ?token= SSE 단기 토큰도 허용한다 —
+    EventSource는 커스텀 헤더를 설정할 수 없기 때문. 장기 API 키의
+    쿼리스트링 전달(?api_key=)은 브라우저 히스토리/프록시 로그/Referer
+    유출 위험이 있어 폐기했다. 접근 로그는 쿼리스트링을 기록하지 않는다."""
     key = api_key()
     if not key:
         return not os.environ.get("VERCEL") and not allowed_emails()
@@ -96,18 +100,66 @@ def authorized(request: Any) -> bool:
     if auth.lower().startswith("bearer "):
         provided = auth[7:].strip() or provided
     if not provided:
-        # EventSource/fetch 폴백 — /api/v1/stream 전용. 쿼리스트링의 키는
-        # 브라우저 히스토리/프록시 로그/Referer로 유출될 수 있으므로
-        # 다른 엔드포인트에서는 받지 않는다.
+        # EventSource/fetch 폴백 — /api/v1/stream 전용. 단기 수명의
+        # SSE 토큰(?token=)만 허용한다. 장기 API 키를 URL에 넣지 않기 위해
+        # ?api_key= 쿼리 인증은 폐기했다(브라우저 히스토리/프록시 로그/Referer 유출).
         path = str(getattr(getattr(request, "url", None), "path", "") or "")
         if path.rstrip("/") == "/api/v1/stream":
             qp = getattr(request, "query_params", None)
             if qp is not None:
                 try:
-                    provided = str(qp.get("api_key") or qp.get("token") or "")
+                    st = str(qp.get("token") or "")
                 except Exception:
-                    provided = ""
+                    st = ""
+                if st and valid_stream_token(st):
+                    return True
     return hmac.compare_digest(provided.encode(), key.encode())
+
+
+# ---------- SSE 단기 토큰 ----------
+# EventSource는 헤더를 설정할 수 없으므로, 인증된 클라이언트가
+# POST /api/v1/stream/token으로 짧은 수명의 토큰을 발급받아
+# ?token= 쿼리로 사용한다. 프로세스 메모리 저장 — TTL 만료 시 자동 폐기.
+
+STREAM_TOKEN_TTL_SEC = 300
+_STREAM_TOKEN_PREFIX = "sse_"  # noqa: S105 - 토큰이 아닌 형식 접두사 상수
+_stream_tokens: dict[str, float] = {}  # sha256(token) -> expiry epoch
+_stream_tokens_lock = threading.Lock()
+
+
+def issue_stream_token() -> tuple[str, int]:
+    """입력: 없음 / 출력: (토큰, TTL 초).
+
+    동작: 256bit 랜덤 토큰 발급, 해시만 메모리에 저장(평문 미보관),
+    만료 항목을 lazy 정리한다.
+    """
+    token = _STREAM_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    expiry = time.time() + STREAM_TOKEN_TTL_SEC
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    now = time.time()
+    with _stream_tokens_lock:
+        for k in [k for k, exp in _stream_tokens.items() if exp <= now]:
+            del _stream_tokens[k]
+        _stream_tokens[digest] = expiry
+    return token, STREAM_TOKEN_TTL_SEC
+
+
+def valid_stream_token(token: str) -> bool:
+    """입력: ?token= 쿼리 값 / 출력: 유효 여부.
+
+    동작: sha256 해시 조회 + 만료 검사. 잘못된 형식/만료/미등록은 False.
+    """
+    if not token.startswith(_STREAM_TOKEN_PREFIX):
+        return False
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    with _stream_tokens_lock:
+        expiry = _stream_tokens.get(digest)
+        if expiry is None:
+            return False
+        if expiry <= time.time():
+            del _stream_tokens[digest]
+            return False
+    return True
 
 
 # ---------- 계정 인증 (세션 쿠키 + 이메일/Google 로그인) ----------

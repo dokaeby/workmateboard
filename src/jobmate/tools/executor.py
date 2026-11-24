@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from collections.abc import Callable
@@ -14,8 +15,38 @@ logger = logging.getLogger("jobmate.tools")
 # run_tests는 LLM이 인자를 제어한다 — 임의 명령 실행을 막기 위해
 # 테스트/린트/타입검사 명령만 허용한다(셸 메타문자 없이 split() 실행되지만
 # `bash -c` 같은 인터프리터 재진입과 `&&`/`|` 연결을 차단해야 한다).
-_ALLOWED_TEST_COMMAND = re.compile(r"^(?:pytest|ruff|mypy|python\s+-m\s+(?:pytest|ruff|mypy))\b")
+# 추가 명령이 필요하면 JOBMATE_TEST_COMMAND_PREFIXES(쉼표 구분)로
+# 접두사를 등록한다 — 셸/인터프리터 바이너리는 어떤 경우에도 허용되지 않는다.
+_DEFAULT_TEST_PREFIXES = (
+    "pytest",
+    "ruff",
+    "mypy",
+    "python -m pytest",
+    "python -m ruff",
+    "python -m mypy",
+)
 _SHELL_METACHARS = re.compile(r"[&|;<>`$()\n]")
+# env 확장 접두사 허용 문자 — 공백/하이픈/점/슬래시/영숫자만.
+# 셸 메타문자·인용부호는 접두사 자체에도 허용하지 않는다.
+_PREFIX_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]*(?: [A-Za-z0-9_.\-/]+)*$")
+
+
+def _allowed_test_prefixes() -> list[str]:
+    """기본 접두사 + JOBMATE_TEST_COMMAND_PREFIXES env 확장분을 반환한다."""
+    prefixes = list(_DEFAULT_TEST_PREFIXES)
+    raw = os.environ.get("JOBMATE_TEST_COMMAND_PREFIXES", "")
+    for part in raw.split(","):
+        p = " ".join(part.split())
+        if p and len(p) <= 80 and _PREFIX_SAFE.match(p):
+            prefixes.append(p)
+    return prefixes
+
+
+def _is_allowed_test_command(command: str) -> bool:
+    """정규화된 명령이 허용 접두사와 일치하고 메타문자가 없는지 검사한다."""
+    if _SHELL_METACHARS.search(command):
+        return False
+    return any(command == p or command.startswith(p + " ") for p in _allowed_test_prefixes())
 
 
 class ToolDeniedError(Exception):
@@ -51,8 +82,6 @@ class ToolExecutor:
 
     @staticmethod
     def _default_tools(repo_root: str | None) -> dict[str, Callable[..., Any]]:
-        import os
-
         root = Path(repo_root or os.getcwd()).resolve()
 
         def read_file(path: str) -> str:
@@ -64,10 +93,11 @@ class ToolExecutor:
 
         def run_tests(command: str = "pytest -q") -> dict[str, Any]:
             normalized = " ".join(str(command).split())
-            if not _ALLOWED_TEST_COMMAND.match(normalized) or _SHELL_METACHARS.search(normalized):
+            if not _is_allowed_test_command(normalized):
                 logger.warning("run_tests denied command: %s", normalized[:80])
                 raise ToolDeniedError(
-                    "command not allowed — only pytest/ruff/mypy commands are permitted"
+                    "command not allowed — only configured test/lint/typecheck "
+                    "command prefixes are permitted"
                 )
             proc = subprocess.run(  # noqa: S603
                 normalized.split(),
