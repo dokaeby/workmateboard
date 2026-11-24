@@ -94,6 +94,13 @@ def _base_status(mtime: float, now: float) -> str:
     return "working" if (now - mtime) < IDLE_SECONDS else "rest"
 
 
+_DECISION_TOOLS = frozenset({"ask_user_question", "request_user_input"})
+
+
+def _is_decision_tool(name: str) -> bool:
+    return name.rsplit(".", 1)[-1].lower() in _DECISION_TOOLS
+
+
 def _read_edges(path: Path, head_bytes: int, tail_bytes: int) -> tuple[bytes, bytes]:
     """파일 앞/뒤 일부만 읽는다. 작은 파일은 전체를 head로 반환."""
     try:
@@ -461,7 +468,8 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
                 pending_calls.clear()
                 last_signal = "output"
 
-        decision = bool(pending_calls) and last_signal == "call"
+        pending_call = pending_calls[-1] if pending_calls else ""
+        decision = bool(pending_call) and _is_decision_tool(pending_call) and last_signal == "call"
         if decision:
             status = "decision"
         elif saw_task_complete and last_signal == "task_complete":
@@ -484,8 +492,8 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
                 project=project,
                 title=title,
                 status=status,
-                doing=doing or (pending_calls[-1] if pending_calls else ""),
-                ask=pending_calls[-1] if pending_calls else "",
+                doing=doing or pending_call,
+                ask=pending_call if decision else "",
                 event_at=_iso(mtime),
                 path=str(path),
                 tokens_in=tokens_in,
@@ -810,7 +818,7 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
                     pending_tool = ""
                 doing = _clip(msg, 80) or doing
 
-        decision = bool(pending_tool)
+        decision = _is_decision_tool(pending_tool)
         states.append(
             SessionState(
                 tool="devin",
@@ -819,7 +827,7 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
                 title=title,
                 status="decision" if decision else _base_status(mtime, now),
                 doing=doing or pending_tool,
-                ask=pending_tool,
+                ask=pending_tool if decision else "",
                 event_at=_iso(mtime),
                 path=str(path),
             )

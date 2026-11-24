@@ -142,7 +142,7 @@ def _make_zst(root: Path, name: str, lines: list[str]) -> Path:
     return out
 
 
-def test_scan_codex_decision(codex_root: Path) -> None:
+def test_scan_codex_pending_work_tool_is_working(codex_root: Path) -> None:
     uuid = "01a1a1bf-486f-7823-99a2-bb67f487b663"
     lines = [
         _codex_line(
@@ -188,9 +188,33 @@ def test_scan_codex_decision(codex_root: Path) -> None:
     assert st.session_key == uuid
     assert st.project == "proj-x"
     assert st.title == "codex 작업 시작"
-    assert st.status == "decision"
-    assert st.ask == "exec_command"
+    assert st.status == "working"
+    assert st.ask == ""
     assert st.doing == "파일을 수정합니다"
+
+
+def test_scan_codex_user_input_tool_is_decision(codex_root: Path) -> None:
+    uuid = "01a1a1bf-486f-7823-99a2-bb67f487b664"
+    lines = [
+        _codex_line(
+            "2026-11-03T14:10:30Z",
+            0,
+            "session_meta",
+            {"cwd": "/Users/sec/work/proj-x", "session_id": uuid},
+        ),
+        _codex_line(
+            "2026-11-03T14:11:40Z",
+            1,
+            "response_item",
+            {"type": "function_call", "name": "request_user_input", "call_id": "c1"},
+        ),
+    ]
+    f = _make_zst(codex_root, f"rollout-2026-11-03T23-10-30-{uuid}", lines)
+    _touch(f, 5)
+
+    st = ab.scan_codex(codex_root.parent.parent.parent, NOW)[0]
+    assert st.status == "decision"
+    assert st.ask == "request_user_input"
 
 
 def test_scan_codex_plain_jsonl(codex_root: Path) -> None:
@@ -360,6 +384,32 @@ def test_scan_devin_decision_and_no_lock(tmp_path: Path) -> None:
     assert [s.session_key for s in states] == ["pending"]
     assert states[0].status == "decision"
     assert states[0].ask == "ask_user_question"
+
+
+def test_scan_devin_pending_work_tool_is_working(tmp_path: Path) -> None:
+    root = _devin_root(tmp_path)
+    t = root / "transcripts" / "working.json"
+    (root / "session_locks" / "working.lock").write_text("1")
+    t.write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {"source": "user", "message": "작업해줘"},
+                    {
+                        "source": "agent",
+                        "message": "명령을 실행합니다",
+                        "tool_calls": [{"function_name": "exec"}],
+                        "observation": None,
+                    },
+                ]
+            }
+        )
+    )
+    _touch(t, 5)
+
+    st = ab.scan_devin(root, NOW)[0]
+    assert st.status == "working"
+    assert st.ask == ""
 
 
 def test_scan_codex_catalog_desktop_threads(tmp_path: Path) -> None:
