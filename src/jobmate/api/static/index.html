@@ -301,8 +301,8 @@
   .office-node-running { --node-accent: #2692ff; --node-accent-hot: #73c5ff; }
   .office-node-failed { --node-accent: #ff5267; --node-accent-hot: #ffc2ca; }
   .office-node-skipped { --node-accent: #5b7186; --node-accent-hot: #8fa3b5; }
-  /* 실행 중 노드 — 회전 에너지 링 */
-  .office-node-running::before {
+  /* 실행 중 노드 — 회전 에너지 링 (ORCH는 헥사곤 전용 글로우 사용) */
+  .office-node-running:not(.office-node-orch)::before {
     content: ""; position: absolute; inset: -7px;
     border-radius: 20px; pointer-events: none;
     border: 2px solid transparent;
