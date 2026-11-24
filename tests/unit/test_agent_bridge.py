@@ -527,6 +527,50 @@ def test_scan_devin_sessions_db(tmp_path: Path) -> None:
     assert st.status == "working"
 
 
+def test_scan_devin_db_activity_refreshes_stale_transcript(tmp_path: Path) -> None:
+    """transcript mtime이 stale(>IDLE_SECONDS)해도 sessions.db
+    last_activity_at이 최신이면 working을 유지한다 — 긴 도구 실행 중
+    transcript가 멈춰도 실제 작업 상태와 보드가 일치하도록."""
+    root = _devin_root(tmp_path)
+    t = root / "transcripts" / "camp-seat.json"
+    (root / "session_locks" / "camp-seat.lock").write_text("1")
+    t.write_text(json.dumps({"steps": [{"source": "user", "message": "작업"}]}))
+    _touch(t, 300)  # 5분 전 — transcript만으로는 rest
+    con = sqlite3.connect(root / "sessions.db")
+    con.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT,"
+        " backend_type TEXT, model TEXT, agent_mode TEXT, created_at INTEGER,"
+        " last_activity_at INTEGER, title TEXT, main_chain_id INTEGER,"
+        " shell_last_seen_index INTEGER, cogs_json TEXT, workspace_dirs TEXT,"
+        " hidden INTEGER, metadata TEXT)"
+    )
+    con.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "camp-seat",
+            "/p",
+            "local",
+            "m",
+            "a",
+            NOW - 400,
+            NOW - 10,
+            "t",
+            None,
+            0,
+            None,
+            None,
+            0,
+            None,
+        ),
+    )
+    con.commit()
+    con.close()
+
+    st = ab.scan_devin(root, NOW)[0]
+    assert st.session_key == "camp-seat"
+    assert st.status == "working"
+
+
 def _devin_sessions_db(root: Path) -> sqlite3.Connection:
     """subagent 탐색용 최소 sessions.db — sessions/subagent_heads/message_nodes/tool_call_state."""
     con = sqlite3.connect(root / "sessions.db")

@@ -286,6 +286,32 @@ def scan_claude(root: Path, now: float) -> list[SessionState]:
                 tokens_out=tokens_out,
             )
         )
+
+    # ~/.claude/sessions/*.json — 실행 중 세션의 sessionId+mtime.
+    # 긴 도구 실행으로 transcript jsonl이 멈춰도 세션 파일이 최신이면
+    # working을 유지한다 (devin sessions.db / codex catalog와 동일 패턴).
+    by_key = {s.session_key: s for s in states}
+    sdir = root.parent / "sessions"
+    mtimes = {s.session_key: _mtime(Path(s.path)) for s in states}
+    if sdir.is_dir():
+        for sf in sorted(sdir.glob("*.json")):
+            sm = _mtime(sf)
+            if not _alive(sm, now):
+                continue
+            try:
+                meta = json.loads(sf.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            sid = str(meta.get("sessionId") or meta.get("session_id") or "")
+            existing = by_key.get(sid)
+            if existing is None or sm <= mtimes.get(sid, 0.0):
+                continue
+            mtimes[sid] = sm
+            if existing.status != "decision":
+                existing.status = _base_status(sm, now)
+            existing.event_at = _iso(sm)
     return states
 
 
@@ -372,6 +398,7 @@ def _codex_text(payload: dict) -> str:
 def scan_codex(root: Path, now: float) -> list[SessionState]:
     """root = ~/.codex/sessions 디렉터리."""
     states: list[SessionState] = []
+    key_mtimes: dict[str, float] = {}  # session_key → 파일 mtime (catalog 병합용)
     if not root.is_dir():
         return states
     paths = sorted(
@@ -448,10 +475,12 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
         except Exception as e:
             logger.debug("codex token scan failed %s: %s", path, e)
 
+        skey = _codex_session_key(path.name)
+        key_mtimes[skey] = mtime
         states.append(
             SessionState(
                 tool="codex",
-                session_key=_codex_session_key(path.name),
+                session_key=skey,
                 project=project,
                 title=title,
                 status=status,
@@ -466,14 +495,23 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
 
     # 데스크톱/앱 서버 스레드 — ~/.codex/sqlite/codex.db (local_thread_catalog)
     # rollout jsonl과 thread_id가 같으면 rollout 쪽을 우선한다.
-    rollout_keys = {s.session_key for s in states}
+    by_key = {s.session_key: s for s in states}
     db_path = root.parent / "sqlite" / "codex.db"
-    states.extend(_codex_catalog_sessions(db_path, rollout_keys, now))
+    states.extend(_codex_catalog_sessions(db_path, by_key, key_mtimes, now))
     return states
 
 
-def _codex_catalog_sessions(db_path: Path, seen_keys: set[str], now: float) -> list[SessionState]:
-    """codex.db local_thread_catalog — Codex 데스크톱/IDE(chatgpt, vscode) 스레드."""
+def _codex_catalog_sessions(
+    db_path: Path,
+    by_key: dict[str, SessionState],
+    key_mtimes: dict[str, float],
+    now: float,
+) -> list[SessionState]:
+    """codex.db local_thread_catalog — Codex 데스크톱/IDE(chatgpt, vscode) 스레드.
+
+    rollout과 thread_id가 겹치면 상태만 갱신한다 — catalog의
+    source_recency_at이 rollout mtime보다 최신이면 recency를 끌어올려
+    긴 도구 실행 중 rest로 떨어지는 것을 막는다."""
     states: list[SessionState] = []
     if not db_path.is_file():
         return states
@@ -499,11 +537,20 @@ def _codex_catalog_sessions(db_path: Path, seen_keys: set[str], now: float) -> l
         return states
 
     for thread_id, title, cwd, source_kind, recency in rows:
-        if not thread_id or thread_id in seen_keys:
+        if not thread_id:
             continue
         try:
             recency_f = float(recency or 0)
         except (TypeError, ValueError):
+            continue
+        existing = by_key.get(thread_id)
+        if existing is not None:
+            # rollout 세션 — catalog recency가 더 최신이면 상태만 끌어올린다
+            if recency_f > key_mtimes.get(thread_id, 0.0):
+                key_mtimes[thread_id] = recency_f
+                if existing.status != "decision":
+                    existing.status = _base_status(recency_f, now)
+                existing.event_at = _iso(recency_f)
             continue
         if recency_f <= 0 or (now - recency_f) > ENDED_SECONDS:
             continue
@@ -721,6 +768,7 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
     states: list[SessionState] = []
     tdir = root / "transcripts"
     ldir = root / "session_locks"
+    mtimes: dict[str, float] = {}  # session_key → 가장 최신 활동 시각
     if not tdir.is_dir():
         return states
     for path in sorted(tdir.glob("*.json")):
@@ -731,6 +779,7 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
             continue
         if ldir.is_dir() and not (ldir / f"{path.stem}.lock").exists():
             continue
+        mtimes[path.stem] = mtime
         try:
             data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
         except (OSError, json.JSONDecodeError) as e:
@@ -828,6 +877,14 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
                     existing.project = project
                 if not existing.title and title:
                     existing.title = _clip(str(title), 60)
+                # sessions.db last_activity_at 이 transcript mtime 보다 최신이면
+                # recency를 끌어올린다 — 긴 도구 실행 중 transcript가 멈춰도
+                # working이 유지되도록 (decision 상태는 더 강한 신호라 유지)
+                if act > mtimes.get(sid, 0.0):
+                    mtimes[sid] = act
+                    if existing.status != "decision":
+                        existing.status = _base_status(act, now)
+                    existing.event_at = _iso(act)
                 continue
             st = SessionState(
                 tool="devin",
