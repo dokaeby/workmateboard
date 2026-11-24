@@ -535,6 +535,15 @@ def test_cards_data_and_ssrf(monkeypatch):
         r = client.post("/api/v1/cards", json={"title": "t", "url": bad})
         assert r.status_code == 422, bad
 
+    # DNS 가드는 실제 해석을 요구 — 테스트 도메인은 가짜 공인 IP로 해석시킨다
+    import socket
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+
     ok = client.post(
         "/api/v1/cards",
         json={"title": "status", "url": "https://status.example.com/api", "json_path": "a.b.c"},

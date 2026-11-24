@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS users (
   display_name TEXT NOT NULL DEFAULT '',
   google_sub TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL DEFAULT 'user',
+  email_verified INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -256,6 +257,18 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp ON auth_sessions(expires_at);
+
+-- 이메일 인증 토큰 — 원문 금지, SHA-256 해시만 저장
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(email);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_hash ON email_verifications(token_hash);
 
 -- agent-sessions: 로컬 에이전트 브릿지가 push하는 코딩 에이전트 세션 상태
 CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -657,6 +670,7 @@ CREATE TABLE IF NOT EXISTS users (
   display_name TEXT NOT NULL DEFAULT '',
   google_sub TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL DEFAULT 'user',
+  email_verified INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -670,6 +684,17 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp ON auth_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(email);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_hash ON email_verifications(token_hash);
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,
@@ -1027,8 +1052,11 @@ class Store:
         self._ensure_columns("approvals", {"created_at": "TEXT"})
 
     def _migrate_user_columns(self) -> None:
-        """기존 DB의 users에 role 컬럼 보강 (admin|user, 기본 user)."""
+        """기존 DB의 users에 role/email_verified 컬럼 보강.
+        email_verified 기본값 1 — 기존 계정은 이미 로그인 중이므로 검증을
+        강요하지 않는다. 신규 비밀번호 가입만 create_user가 명시적으로 0을 넣는다."""
         self._ensure_columns("users", {"role": "TEXT NOT NULL DEFAULT 'user'"})
+        self._ensure_columns("users", {"email_verified": "INTEGER NOT NULL DEFAULT 1"})
 
     def _migrate_run_columns(self) -> None:
         """기존 DB의 runs에 created_by/project 컬럼 보강."""
@@ -2019,6 +2047,8 @@ class Store:
             "display_name": r["display_name"],
             "google_sub": r["google_sub"],
             "role": Store._norm_role(r["role"] if "role" in r.keys() else "user"),
+            # 컬럼이 없는 구 스키마 SELECT(세션 JOIN 등)는 검증 완료로 간주
+            "email_verified": bool(r["email_verified"]) if "email_verified" in r.keys() else True,
             "created_at": r["created_at"],
         }
 
@@ -2028,16 +2058,28 @@ class Store:
         password_hash: str = "",
         display_name: str = "",
         google_sub: str = "",
+        email_verified: bool = False,
     ) -> dict[str, Any] | None:
-        """신규 사용자 생성. email 중복 시 None."""
+        """신규 사용자 생성. email 중복 시 None.
+        email_verified 기본 False — 비밀번호 가입은 이메일 소유권 미증명.
+        Google OAuth처럼 이메일이 검증된 경로만 True를 넘긴다."""
         uid = uuid.uuid4().hex[:16]
         now = _iso(_now())
         try:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO users(id,email,password_hash,display_name,google_sub,"
-                    "created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                    (uid, email.lower(), password_hash, display_name, google_sub, now, now),
+                    "email_verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        uid,
+                        email.lower(),
+                        password_hash,
+                        display_name,
+                        google_sub,
+                        1 if email_verified else 0,
+                        now,
+                        now,
+                    ),
                 )
         except self._integrity_errors:
             return None
@@ -2100,6 +2142,66 @@ class Store:
             c.execute(
                 "UPDATE auth_sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
                 (_iso(_now()), token_hash),
+            )
+
+    # ---- email_verifications (가입 이메일 인증) ----
+    def create_email_verification(self, email: str, ttl_hours: int = 24) -> str:
+        """인증 토큰 발급 — 반환값이 원문(메일 링크용), DB에는 SHA-256 해시만 저장."""
+        import hashlib
+        import secrets
+
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = _now()
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO email_verifications(id,email,token_hash,expires_at,created_at)"
+                " VALUES(?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16],
+                    email.lower(),
+                    token_hash,
+                    _iso(now + timedelta(hours=ttl_hours)),
+                    _iso(now),
+                ),
+            )
+        return token
+
+    def get_valid_verification(self, token_hash: str) -> str | None:
+        """미사용·미만료 토큰의 이메일 반환. 없거나 만료/사용이면 None."""
+        r = self._conn.execute(
+            "SELECT email, expires_at FROM email_verifications"
+            " WHERE token_hash=? AND used_at IS NULL",
+            (token_hash,),
+        ).fetchone()
+        if not r:
+            return None
+        exp = _dt(r["expires_at"])
+        if exp is None or exp <= _now():
+            return None
+        return str(r["email"])
+
+    def mark_verification_used(self, token_hash: str) -> None:
+        with self.tx() as c:
+            c.execute(
+                "UPDATE email_verifications SET used_at=? WHERE token_hash=? AND used_at IS NULL",
+                (_iso(_now()), token_hash),
+            )
+
+    def latest_verification_at(self, email: str) -> datetime | None:
+        """해당 이메일의 가장 최근 인증 토큰 발급 시각 — 재발송 rate limit용."""
+        r = self._conn.execute(
+            "SELECT created_at FROM email_verifications WHERE email=?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (email.lower(),),
+        ).fetchone()
+        return _dt(r["created_at"]) if r else None
+
+    def set_user_email_verified(self, user_id: str) -> None:
+        with self.tx() as c:
+            c.execute(
+                "UPDATE users SET email_verified=1, updated_at=? WHERE id=?",
+                (_iso(_now()), user_id),
             )
 
     # ---- email_summaries (3줄 요약 카드) ----

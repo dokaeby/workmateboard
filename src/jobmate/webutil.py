@@ -1,9 +1,11 @@
 """외부 HTTP fetch 공용 유틸 — SSRF 가드, 크기 제한 fetch, JSON dot-path 추출.
 
 대시보드 카드/커넥터처럼 사용자 지정 URL을 서버가 대신 호출하는 경로에서
-localhost/사설 IP 리터럴 접근을 차단한다. DNS 이름이 사설 IP로 해석되는
-경우(rebinding)까지는 막지 못하므로 http/https + 리터럴 검사 수준의
-1차 방어로 문서화한다.
+localhost/사설 IP 리터럴 접근을 차단한다. DNS 이름은 getaddrinfo로 해석해
+결과 IP 전부가 공인인지 검사한다(localtest.me/nip.io/lvh.me 같은
+공개 DNS 이름의 사설 IP 해석을 차단). DNS 해석은 OS resolver에 위임되며
+getaddrinfo 자체에 타임아웃을 둘 수 없어, 해석 지연 시 호출이 OS의
+resolver 타임아웃까지 블로킹될 수 있다(허용된 트레이드오프).
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import socket
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -43,8 +46,57 @@ def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
+_DNS_CACHE_TTL = 60.0
+_DNS_CACHE_MAX = 512
+_dns_cache: dict[str, tuple[float, bool]] = {}
+
+
+def _host_dns_is_public(host: str) -> bool:
+    """DNS 이름이 공인 IP로만 해석되는지 검사.
+
+    getaddrinfo(host, port, proto=IPPROTO_TCP) 결과의 모든 IP가
+    _ip_is_public을 만족해야 True. 하나라도 사설/루프백/링크로컬/
+    멀티캐스트/예약/unspecified면 False. 해석 실패(OSError/gaierror)도
+    False — 검증 불가한 이름은 거부한다(명확한 일시적 DNS 장애로 인한
+    false positive는 허용 범위).
+
+    해석은 OS resolver에 위임 — getaddrinfo에 적용 가능한 타임아웃이
+    없어 느린 DNS가 호출을 블로킹할 수 있다(현재 트레이드오프로 허용).
+    결과는 60초 TTL 캐시로 반복 조회 비용을 줄인다.
+    """
+    now = time.monotonic()
+    cached = _dns_cache.get(host)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    allowed = True
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            allowed = False
+            break
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            allowed = False
+            break
+        if not _ip_is_public(ip):
+            allowed = False
+            break
+    if len(_dns_cache) >= _DNS_CACHE_MAX:
+        _dns_cache.clear()
+    _dns_cache[host] = (now + _DNS_CACHE_TTL, allowed)
+    return allowed
+
+
 def is_safe_fetch_url(url: str) -> bool:
-    """http/https + 공인 호스트만 허용. localhost/사설·루프백 IP 리터럴 차단."""
+    """http/https + 공인 호스트만 허용.
+
+    IP 리터럴은 직접 _ip_is_public으로 검사하고, DNS 이름은
+    _host_dns_is_public으로 해석 결과 전부가 공인인지 확인한다."""
     try:
         parsed = urlparse(url if "://" in url else f"https://{url}")
     except ValueError:
@@ -59,8 +111,7 @@ def is_safe_fetch_url(url: str) -> bool:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        # IP 리터럴이 아닌 DNS 이름 — 리터럴 차단만 적용(1차 방어)
-        return True
+        return _host_dns_is_public(host)
     return _ip_is_public(ip)
 
 

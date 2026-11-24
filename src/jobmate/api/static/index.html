@@ -1953,6 +1953,10 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
            style="width:100%;margin:6px 0;box-sizing:border-box">
     <div id="auth-err" class="card-meta" role="alert"
          style="color:#e5484d;min-height:1em"></div>
+    <div id="auth-info" class="card-meta" role="status"
+         style="color:var(--muted);min-height:1em"></div>
+    <button id="auth-resend" class="secondary" hidden
+            style="width:100%;margin:6px 0">인증 메일 재발송</button>
     <button id="auth-submit" style="width:100%">로그인</button>
     <a id="auth-google" href="/api/v1/auth/google"
        style="display:block;text-align:center;margin-top:10px;padding:9px;border:1px solid var(--border-strong);border-radius:10px;color:var(--ink);text-decoration:none;font-weight:600;background:var(--surface)">Google로 계속하기</a>
@@ -2052,6 +2056,8 @@ function showAuth(errMsg) {
   _loadAuthConfig();
   if (wasHidden || errMsg) {
     $("#auth-err").textContent = errMsg || _AUTH_ERR_MSG[_authErrParam] || "";
+    $("#auth-info").textContent = "";
+    $("#auth-resend").hidden = true;
     $("#auth-email").value = "";
     $("#auth-password").value = "";
   }
@@ -2103,7 +2109,10 @@ $("#auth-submit").addEventListener("click", async () => {
   const email = $("#auth-email").value.trim();
   const password = $("#auth-password").value;
   const errEl = $("#auth-err");
+  const infoEl = $("#auth-info");
   errEl.textContent = "";
+  infoEl.textContent = "";
+  $("#auth-resend").hidden = true;
   if (!email || !password) { errEl.textContent = "이메일과 비밀번호를 입력하세요"; return; }
   const body = {email, password};
   if (_authMode === "signup") body.display_name = $("#auth-name").value.trim();
@@ -2113,11 +2122,47 @@ $("#auth-submit").addEventListener("click", async () => {
       body: JSON.stringify(body)});
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      errEl.textContent = j.error ? j.error.message : "인증 실패";
+      if (j.error && j.error.code === "email_not_verified") {
+        errEl.textContent = j.error.message;
+        infoEl.textContent = "인증 메일을 받지 못했다면 아래 버튼으로 재발송하세요.";
+        $("#auth-resend").hidden = false;
+      } else {
+        errEl.textContent = j.error ? j.error.message : "인증 실패";
+      }
+      return;
+    }
+    if (_authMode === "signup" && j.email_verification_pending) {
+      // 이메일 인증 대기 — 세션이 없으므로 리로드하지 않고 안내만 표시
+      infoEl.textContent = j.verify_email_sent
+        ? "인증 메일을 발송했습니다 — 메일의 링크를 열어 인증을 완료한 뒤 로그인하세요."
+        : "메일 발송에 실패했습니다 — 관리자에게 문의하거나 잠시 후 재발송을 시도하세요.";
+      $("#auth-resend").hidden = false;
+      $("#auth-email").value = "";
+      $("#auth-password").value = "";
       return;
     }
     location.reload();
   } catch (e) { errEl.textContent = "네트워크 오류"; }
+});
+$("#auth-resend").addEventListener("click", async () => {
+  const email = $("#auth-email").value.trim();
+  const infoEl = $("#auth-info");
+  if (!email) { infoEl.textContent = "이메일을 입력하세요"; return; }
+  infoEl.textContent = "재발송 중…";
+  try {
+    const r = await fetch(API + "/auth/verify/resend", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email})});
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 429) {
+      infoEl.textContent = j.error ? j.error.message : "잠시 후 다시 시도하세요.";
+    } else if (j.sent) {
+      infoEl.textContent = "인증 메일을 다시 발송했습니다 — 받은편지함을 확인하세요.";
+    } else {
+      infoEl.textContent = "발송할 수 없습니다 — 이미 인증됐거나 가입되지 않은 이메일일 수 있습니다.";
+      $("#auth-resend").hidden = true;
+    }
+  } catch (e) { infoEl.textContent = "네트워크 오류"; }
 });
 $("#auth-password").addEventListener("keydown", e => {
   if (e.key === "Enter") $("#auth-submit").click();

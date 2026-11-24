@@ -34,7 +34,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .. import messenger, webutil
+from .. import mailer, messenger, webutil
 from ..adapters import LoggingNotifier, WebPushNotifier
 from ..config import (
     Settings,
@@ -2149,8 +2149,22 @@ def create_app(
         )
 
     @app.get("/api/v1/messages")
-    def list_messages(provider: str | None = None, limit: int = 20) -> dict[str, Any]:
-        return {"messages": store.list_message_extractions(provider, limit)}
+    def list_messages(
+        request: Request, provider: str | None = None, limit: int = 20
+    ) -> dict[str, Any]:
+        """메시지 수신함 목록.
+
+        source_text(메일/Slack/Telegram 원문, 최대 8000자)는 민감 정보이므로
+        gmail provider만 그대로 노출한다(Gmail Checker UI가 사용).
+        그 외 provider는 lead 이상만 원문을 보고, member/비로그인에게는
+        필드를 유지한 채 빈 문자열로 마스킹한다."""
+        limit = max(1, min(int(limit), 200))
+        msgs = store.list_message_extractions(provider, limit)
+        if _lead_user(request) is None:
+            for m in msgs:
+                if m.get("source_provider") != "gmail":
+                    m["source_text"] = ""
+        return {"messages": msgs}
 
     @app.post("/api/v1/gmail/digest")
     def gmail_digest(body: dict[str, Any] | None = None) -> JSONResponse:
@@ -2941,6 +2955,49 @@ def create_app(
         else:
             _login_fails.setdefault(key, []).append(time.time())
 
+    # ---- 이메일 인증 (비밀번호 가입) ----
+    _VERIFY_RESEND_MIN_INTERVAL = 600.0  # 같은 이메일 재발송 10분에 1회
+
+    def _email_verification_required() -> bool:
+        """이메일 인증 강제 여부 — 로컬 개발 모드(인증 비활성: api_key·
+        allowed_emails·VERCEL 모두 없음)만 면제한다. VERCEL/키/허용목록이
+        있으면 항상 적용."""
+        return bool(api_key() or allowed_emails() or os.environ.get("VERCEL"))
+
+    def _verify_url(request: Request, token: str) -> str:
+        base = (settings.public_base_url or str(request.base_url)).rstrip("/")
+        return f"{base}/api/v1/auth/verify?token={token}"
+
+    def _send_verification(request: Request, email: str) -> bool:
+        """인증 토큰 발급 + 메일 발송. 발송 실패해도 예외 없이 bool 반환."""
+        try:
+            token = store.create_email_verification(email)
+            return mailer.send_verification_email(email, _verify_url(request, token))
+        except Exception as e:
+            logger.warning("verification email setup failed: %s", str(e)[:200])
+            return False
+
+    _VERIFY_OK_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>이메일 인증 완료</title></head>
+<body style="font-family:sans-serif;display:flex;align-items:center;
+justify-content:center;min-height:100vh;margin:0;background:#f6f7f9">
+<div style="background:#fff;border:1px solid #e3e6ea;border-radius:12px;
+padding:32px;max-width:360px;text-align:center">
+<h2 style="margin:0 0 8px">이메일 인증 완료</h2>
+<p style="color:#555;margin:0">인증이 완료되었습니다. 잠시 후 로그인됩니다.</p>
+</div></body></html>"""
+
+    _VERIFY_FAIL_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>이메일 인증 실패</title></head>
+<body style="font-family:sans-serif;display:flex;align-items:center;
+justify-content:center;min-height:100vh;margin:0;background:#f6f7f9">
+<div style="background:#fff;border:1px solid #e3e6ea;border-radius:12px;
+padding:32px;max-width:360px;text-align:center">
+<h2 style="margin:0 0 8px">이메일 인증 실패</h2>
+<p style="color:#555;margin:0">링크가 만료되었거나 이미 사용되었습니다.
+로그인 화면에서 인증 메일을 다시 요청하세요.</p>
+</div></body></html>"""
+
     @app.post("/api/v1/auth/signup")
     def auth_signup(body: dict[str, Any], request: Request) -> JSONResponse:
         # 허용 목록이 설정된 경우에만 비밀번호 가입을 제한한다 — 비밀번호는
@@ -2965,8 +3022,21 @@ def create_app(
         _maybe_first_user_admin(user)
         store.audit("", user["email"], "auth_signup", user["id"], {})
         logger.info("auth signup: user=%s", user["id"])
-        resp = JSONResponse({"user": _pub_user(user)}, status_code=201)
-        _set_session(resp, request, user["id"])
+        verify_required = _email_verification_required()
+        verify_sent = True
+        if verify_required:
+            # 비밀번호는 이메일 소유권을 증명하지 못하므로 인증 전까지 로그인 불가
+            verify_sent = _send_verification(request, email)
+        resp = JSONResponse(
+            {
+                "user": _pub_user(user),
+                "verify_email_sent": verify_sent,
+                "email_verification_pending": verify_required,
+            },
+            status_code=201,
+        )
+        if not verify_required:
+            _set_session(resp, request, user["id"])
         return resp
 
     @app.post("/api/v1/auth/login")
@@ -2989,12 +3059,71 @@ def create_app(
             )
         if not email_allowed(email):
             return err(403, "email_not_allowed", "허용되지 않은 이메일입니다", request)
-        _login_record(key, ok=True)
         user = store.get_user_by_id(row[0])
+        if _email_verification_required() and user is not None and not user.get("email_verified"):
+            # 비밀번호는 맞지만 이메일 미인증 — 실패 카운트는 비밀번호 오류에만 적용
+            _login_record(key, ok=True)
+            store.audit("", email, "auth_login_unverified", row[0], {})
+            logger.info("login blocked (email unverified): user=%s", row[0])
+            return err(
+                403,
+                "email_not_verified",
+                "이메일 인증이 필요합니다 — 가입 시 발송된 인증 메일을 확인하거나 재발송하세요",
+                request,
+            )
+        _login_record(key, ok=True)
         store.audit("", email, "auth_login", row[0], {})
         logger.info("auth login: user=%s", row[0])
         resp = JSONResponse({"user": _pub_user(user) if user else {}})
         _set_session(resp, request, row[0])
+        return resp
+
+    @app.post("/api/v1/auth/verify/resend")
+    def auth_verify_resend(body: dict[str, Any], request: Request) -> JSONResponse:
+        """미인증 계정의 인증 메일 재발송 — 같은 이메일 10분에 1회(rate limit).
+
+        /api/v1/auth/ prefix는 미들웨어 인증 예외이므로 남용 방지로
+        미가입/이미 인증 이메일에도 동일한 응답 형태를 반환한다(계정 열거 방지)."""
+        email = str(body.get("email", "")).strip().lower()
+        if not _EMAIL_RE.match(email):
+            return err(400, "invalid_email", "이메일 형식이 올바르지 않습니다", request)
+        user = store.get_user_by_email(email)
+        if user is None or user.get("email_verified"):
+            return JSONResponse({"sent": False})
+        last = store.latest_verification_at(email)
+        if last is not None and (datetime.now(UTC) - last).total_seconds() < (
+            _VERIFY_RESEND_MIN_INTERVAL
+        ):
+            logger.info("verification resend throttled: user=%s", user["id"])
+            return err(
+                429,
+                "resend_too_soon",
+                "인증 메일은 10분에 한 번만 재발송할 수 있습니다",
+                request,
+            )
+        sent = _send_verification(request, email)
+        store.audit("", email, "auth_verify_resend", user["id"], {"sent": sent})
+        logger.info("verification resend: user=%s sent=%s", user["id"], sent)
+        return JSONResponse({"sent": sent})
+
+    @app.get("/api/v1/auth/verify")
+    def auth_verify(request: Request, token: str = "") -> HTMLResponse:
+        """인증 링크 — 유효 토큰이면 email_verified=1 + 세션 쿠키 발급."""
+        token_hash = hash_token(token) if token else ""
+        email = store.get_valid_verification(token_hash) if token_hash else None
+        if email is None:
+            logger.info("email verify failed: invalid_or_expired token")
+            return HTMLResponse(_VERIFY_FAIL_HTML, status_code=400)
+        user = store.get_user_by_email(email)
+        if user is None:
+            store.mark_verification_used(token_hash)
+            return HTMLResponse(_VERIFY_FAIL_HTML, status_code=400)
+        store.set_user_email_verified(user["id"])
+        store.mark_verification_used(token_hash)
+        store.audit("", email, "auth_email_verified", user["id"], {})
+        logger.info("email verified: user=%s", user["id"])
+        resp = HTMLResponse(_VERIFY_OK_HTML)
+        _set_session(resp, request, user["id"])
         return resp
 
     @app.post("/api/v1/auth/logout")
@@ -3119,11 +3248,15 @@ def create_app(
             if user is not None and not user.get("google_sub"):
                 store.link_google_sub(user["id"], gsub)
         if user is None:
-            user = store.create_user(email, "", name, gsub)
+            # Google이 이메일 소유권을 증명했으므로 인증 완료로 간주
+            user = store.create_user(email, "", name, gsub, email_verified=True)
             if user is None:
                 return back("signup_failed")
             _maybe_first_user_admin(user)
             logger.info("auth signup via google: user=%s", user["id"])
+        else:
+            # 기존 계정에 Google 연결 — 이메일 인증 완료 처리
+            store.set_user_email_verified(user["id"])
         store.audit("", email, "auth_login_google", user["id"], {})
         logger.info("auth login via google: user=%s", user["id"])
         resp = RedirectResponse("/", status_code=302)

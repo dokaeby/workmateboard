@@ -89,14 +89,18 @@ def test_signup_validation():
 def test_session_cookie_authorizes_api(monkeypatch):
     """API 키가 설정된 상태에서 세션 쿠키만으로 /api/* 접근 가능."""
     monkeypatch.setenv("JOBMATE_API_KEY", "secret-key")
-    client, _ = _client()
+    client, store = _client()
     assert client.get("/api/v1/workflows").status_code == 401
 
+    # API 키가 있으면 이메일 인증이 강제된다 — 인증 링크로 세션을 발급받는다
     client.post(
         "/api/v1/auth/signup",
         json={"email": "s@b.com", "password": "password123"},
         headers={"X-API-Key": "secret-key"},
     )
+    token = store.create_email_verification("s@b.com")
+    vr = client.get(f"/api/v1/auth/verify?token={token}")
+    assert vr.status_code == 200
     assert client.get("/api/v1/workflows").status_code == 200
 
     # 잘못된 키 + 세션 없음 → 401

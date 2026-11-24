@@ -101,6 +101,9 @@ def test_auth_me_normalized_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     assert r.status_code == 201
     assert r.json()["user"]["role"] == "admin"  # 첫 사용자 자동 admin
+    # API 키 설정 시 이메일 인증이 강제된다 — 인증 링크로 세션 발급
+    token = store.create_email_verification("first@b.com")
+    assert client.get(f"/api/v1/auth/verify?token={token}").status_code == 200
     me = client.get("/api/v1/auth/me").json()["user"]
     assert me["role"] == "admin" and me["email"] == "first@b.com"
 

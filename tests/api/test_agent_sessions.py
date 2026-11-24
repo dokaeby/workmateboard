@@ -106,15 +106,22 @@ def test_post_requires_api_key(monkeypatch: pytest.MonkeyPatch):
     assert r.json() == {"ok": True}
 
 
+def _verify_session(client: TestClient, store: Store, email: str) -> None:
+    """이메일 인증 강제 모드에서 signup 후 세션 쿠키를 발급받는다."""
+    token = store.create_email_verification(email)
+    assert client.get(f"/api/v1/auth/verify?token={token}").status_code == 200
+
+
 def test_post_rejects_session_cookie_only(monkeypatch: pytest.MonkeyPatch):
     """세션 쿠키만으로는 머신 push 불가 — API 키 필수."""
     monkeypatch.setenv("JOBMATE_API_KEY", "secret-key")
-    client, _ = _client()
+    client, store = _client()
     client.post(
         "/api/v1/auth/signup",
         json={"email": "a@b.com", "password": "password123"},
         headers=_headers(),
     )
+    _verify_session(client, store, "a@b.com")
     # 세션 쿠키로 일반 GET은 통과하지만 POST push는 403
     assert client.get("/api/v1/agent-sessions").status_code == 200
     r = client.post(
@@ -175,7 +182,7 @@ def test_post_get_roundtrip(monkeypatch: pytest.MonkeyPatch):
 def test_get_auth_policy_same_as_dashboard(monkeypatch: pytest.MonkeyPatch):
     """GET은 기존 /api/* 정책과 동일 — 키 없으면 401, 세션 쿠키/키면 200."""
     monkeypatch.setenv("JOBMATE_API_KEY", "secret-key")
-    client, _ = _client()
+    client, store = _client()
     assert client.get("/api/v1/agent-sessions").status_code == 401
     assert client.get("/api/v1/agent-sessions", headers=_headers()).status_code == 200
     # 세션 쿠키 인증도 허용 (대시보드와 동일)
@@ -184,6 +191,7 @@ def test_get_auth_policy_same_as_dashboard(monkeypatch: pytest.MonkeyPatch):
         json={"email": "g@b.com", "password": "password123"},
         headers=_headers(),
     )
+    _verify_session(client, store, "g@b.com")
     assert client.get("/api/v1/agent-sessions").status_code == 200
 
 
