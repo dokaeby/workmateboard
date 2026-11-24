@@ -746,12 +746,17 @@ def create_app(
         path = request.url.path
         # API 키 인증: /api/* 전체. health 체크와 외부 webhook(자체 서명 검증),
         # cron tick(자체 시크릿), 계정 인증 엔드포인트는 제외
-        if path.startswith("/api/") and not path.startswith(
-            (
-                "/api/v1/health",
-                "/api/v1/webhooks/",
-                "/api/v1/cron/tick",
-                "/api/v1/auth/",
+        # /api/v1/health만 공개 — /health/detail은 DB 경로·머신명 등 내부 정보가
+        # 포함되므로 인증이 필요하다 (세션/API 키).
+        if (
+            path.startswith("/api/")
+            and path != "/api/v1/health"
+            and not path.startswith(
+                (
+                    "/api/v1/webhooks/",
+                    "/api/v1/cron/tick",
+                    "/api/v1/auth/",
+                )
             )
         ):
             # 공개 공유 스냅샷 — GET만 인증 예외(POST /share는 세션 필요)
@@ -1016,7 +1021,7 @@ def create_app(
                 "project": r.project,
                 "created_at": r.created_at.isoformat(),
             }
-            for r in store.list_runs(limit, workflow=workflow)
+            for r in store.list_runs(max(1, min(limit, 500)), workflow=workflow)
         ]
 
     @app.get("/api/v1/runs/stats")
@@ -1599,7 +1604,13 @@ def create_app(
         target = store.get_user_by_id(user_id)
         if target is None:
             return err(404, "not_found", "user not found", request)
-        new_role = _normalize_role(body.role)
+        # 유효하지 않은 role 문자열은 member로 강등하지 않고 422로 거부
+        raw_role = str(body.role or "").strip().lower()
+        if raw_role == "user":
+            raw_role = "member"
+        if raw_role not in ("member", "lead", "admin"):
+            return err(422, "validation", "role must be member|lead|admin", request)
+        new_role = raw_role
         old_role = _normalize_role(target.get("role"))
         if new_role == old_role:
             return JSONResponse(content={"id": user_id, "role": new_role, "changed": False})
@@ -1744,7 +1755,11 @@ def create_app(
         include_ended: bool = False,
         machine: str | None = None,
     ) -> list[dict[str, Any]]:
-        rows = store.list_agent_sessions(limit=limit, include_ended=include_ended, machine=machine)
+        rows = store.list_agent_sessions(
+            limit=max(1, min(limit, 500)),
+            include_ended=include_ended,
+            machine=machine,
+        )
         return [_session_view(r) for r in rows]
 
     @app.get("/api/v1/agent-sessions/stats")
@@ -2788,12 +2803,17 @@ def create_app(
 
     @app.post("/api/v1/radar/refresh", status_code=202)
     def radar_refresh(
-        background_tasks: BackgroundTasks, body: dict[str, Any] | None = None
+        background_tasks: BackgroundTasks,
+        request: Request,
+        body: dict[str, Any] | None = None,
     ) -> JSONResponse:
         body = body or {}
         platforms = body.get("platforms") or settings.radar_platforms
         force = bool(body.get("force", True))
         auto_approve = bool(body.get("auto_approve", False))
+        # 사람 승인 단계 우회(auto_approve)는 lead 이상만 — member는 무시
+        if auto_approve and _lead_user(request) is None:
+            auto_approve = False
         jobs: list = []
         ids = []
         for p in platforms:

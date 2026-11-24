@@ -10,6 +10,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,6 +27,11 @@ from jobmate.config import Settings
 from jobmate.llm import FakeLLM
 from jobmate.models.enums import RunStatus
 from jobmate.store.db import Store
+
+
+def _fresh_event_at() -> str:
+    """health=stale(5분+) 판정을 피하기 위해 현재 시각 사용."""
+    return datetime.now(UTC).isoformat()
 
 
 @pytest.fixture(scope="module")
@@ -337,7 +343,7 @@ def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: Simpl
         project="workmateboard",
         title="UI 테스트 세션",
         doing="코드 수정 중",
-        event_at="2026-11-22T01:00:00+00:00",
+        event_at=_fresh_event_at(),
     )
     store.upsert_agent_session(
         "codex",
@@ -345,7 +351,7 @@ def test_office_sessions_tab_shows_agent_characters(page: Page, ui_server: Simpl
         "decision",
         project="workmateboard",
         ask="Bash 권한 요청",
-        event_at="2026-11-22T01:00:00+00:00",
+        event_at=_fresh_event_at(),
     )
     page.click('.nav-item[data-view="office"]')
     page.click('.office-tab-btn[data-office-tab="sessions"]')
@@ -386,7 +392,7 @@ def test_office_sessions_demo_mode(page: Page, ui_server: SimpleNamespace) -> No
         "working",
         project="jobmate-demo",
         doing="실제 작업 중",
-        event_at="2026-11-22T01:00:00+00:00",
+        event_at=_fresh_event_at(),
     )
     page.click('.nav-item[data-view="office"]')
     page.click('.office-tab-btn[data-office-tab="sessions"]')

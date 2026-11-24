@@ -18,7 +18,9 @@ async function jmLiveSessionPeople() {
       id: `${s.tool}:${s.session_key}`,
       name: `${(typeof SESSION_TOOL_LABEL !== "undefined" && SESSION_TOOL_LABEL[s.tool]) || s.tool}` +
             ` · ${s.title || s.project || String(s.session_key || "").split(":").pop().slice(0, 12)}`,
-      status: s.status === "working" ? "working"
+      // health=stale(5분+ 이벤트 없음)은 브릿지 다운 가능성 — working을 rest로 강등.
+      // decision은 사용자 응답 대기 상태라 유지한다.
+      status: s.status === "working" ? (s.health === "stale" ? "rest" : "working")
             : s.status === "decision" ? "decision" : "rest",
       ask: s.ask || "",
       doing: s.doing || "",

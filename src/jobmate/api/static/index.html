@@ -2189,14 +2189,9 @@ function applyRoleGating() {
     b.hidden = !(roleOk && menuOk);
   });
 }
-// /auth/me 가 resolve되면 role 반영 + 메뉴 재계산 (비동기 로드 대응)
-jmMe().then(me => {
-  _jmRole = jmNormalizeRole((me || {}).role);
-  _jmRoleRank = JM_ROLE_RANK[_jmRole];
-  applyRoleGating();
-});
-
 /* ── 뷰 전환 ── */
+// 백엔드 알림/아카이브 링크의 view 값 → 실제 nav data-view 별칭
+const VIEW_ALIASES = {reports: "inbox"};
 const VIEWS = { gmail: loadGmail,
                 office: () => { officeApplyProvider(); officeRefresh(); loadOffice(); },
                 calendar: loadCalendar,
@@ -2222,16 +2217,8 @@ document.querySelectorAll(".nav-item").forEach(b =>
     const v = b.dataset.view;
     if (!loaded[v]) { loaded[v] = true; VIEWS[v](); }
   }));
-// 기본 활성 뷰 로드 (Agent-Office가 첫 메뉴)
-document.querySelector(".nav-item.active")?.click();
-// ?view=office 딥링크 — Web Push source_url 대응 (없는 뷰는 무시)
-(() => {
-  const v = new URLSearchParams(location.search).get("view");
-  if (v) {
-    const b = document.querySelector(`.nav-item[data-view="${v}"]`);
-    if (b) b.click();
-  }
-})();
+// 참고: 초기 뷰 로드·?view 딥링크·jmMe() 호출은 스크립트 맨 끝(부팅 블록)에서
+// 실행한다 — 이 지점에서 호출하면 아래쪽 let 선언들과 TDZ 충돌이 난다.
 
 /* ── Gmail Checker ── */
 let digestLoaded = false;
@@ -2449,7 +2436,9 @@ async function officeLiveSessionsState() {
   } catch (e) { return null; }
   list = (Array.isArray(list) ? list : []).filter(s => s.status !== "ended");
   if (!list.length) return null;
-  const active = list.filter(s => s.status === "working" || s.status === "decision");
+  // stale working(브릿지 다운 의심)은 활동으로 치지 않는다 — decision은 유지
+  const active = list.filter(s => s.status === "decision" ||
+    (s.status === "working" && s.health !== "stale"));
   const now = Date.now();
   const iso = ms => new Date(ms).toISOString();
   const label = s => `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.title || s.project || s.session_key}`;
@@ -3079,7 +3068,7 @@ async function officeSubmitRun() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         workflow: $("#office-wf-select").value,
-        input: {task},
+        task,
       })});
     msg.textContent = `실행 시작: ${r.id || ""}`;
     $("#office-task-input").value = "";
@@ -3383,9 +3372,11 @@ async function jmSessionProvider() {
       id,
       name: `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.title || s.project || keyShort}`,
       _keyShort: keyShort,
+      // health=stale(5분+ 이벤트 없음)은 브릿지 다운 가능성 — working을 rest로 강등
       status: ended ? "rest"
             : s.status === "decision" ? "decision"
-            : s.status === "working" ? "working" : "rest",
+            : s.status === "working" ? (s.health === "stale" ? "rest" : "working")
+            : "rest",
       ask: ended ? "" : (s.ask || ""),
       doing,
       subs: [], subCount: 0, kid: false, home: null, commits: null, log: [],
@@ -3437,7 +3428,8 @@ async function officeUpdateSessionBadge() {
     if (hint) {
       const hidden = officeTab !== "sessions" || officeTool === "all" ? 0 : arr.filter(
         s => s.tool !== officeTool &&
-          (s.status === "working" || s.status === "decision")).length;
+          (s.status === "decision" ||
+           (s.status === "working" && s.health !== "stale"))).length;
       hint.hidden = hidden === 0;
       if (hidden) hint.textContent = `숨김 ${hidden}`;
     }
@@ -5214,7 +5206,8 @@ $("#inbox-list")?.addEventListener("click", async (e) => {
   if (!link) return;
   try {
     const u = new URL(link, location.origin);
-    const v = u.searchParams.get("view");
+    const v0 = u.searchParams.get("view");
+    const v = v0 ? (VIEW_ALIASES[v0] || v0) : null;
     if (v) {
       const nb = document.querySelector(`.nav-item[data-view="${v}"]`);
       if (nb) { nb.click(); return; }
@@ -5329,8 +5322,23 @@ $("#ask-form")?.addEventListener("submit", async (e) => {
 /* ── 리포트 (GET/POST /reports) ── */
 let _rptKind = "daily";
 
+const _RPT_SECTION_LABEL = {
+  runs: "실행", sessions: "세션", llm: "LLM 비용",
+  approvals: "승인", radar: "Radar", notable_failures: "주요 실패",
+};
+const _RPT_META_KEYS = new Set(["kind", "generated_at", "period"]);
+
 function _renderReportSections(r) {
-  const secs = (r && r.sections) || {};
+  // GET /reports 응답 = build_report() 결과 — sections 키 없이 최상위가 곧 섹션.
+  // content가 문자열(내러티브 리포트)이면 그대로 렌더한다.
+  if (r && typeof r.content === "string" && r.content.trim()) {
+    return `<div class="card-body" style="white-space:pre-wrap">${esc(r.content)}</div>`;
+  }
+  const body = (r && r.content && typeof r.content === "object") ? r.content : (r || {});
+  const secs = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (!_RPT_META_KEYS.has(k)) secs[k] = v;
+  }
   const keys = Object.keys(secs);
   if (!keys.length) return '<span class="empty">리포트 섹션이 없습니다</span>';
   return `<div class="rpt-sections">` + keys.map(k => {
@@ -5347,7 +5355,7 @@ function _renderReportSections(r) {
     } else {
       inner = `<div class="rpt-val">${esc(v ?? "-")}</div>`;
     }
-    return `<div class="rpt-sec"><h4>${esc(k)}</h4>${inner}</div>`;
+    return `<div class="rpt-sec"><h4>${esc(_RPT_SECTION_LABEL[k] || k)}</h4>${inner}</div>`;
   }).join("") + `</div>`;
 }
 
@@ -5676,6 +5684,7 @@ function archiveGo(link) {
     if (m) v = decodeURIComponent(m[1]);
   }
   if (!v) v = s.replace(/^[/?]+/, "").split(/[?#]/)[0];
+  v = VIEW_ALIASES[v] || v;
   const nav = document.querySelector(`.nav-item[data-view="${CSS.escape(v)}"]`);
   if (nav) { nav.click(); return; }
   if (/^(https?:)?\//.test(s)) location.href = s;
@@ -6817,7 +6826,7 @@ async function loadApprovals() {
     const d = await api("/approvals");
     const items = (d.items || [])
       .slice()
-      .sort((a, b) => (b.age_seconds || 0) - (a.age_seconds || 0));  // 오래된 순
+      .sort((a, b) => (a.age_seconds || 0) - (b.age_seconds || 0));  // 오래된 순
     if (!items.length) {
       el.innerHTML = '<div class="empty">대기 중인 승인이 없습니다</div>';
       return;
@@ -7355,6 +7364,25 @@ updateInboxBadge();
 updateAppBadge();
 setInterval(updateInboxBadge, 30000);
 setInterval(updateAppBadge, 30000);
+
+/* ── 부팅 — 스크립트 전체 평가 후 실행 (위쪽 let 선언들과의 TDZ 회피) ── */
+// /auth/me 가 resolve되면 role 반영 + 메뉴 재계산 (비동기 로드 대응)
+jmMe().then(me => {
+  _jmRole = jmNormalizeRole((me || {}).role);
+  _jmRoleRank = JM_ROLE_RANK[_jmRole];
+  applyRoleGating();
+});
+// 기본 활성 뷰 로드 (Agent-Office가 첫 메뉴)
+document.querySelector(".nav-item.active")?.click();
+// ?view=office 딥링크 — Web Push source_url 대응 (없는 뷰는 무시)
+(() => {
+  const raw = new URLSearchParams(location.search).get("view");
+  const v = raw ? (VIEW_ALIASES[raw] || raw) : null;
+  if (v) {
+    const b = document.querySelector(`.nav-item[data-view="${v}"]`);
+    if (b) b.click();
+  }
+})();
 </script>
 </body>
 </html>

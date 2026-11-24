@@ -603,6 +603,11 @@
       st.started = true;
       if (st.built) {
         if (!st.raf) st.raf = requestAnimationFrame(frame);
+        // stop()이 지운 폴링 타이머를 재등록 — 없으면 갱신이 멈춘다
+        if (!st.timers.length) {
+          st.timers.push(setInterval(load, POLL_MS));
+          st.timers.push(setInterval(() => { if (!document.hidden) OfficePanel.drip(); }, 450));
+        }
         load();
         return;
       }

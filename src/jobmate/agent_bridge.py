@@ -107,9 +107,13 @@ def _read_edges(path: Path, head_bytes: int, tail_bytes: int) -> tuple[bytes, by
         size = path.stat().st_size
         with path.open("rb") as f:
             head = f.read(min(head_bytes, size))
-            if size <= head_bytes + tail_bytes:
+            if size <= head_bytes:
                 return head, b""
-            f.seek(max(0, size - tail_bytes))
+            if size <= head_bytes + tail_bytes:
+                # 중간 크기 파일 — head 이후~EOF를 tail로 읽어 중간 구간 유실 방지
+                f.seek(head_bytes)
+                return head, f.read()
+            f.seek(size - tail_bytes)
             tail = f.read(tail_bytes)
             return head, tail
     except OSError as e:
@@ -435,11 +439,21 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
             if not title:
                 title = _codex_title_entry(e)
         if not project:
-            # 상위 디렉터리명(YYYY/MM/DD)보다 프로젝트명에 가까운 조상 사용
-            project = path.parent.parent.parent.name if len(path.parents) >= 4 else path.parent.name
+            # sessions/YYYY/MM/DD 구조 — 날짜 디렉터리를 건너뛰고
+            # 프로젝트명에 가까운 조상을 사용 (없으면 "")
+            for anc in path.parents:
+                n = anc.name
+                if not n or n.startswith(".") or n == "sessions":
+                    break
+                if re.fullmatch(r"\d{4}|\d{2}", n):
+                    continue
+                project = n
+                break
 
         # 마지막 의미 payload 기준 상태 판정
-        pending_calls: list[str] = []
+        # (name, call_id) — output은 call_id가 일치하는 call만 제거한다.
+        # call_id 없는 output은 가장 최근 call과 짝지어 제거 (FIFO 가정).
+        pending_calls: list[tuple[str, str]] = []
         doing = ""
         saw_task_complete = False
         last_signal = ""  # assistant | call | output | task_complete
@@ -462,13 +476,17 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
                 elif role == "user" and not title:
                     title = _clip(text, 60)
             elif ptype in ("function_call", "custom_tool_call", "local_shell_call"):
-                pending_calls.append(str(p.get("name") or "tool"))
+                pending_calls.append((str(p.get("name") or "tool"), str(p.get("call_id") or "")))
                 last_signal = "call"
             elif isinstance(ptype, str) and ptype.endswith("_output"):
-                pending_calls.clear()
+                cid = str(p.get("call_id") or "")
+                if cid:
+                    pending_calls = [c for c in pending_calls if c[1] != cid]
+                elif pending_calls:
+                    pending_calls.pop()
                 last_signal = "output"
 
-        pending_call = pending_calls[-1] if pending_calls else ""
+        pending_call = pending_calls[-1][0] if pending_calls else ""
         decision = bool(pending_call) and _is_decision_tool(pending_call) and last_signal == "call"
         if decision:
             status = "decision"
@@ -637,6 +655,7 @@ def scan_gemini(root: Path, now: float) -> list[SessionState]:
     실패하면 mtime 기반 working/rest + doing='gemini session'으로 degrade한다.
     """
     states: list[SessionState] = []
+    mtimes: dict[str, float] = {}  # session_key → db 파일 mtime (lock 병합용)
     if not root.is_dir():
         return states
     for path in sorted(root.glob("*.db")):
@@ -645,6 +664,7 @@ def scan_gemini(root: Path, now: float) -> list[SessionState]:
         mtime = _mtime(path)
         if not _alive(mtime, now):
             continue
+        mtimes[path.stem] = mtime
         doing = "gemini session"
         try:
             con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
@@ -691,6 +711,11 @@ def scan_gemini(root: Path, now: float) -> list[SessionState]:
                 continue
             existing = by_key.get(lock.stem)
             if existing is not None:
+                # lock이 db mtime보다 최신일 때만 끌어올린다 — 오래된 lock이
+                # working을 rest로 다운그레이드하는 것을 방지 (다른 스캐너와 동일 규칙)
+                if lm <= mtimes.get(lock.stem, 0.0):
+                    continue
+                mtimes[lock.stem] = lm
                 existing.status = _base_status(lm, now)
                 existing.event_at = _iso(lm)
             else:
@@ -810,10 +835,16 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
             if src == "agent":
                 calls = s.get("tool_calls")
                 observation = s.get("observation")
-                has_result = bool(observation)
+                # 빈 dict/list는 결과 없음과 동일하게 취급
+                has_result = observation is not None and observation not in ("", {}, [])
                 if isinstance(calls, list) and calls and not has_result:
-                    fn = calls[0].get("function_name") if isinstance(calls[0], dict) else None
-                    pending_tool = str(fn or "tool")
+                    # step에 tool call이 여러 개면 decision 도구가 먼저 와도 잡는다
+                    fns = [
+                        str(c.get("function_name") or "tool") for c in calls if isinstance(c, dict)
+                    ]
+                    pending_tool = next(
+                        (f for f in fns if _is_decision_tool(f)), fns[0] if fns else "tool"
+                    )
                 else:
                     pending_tool = ""
                 doing = _clip(msg, 80) or doing
@@ -1196,6 +1227,8 @@ class Bridge:
             self._last_push.pop(key, None)
 
         for key, state in current.items():
+            # 재등장한 세션은 ended 추적을 해제 — 다시 사라질 때 ended를 재전송해야 한다
+            self._ended_sent.discard(key)
             prev = self._last.get(key)
             last_t = self._last_push.get(key, 0.0)
             changed = (
