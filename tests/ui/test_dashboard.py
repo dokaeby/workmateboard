@@ -39,6 +39,38 @@ def ui_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SimpleNamesp
         gmail_poll_interval_seconds=3600,
     )
     store = Store(str(settings.db_path))
+    # 사이드바 메뉴 기본값은 hide — UI 테스트는 전 메뉴 표시 상태로 시드
+    store.set_state(
+        "prefs",
+        {
+            "sidebar_menu": {
+                v: True
+                for v in (
+                    "gmail",
+                    "calendar",
+                    "runs",
+                    "inbox",
+                    "projects",
+                    "sessionlog",
+                    "risks",
+                    "approvals",
+                    "perf",
+                    "insights",
+                    "automation",
+                    "system",
+                    "archive",
+                    "cost",
+                    "developer",
+                    "playbooks",
+                    "connectors",
+                    "triggers",
+                    "builder",
+                    "team",
+                    "audit",
+                )
+            }
+        },
+    )
     llm = FakeLLM()
 
     class _FakeCalendar:

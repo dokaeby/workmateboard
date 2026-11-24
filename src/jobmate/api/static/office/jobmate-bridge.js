@@ -4,7 +4,38 @@
 // office-view.js 의 load() 가 3초마다 이 함수를 호출한다.
 // doing/ask 는 평문 문자열 — I18N.act()/ask() 가 문자열을 그대로 통과시킨다.
 
-const _jmBridgeProvider = async () => ({ people: jmOfficePeople() });
+// 실제 에이전트 세션 → people — 데모 OFF + 실제 run 없음(live-sessions)일 때
+// 파이프라인 가짜 캐릭터 대신 Devin 등 실제 세션이 사무실에 서게 한다.
+async function jmLiveSessionPeople() {
+  let list;
+  try {
+    const d = await api("/agent-sessions?limit=50");
+    list = d.sessions || d.agent_sessions || (Array.isArray(d) ? d : []);
+  } catch (e) { return []; }
+  return (Array.isArray(list) ? list : [])
+    .filter(s => s && s.status !== "ended")
+    .map(s => ({
+      id: `${s.tool}:${s.session_key}`,
+      name: `${(typeof SESSION_TOOL_LABEL !== "undefined" && SESSION_TOOL_LABEL[s.tool]) || s.tool}` +
+            ` · ${s.title || s.project || String(s.session_key || "").split(":").pop().slice(0, 12)}`,
+      status: s.status === "working" ? "working"
+            : s.status === "decision" ? "decision" : "rest",
+      ask: s.ask || "",
+      doing: s.doing || "",
+      subs: [], subCount: 0, kid: false, home: null, commits: null,
+      project: s.project || "", log: [],
+    }));
+}
+
+const _jmBridgeProvider = async () => {
+  const run = (typeof officeState !== "undefined") && officeState.run;
+  // 합성 라이브 보드(live-sessions) = 실제 run 없음 → 세션 캐릭터로 대체
+  if (run && run.id === "live-sessions") {
+    const people = await jmLiveSessionPeople();
+    if (people.length) return { people };
+  }
+  return { people: jmOfficePeople() };
+};
 window.JM_OFFICE_PROVIDER = _jmBridgeProvider;
 window.JM_BRIDGE_PROVIDER = _jmBridgeProvider;   // 세션 provider가 덮어써도 워크플로 provider를 되찾을 수 있게
 

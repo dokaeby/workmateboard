@@ -2331,6 +2331,7 @@ def create_app(
             "notify_rules": p.get("notify_rules", []),
             "monthly_budget_usd": p.get("monthly_budget_usd"),
             "dashboard_widgets": p.get("dashboard_widgets", []),
+            "sidebar_menu": p.get("sidebar_menu", {}),
         }
 
     @app.post("/api/v1/settings")
@@ -2406,6 +2407,17 @@ def create_app(
                     }
                 )
             p["dashboard_widgets"] = cleaned_widgets
+        if "sidebar_menu" in body:
+            menu = body.get("sidebar_menu")
+            if not isinstance(menu, dict) or len(menu) > 50:
+                return err(422, "validation", "sidebar_menu must be an object", request)
+            cleaned_menu: dict[str, bool] = {}
+            for k, v in menu.items():
+                key = str(k)[:64]
+                if not key:
+                    continue
+                cleaned_menu[key] = bool(v)
+            p["sidebar_menu"] = cleaned_menu
         store.set_state(PREFS_KEY, p)
         cronjob = _sync_cronjob(settings, store, p)
         _audit_api(request, "settings_update", "prefs", {"keys": sorted(body.keys())})

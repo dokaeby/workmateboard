@@ -1909,6 +1909,11 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
         <span class="card-meta">알림 화면 카드 표시·순서</span></div>
       <div id="widget-list"></div>
     </div>
+    <div style="margin-top:14px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px">사이드바 메뉴
+        <span class="card-meta">Agent-Office·Skill Radar는 항상 표시</span></div>
+      <div id="sidebar-menu-list"></div>
+    </div>
     <details id="health-details" style="margin-top:14px">
       <summary>시스템 상태</summary>
       <div id="health-body" style="margin-top:8px">
@@ -2161,9 +2166,27 @@ function jmRoleAllows(min) {
   if (_jmRoleRank == null) return true;          // 아직 모름 → 일단 허용
   return _jmRoleRank >= (JM_ROLE_RANK[min] || 0);
 }
+/* 사이드바 메뉴 표시 설정 — Agent-Office·Skill Radar는 항상 표시.
+   prefs.sidebar_menu = {view: true|false}, 미설정 시 나머지는 전부 숨김. */
+const SIDEBAR_ALWAYS = new Set(["office", "radar"]);
+function sidebarMenuItems() {
+  return [...document.querySelectorAll(".nav-item[data-view]")]
+    .filter(b => !SIDEBAR_ALWAYS.has(b.dataset.view))
+    .map(b => ({view: b.dataset.view,
+                label: b.textContent.replace(/\s+/g, " ").trim()}));
+}
+function sidebarMenuPrefMap() {
+  const m = (_prefsCache && _prefsCache.sidebar_menu) || {};
+  const out = {};
+  sidebarMenuItems().forEach(it => { out[it.view] = m[it.view] === true; });
+  return out;
+}
 function applyRoleGating() {
-  document.querySelectorAll(".nav-item[data-min-role]").forEach(b => {
-    b.hidden = !jmRoleAllows(b.dataset.minRole);
+  const menu = sidebarMenuPrefMap();
+  document.querySelectorAll(".nav-item[data-view]").forEach(b => {
+    const roleOk = !b.dataset.minRole || jmRoleAllows(b.dataset.minRole);
+    const menuOk = SIDEBAR_ALWAYS.has(b.dataset.view) || menu[b.dataset.view];
+    b.hidden = !(roleOk && menuOk);
   });
 }
 // /auth/me 가 resolve되면 role 반영 + 메뉴 재계산 (비동기 로드 대응)
@@ -4940,6 +4963,8 @@ $("#settings-open").addEventListener("click", async () => {
     _prefsCache = s;
     _widgetDraft = _normalizeWidgets(s);
     _renderWidgetList();
+    _renderSidebarMenuList();
+    applyRoleGating();
     $("#settings-status").textContent = "";
   } catch (e) { $("#settings-status").textContent = e.message; }
   dlg.showModal();
@@ -4972,14 +4997,16 @@ $("#settings-save").addEventListener("click", async () => {
     notify_rules: _collectNotifyRules(),
     monthly_budget_usd: mb === "" ? null : Number(mb),
     dashboard_widgets: _collectWidgetDraft(),
+    sidebar_menu: _collectSidebarMenu(),
   };
   try {
     const res = await api("/settings", {method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload)});
-    _prefsCache = res && typeof res === "object" ? res : payload;
+    _prefsCache = (res && res.prefs) || payload;
     st.textContent = "저장했습니다";
     applyDashboardWidgets();
+    applyRoleGating();
   } catch (e) {
     // 신규 키(monthly_budget_usd/dashboard_widgets)가 권한 부족으로 거부되면
     // 기존 키만으로 재시도 — 기존 설정 저장이 깨지지 않게 한다
@@ -5012,12 +5039,42 @@ const DASH_WIDGETS = [
 let _prefsCache = null;
 let _widgetDraft = [];
 
+// 사이드바 메뉴 show/hide — Agent-Office·Skill Radar 제외, 기본 hide
+function _renderSidebarMenuList() {
+  const box = $("#sidebar-menu-list");
+  if (!box) return;
+  const pref = sidebarMenuPrefMap();
+  box.innerHTML = sidebarMenuItems().map(it => {
+    const on = pref[it.view];
+    return `<div class="sm-row" style="display:flex;align-items:center;` +
+      `justify-content:space-between;gap:8px;padding:5px 0;` +
+      `border-bottom:1px solid var(--border)">` +
+      `<span style="font-size:13px">${esc(it.label)}</span>` +
+      `<span style="display:inline-flex;gap:10px;font-size:12px">` +
+      `<label><input type="radio" name="sm-${it.view}" value="show"` +
+      `${on ? " checked" : ""}>표시</label>` +
+      `<label><input type="radio" name="sm-${it.view}" value="hide"` +
+      `${on ? "" : " checked"}>숨김</label></span></div>`;
+  }).join("");
+}
+
+function _collectSidebarMenu() {
+  const out = {};
+  sidebarMenuItems().forEach(it => {
+    const r = document.querySelector(`input[name="sm-${it.view}"]:checked`);
+    out[it.view] = r ? r.value === "show" : false;
+  });
+  return out;
+}
+
 async function getPrefs() {
   if (_prefsCache) return _prefsCache;
   try { _prefsCache = await api("/settings"); }
   catch (e) { _prefsCache = {}; }
   return _prefsCache;
 }
+// 시작 시 prefs 로드 후 사이드바 표시 여부 적용 (미설정=기본 hide)
+getPrefs().then(() => applyRoleGating());
 
 // prefs.dashboard_widgets → [{id,visible,order}] 정규화 (누락 id는 기본 표시)
 function _normalizeWidgets(prefs) {
