@@ -66,13 +66,16 @@ register_tool_schema(
 )
 register_tool_schema(
     "run_tests",
-    "Run a shell test command inside the repository and return exit code + output.",
+    "Run a test/lint/typecheck command inside the repository and return exit code + output.",
     {
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "test command (default: pytest -q)",
+                "description": (
+                    "Allowed prefixes only: pytest, ruff, mypy, "
+                    "python -m pytest|ruff|mypy (default: pytest -q)"
+                ),
             }
         },
     },

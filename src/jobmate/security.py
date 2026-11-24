@@ -85,9 +85,9 @@ def api_key() -> str:
 def authorized(request: Any) -> bool:
     """Authorization: Bearer <key>, X-API-Key 헤더, 또는 ?api_key=/?token= 쿼리 검증.
 
-    쿼리 파라미터 폴백은 EventSource 등 커스텀 헤더를 설정할 수 없는
-    클라이언트용이다. 접근 로그는 쿼리스트링을 기록하지 않으므로 키가
-    로그에 남지 않는다."""
+    쿼리 파라미터 폴백은 EventSource용 /api/v1/stream에만 적용된다 —
+    쿼리스트링의 키는 브라우저 히스토리/프록시 로그/Referer로 유출될 수 있다.
+    접근 로그는 쿼리스트링을 기록하지 않으므로 키가 로그에 남지 않는다."""
     key = api_key()
     if not key:
         return not os.environ.get("VERCEL") and not allowed_emails()
@@ -96,13 +96,17 @@ def authorized(request: Any) -> bool:
     if auth.lower().startswith("bearer "):
         provided = auth[7:].strip() or provided
     if not provided:
-        # EventSource/fetch 폴백 — Starlette QueryParams 또는 dict 유사 객체
-        qp = getattr(request, "query_params", None)
-        if qp is not None:
-            try:
-                provided = str(qp.get("api_key") or qp.get("token") or "")
-            except Exception:
-                provided = ""
+        # EventSource/fetch 폴백 — /api/v1/stream 전용. 쿼리스트링의 키는
+        # 브라우저 히스토리/프록시 로그/Referer로 유출될 수 있으므로
+        # 다른 엔드포인트에서는 받지 않는다.
+        path = str(getattr(getattr(request, "url", None), "path", "") or "")
+        if path.rstrip("/") == "/api/v1/stream":
+            qp = getattr(request, "query_params", None)
+            if qp is not None:
+                try:
+                    provided = str(qp.get("api_key") or qp.get("token") or "")
+                except Exception:
+                    provided = ""
     return hmac.compare_digest(provided.encode(), key.encode())
 
 

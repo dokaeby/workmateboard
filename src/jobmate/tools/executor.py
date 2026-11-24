@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("jobmate.tools")
+
+# run_tests는 LLM이 인자를 제어한다 — 임의 명령 실행을 막기 위해
+# 테스트/린트/타입검사 명령만 허용한다(셸 메타문자 없이 split() 실행되지만
+# `bash -c` 같은 인터프리터 재진입과 `&&`/`|` 연결을 차단해야 한다).
+_ALLOWED_TEST_COMMAND = re.compile(r"^(?:pytest|ruff|mypy|python\s+-m\s+(?:pytest|ruff|mypy))\b")
+_SHELL_METACHARS = re.compile(r"[&|;<>`$()\n]")
 
 
 class ToolDeniedError(Exception):
@@ -56,8 +63,14 @@ class ToolExecutor:
                 return f.read(ToolExecutor.MAX_RESULT_CHARS)
 
         def run_tests(command: str = "pytest -q") -> dict[str, Any]:
+            normalized = " ".join(str(command).split())
+            if not _ALLOWED_TEST_COMMAND.match(normalized) or _SHELL_METACHARS.search(normalized):
+                logger.warning("run_tests denied command: %s", normalized[:80])
+                raise ToolDeniedError(
+                    "command not allowed — only pytest/ruff/mypy commands are permitted"
+                )
             proc = subprocess.run(  # noqa: S603
-                command.split(),
+                normalized.split(),
                 cwd=root,
                 capture_output=True,
                 text=True,

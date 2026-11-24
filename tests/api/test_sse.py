@@ -95,3 +95,14 @@ def test_stream_requires_auth_when_api_key_set(monkeypatch):
         assert r.headers["content-type"].startswith("text/event-stream")
     # 잘못된 키는 여전히 401
     assert client.get("/api/v1/stream?api_key=wrong").status_code == 401
+
+
+def test_query_api_key_rejected_on_other_endpoints(monkeypatch):
+    """?api_key= 폴백은 /api/v1/stream에만 허용 — 다른 엔드포인트는 401."""
+    monkeypatch.setenv("JOBMATE_API_KEY", "stream-secret")
+    client, _ = _client()
+    # stream 외 엔드포인트에서 쿼리 키는 인증되지 않아야 한다
+    assert client.get("/api/v1/runs?api_key=stream-secret").status_code == 401
+    assert client.get("/api/v1/insights?api_key=stream-secret").status_code == 401
+    # 헤더 인증은 여전히 정상 동작
+    assert client.get("/api/v1/runs", headers={"X-API-Key": "stream-secret"}).status_code == 200
