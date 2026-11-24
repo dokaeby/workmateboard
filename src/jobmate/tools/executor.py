@@ -21,9 +21,26 @@ class ToolExecutor:
     MAX_RESULT_CHARS = 20_000
 
     def __init__(
-        self, tools: dict[str, Callable[..., Any]] | None = None, repo_root: str | None = None
+        self,
+        tools: dict[str, Callable[..., Any]] | None = None,
+        repo_root: str | None = None,
+        extra_tools: dict[str, Callable[..., Any]] | None = None,
     ) -> None:
-        self._tools = tools or self._default_tools(repo_root)
+        # 기본/명시 도구가 extra_tools보다 우선 — 외부 주입이 내장 도구를 덮어쓰지 못한다.
+        base = tools or self._default_tools(repo_root)
+        merged = dict(extra_tools or {})
+        merged.update(base)
+        self._tools = merged
+
+    def openai_schemas_for(self, allowed: list[str]) -> list[dict[str, Any]]:
+        """에이전트 allowlist와 교집합인 등록 스키마만 OpenAI tools 형식으로 반환.
+
+        스키마가 등록되지 않은 도구는 LLM에 노출되지 않는다.
+        """
+        from .schemas import openai_tools
+
+        wanted = set(allowed)
+        return [spec for spec in openai_tools() if spec.get("function", {}).get("name") in wanted]
 
     @staticmethod
     def _default_tools(repo_root: str | None) -> dict[str, Callable[..., Any]]:

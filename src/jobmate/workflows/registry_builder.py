@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
+from typing import Any
 
 from ..config import Settings
 from ..engine.registry import Registry, default_agents
@@ -73,6 +75,43 @@ def build_registry(settings: Settings) -> Registry:
     return reg
 
 
+def _mcp_extra_tools() -> dict[str, Callable[..., Any]]:
+    """JOBMATE_MCP_* env로 설정된 외부 MCP 서버의 도구를 ToolExecutor용으로 수집한다.
+
+    도구명은 ``mcp_<server>_<tool>``로 프리픽스되고 schemas.py에 등록된다.
+    설정이 없거나 MCP 연결에 실패하면 빈 dict — 파이프라인을 중단시키지 않는다.
+    """
+    try:
+        from ..mcp.client import load_server_configs, mcp_tool_entries
+
+        if not load_server_configs():
+            return {}
+        entries = mcp_tool_entries()
+    except Exception as e:  # noqa: BLE001 - MCP 브리지는 선택 기능
+        logger.warning("mcp tools unavailable: %s", e)
+        return {}
+    tools: dict[str, Callable[..., Any]] = {}
+    for entry in entries:
+        call = entry["call"]
+
+        def _wrap(c: Callable[[dict[str, Any]], str]) -> Callable[..., Any]:
+            # ToolExecutor는 fn(**kwargs)로 호출 — MCP call은 args dict를 받는다.
+            def fn(**kwargs: Any) -> str:
+                return c(kwargs)
+
+            return fn
+
+        tools[entry["name"]] = _wrap(call)
+    return tools
+
+
+def _build_tool_executor() -> Any:
+    from ..tools.executor import ToolExecutor
+
+    # extra_tools는 builtin과 병합되며 builtin 이름을 덮어쓸 수 없다.
+    return ToolExecutor(repo_root=".", extra_tools=_mcp_extra_tools())
+
+
 def build_runner(
     workflow_key: str,
     *,
@@ -82,17 +121,16 @@ def build_runner(
     tools: object | None = None,
     adapters: dict | None = None,
 ) -> WorkflowRunner:
-    from ..tools.executor import ToolExecutor
-
     reg = build_registry(settings)
     spec = reg.workflow(workflow_key)
     cp = build_checkpointer_for(settings)
+    executor = tools or _build_tool_executor()
     return WorkflowRunner(
         spec=spec,
         registry=reg,
         store=store,
         llm=llm,
-        tools=tools or ToolExecutor(repo_root="."),
+        tools=executor,
         settings=settings,
         checkpointer=cp,
         adapters=adapters or {},

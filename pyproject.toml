@@ -17,6 +17,7 @@ dependencies = [
     "langsmith>=0.15",
     "python-dotenv>=1.0",
     "langgraph-checkpoint-postgres>=3.2.1",
+    "mcp>=1.8,<2",
 ]
 
 [project.scripts]

@@ -50,3 +50,6 @@ logs/
 
 # LangGraph sqlite 체크포인트 부산물
 *.db.checkpoints*
+
+# eval 리포트 산출물
+evals/report_*.json

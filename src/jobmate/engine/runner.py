@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -24,7 +25,9 @@ from ..models import (
 )
 from ..sensors import downgrade_approve, filter_findings
 from ..store.db import Store
+from ..tools.executor import ToolDeniedError
 from .functions import FUNCTIONS, FunctionContext
+from .guards import detect_injection, wrap_untrusted
 from .schemas import SCHEMAS
 from .state import HarnessState, initial_state
 
@@ -39,6 +42,13 @@ ESCALATE_FAILED = "failed"
 
 # 리뷰성 단계(회귀 시 review_rounds 증가)
 REVIEW_DECISION_STAGES = {"security", "code_review", "qa"}
+
+# LLM function-calling 루프 상한 (단계당 tool-call 라운드 수)
+_MAX_TOOL_ROUNDS = 5
+# tool 결과를 프롬프트에 되돌릴 때의 최대 길이 (ToolExecutor.MAX_RESULT_CHARS와 동일)
+_MAX_TOOL_RESULT_CHARS = 20_000
+# stage output 렌더링 시 외부 데이터로 간주하는 dict 키 (소문자 비교)
+_EXTERNAL_OUTPUT_KEYS = {"body", "readme", "description", "text", "message", "snippet"}
 
 
 class WorkflowRunner:
@@ -178,8 +188,8 @@ class WorkflowRunner:
         try:
             schema = SCHEMAS.get(agent.output_schema)
             user = self._build_user_prompt(state, stage, agent)
-            out, usage = self.llm.complete(
-                model=agent.model, system=prompt_text, user=user, schema=schema
+            out, usage, tool_execs = self._complete_stage_llm(
+                agent, schema, prompt_text, user, state, stage
             )
             parsed = (
                 out
@@ -207,6 +217,8 @@ class WorkflowRunner:
                 "tokens_in": state.get("tokens_in", 0) + usage.get("tokens_in", 0),
                 "tokens_out": state.get("tokens_out", 0) + usage.get("tokens_out", 0),
             }
+            if tool_execs:
+                update["tool_calls"] = state.get("tool_calls", 0) + tool_execs
             if stage.key == "implement":
                 update["implement_rounds"] = state.get("implement_rounds", 0) + 1
             if stage.key in REVIEW_DECISION_STAGES and parsed.get("decision") == "request_changes":
@@ -309,11 +321,62 @@ class WorkflowRunner:
         return {"stage_outputs": {stage.key: out}, "approval": out}
 
     # ---------- helpers ----------
+    def _untrusted_block(
+        self, state: HarnessState, stage_key: str, source: str, text: Any, limit: int = 8000
+    ) -> str:
+        """외부 입력을 untrusted 블록으로 감싸고, 인젝션 탐지 시 audit (원문 금지)."""
+        body = str(text)[:limit]
+        hits = detect_injection(body)
+        if hits:
+            self.store.audit(
+                state["run_id"],
+                "system",
+                "injection_detected",
+                stage_key,
+                {"source": source, "patterns": hits},
+            )
+        return wrap_untrusted(source, body)
+
+    def _render_output_node(
+        self,
+        state: HarnessState,
+        stage_key: str,
+        node: Any,
+        path: str,
+        lines: list[str],
+    ) -> None:
+        """stage output을 사람이 읽기 쉬운 `path: value` 라인으로 렌더링.
+
+        body/readme/description/text/message/snippet 키의 문자열 값은
+        외부 데이터로 보고 untrusted 블록으로 감싼다. LLM이 생성한
+        verdict/decision 필드는 키가 달라 영향받지 않는다.
+        """
+        if isinstance(node, dict):
+            for k, v in node.items():
+                p = f"{path}.{k}"
+                if isinstance(v, str) and k.lower() in _EXTERNAL_OUTPUT_KEYS:
+                    lines.append(f"{p}:")
+                    lines.append(self._untrusted_block(state, stage_key, p, v, limit=4000))
+                else:
+                    self._render_output_node(state, stage_key, v, p, lines)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                self._render_output_node(state, stage_key, item, f"{path}[{i}]", lines)
+        else:
+            lines.append(f"{path}: {_jsonish(node)[:2000]}")
+
+    def _stage_output_text(
+        self, state: HarnessState, stage_key: str, out_key: str, out: Any
+    ) -> str:
+        lines: list[str] = []
+        self._render_output_node(state, stage_key, out, out_key, lines)
+        return ("\n".join(lines) or "(empty)")[:8000]
+
     def _build_user_prompt(self, state: HarnessState, stage: StageSpec, agent: AgentSpec) -> str:
         outputs = state.get("stage_outputs", {})
         run = self.store.get_run(state["run_id"])
         task = (run.input if run else {}).get("task", "")
-        parts = [f"# Task\n{task}"]
+        parts = ["# Task\n" + self._untrusted_block(state, stage.key, "run_task", task, limit=4000)]
         if agent.role == "implementer":
             feedback = [
                 {"from": k, "output": o}
@@ -324,12 +387,154 @@ class WorkflowRunner:
                 parts.append("# Feedback from review (address these)\n" + _jsonish(feedback))
         for k, o in outputs.items():
             if k != stage.key and "__retry__" not in o:
-                parts.append(f"# Output of {k}\n{_jsonish(o)[:8000]}")
+                parts.append(f"# Output of {k}\n" + self._stage_output_text(state, stage.key, k, o))
         if state.get("gmail_message_id"):
             parts.append(f"# gmail_message_id\n{state['gmail_message_id']}")
         if state.get("message_text"):
-            parts.append(f"# Message (untrusted data)\n{state['message_text'][:8000]}")
+            parts.append(
+                "# External message\n"
+                + self._untrusted_block(
+                    state, stage.key, "message_text", state["message_text"], limit=8000
+                )
+            )
         return "\n\n".join(parts)
+
+    # ---------- native tool calling ----------
+    def _tool_specs(self, agent: AgentSpec) -> list[dict[str, Any]]:
+        """에이전트 allowlist ∩ 등록 스키마. executor 미지원/실패 시 빈 목록."""
+        fn = getattr(self.tools, "openai_schemas_for", None)
+        if not callable(fn):
+            return []
+        try:
+            return list(fn(agent.tools) or [])
+        except Exception as e:
+            logger.warning("tool schema resolution failed agent=%s: %s", agent.key, str(e)[:200])
+            return []
+
+    def _complete_stage_llm(
+        self,
+        agent: AgentSpec,
+        schema: type | None,
+        system: str,
+        user: str,
+        state: HarnessState,
+        stage: StageSpec,
+    ) -> tuple[Any, dict[str, int], int]:
+        """LLM 호출 + (agent.tools가 있으면) tool-call 루프.
+
+        반환: (output, 누적 usage, 실행한 tool call 수).
+        tools가 없는 에이전트는 기존과 동일하게 complete() 1회만 호출한다.
+        """
+        if not agent.tools:
+            out, usage = self.llm.complete(
+                model=agent.model, system=system, user=user, schema=schema
+            )
+            return out, usage, 0
+        return self._tool_loop(agent, schema, system, user, state, stage)
+
+    def _tool_loop(
+        self,
+        agent: AgentSpec,
+        schema: type | None,
+        system: str,
+        user: str,
+        state: HarnessState,
+        stage: StageSpec,
+    ) -> tuple[Any, dict[str, int], int]:
+        run_id = state["run_id"]
+        tool_specs = self._tool_specs(agent)
+        usage_acc = {"tokens_in": 0, "tokens_out": 0}
+        executed = 0
+        convo = user
+        out: Any = None
+        for _round in range(_MAX_TOOL_ROUNDS):
+            kwargs: dict[str, Any] = {}
+            if tool_specs:
+                kwargs["tools"] = tool_specs
+                kwargs["tool_choice"] = "auto"
+            out, usage = self.llm.complete(
+                model=agent.model, system=system, user=convo, schema=schema, **kwargs
+            )
+            usage_acc["tokens_in"] += usage.get("tokens_in", 0)
+            usage_acc["tokens_out"] += usage.get("tokens_out", 0)
+            calls = _extract_tool_calls(out)
+            if not calls:
+                return out, usage_acc, executed
+            results: list[str] = []
+            for call in calls:
+                payload, did_exec = self._execute_tool_call(
+                    run_id, agent, stage, state, executed, call["name"], call["args"]
+                )
+                executed += int(did_exec)
+                results.append(f"## {call['name']}\n{payload}")
+            convo = user + "\n\n# Tool results\n" + "\n\n".join(results)
+        # 라운드 상한 도달 — tool 없이 최종 답변을 강제한다.
+        out, usage = self.llm.complete(
+            model=agent.model,
+            system=system,
+            user=(
+                convo + "\n\n# Notice\nTool-call round limit reached. "
+                "Provide the final answer now using the gathered results."
+            ),
+            schema=schema,
+        )
+        usage_acc["tokens_in"] += usage.get("tokens_in", 0)
+        usage_acc["tokens_out"] += usage.get("tokens_out", 0)
+        return out, usage_acc, executed
+
+    def _execute_tool_call(
+        self,
+        run_id: str,
+        agent: AgentSpec,
+        stage: StageSpec,
+        state: HarnessState,
+        executed: int,
+        name: str,
+        args: dict[str, Any],
+    ) -> tuple[str, bool]:
+        """tool 1회 실행. 반환: (모델에 돌려줄 문자열, 실제 실행 여부).
+
+        allowlist 위반/알 수 없는 도구/실행 오류는 예외를 올리지 않고
+        ERROR 문자열로 모델에 돌려보내 복구 가능하게 한다.
+        audit에는 도구 이름과 인자 키만 남기고 인자 원문은 남기지 않는다
+        (시크릿 포함 가능성).
+        """
+        if state.get("tool_calls", 0) + executed >= self.settings.budget_max_tool_calls:
+            return "ERROR: tool call budget exhausted", False
+        self.store.audit(
+            run_id,
+            f"agent:{agent.role}",
+            "tool_call",
+            stage.key,
+            {"tool": name, "arg_keys": sorted(args.keys())},
+        )
+        try:
+            res = self.tools.call(name, agent.tools, **args)
+            payload = (
+                res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, default=str)
+            )
+        except ToolDeniedError as e:
+            # allowlist 위반/미등록 도구 — 실행되지 않았으므로 카운터 미포함
+            logger.warning(
+                "run %s stage %s tool=%s agent=%s denied: %s",
+                run_id,
+                stage.key,
+                name,
+                agent.role,
+                str(e)[:200],
+            )
+            return f"ERROR: {e}", False
+        except Exception as e:
+            logger.warning(
+                "run %s stage %s tool=%s agent=%s error: %s",
+                run_id,
+                stage.key,
+                name,
+                agent.role,
+                str(e)[:200],
+            )
+            payload = f"ERROR: {e}"
+        return payload[:_MAX_TOOL_RESULT_CHARS], True
 
     def _apply_sensors(self, role: str, parsed: dict[str, Any]) -> dict[str, Any]:
         if role in ("reviewer", "security") and "decision" in parsed:
@@ -419,12 +624,44 @@ class WorkflowRunner:
 
 
 def _jsonish(obj: Any) -> str:
-    import json
-
     try:
         return json.dumps(obj, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         return str(obj)
+
+
+def _extract_tool_calls(out: Any) -> list[dict[str, Any]]:
+    """LLM 출력에서 tool_calls를 추출·정규화한다.
+
+    허용 형태: {"tool_calls": [{"id","name","arguments"}]} — arguments는
+    JSON 문자열 또는 dict. OpenAI 중첩 function 형태도 허용한다.
+    """
+    if not isinstance(out, dict):
+        return []
+    raw = out.get("tool_calls")
+    if not isinstance(raw, list):
+        return []
+    calls: list[dict[str, Any]] = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        fn_raw = c.get("function")
+        fn: dict[str, Any] = fn_raw if isinstance(fn_raw, dict) else {}
+        name = c.get("name") or fn.get("name")
+        if not name:
+            continue
+        args: Any = c.get("arguments", fn.get("arguments", {}))
+        if args is None:
+            args = {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {"_raw": args[:1000]}
+        if not isinstance(args, dict):
+            args = {"_value": args}
+        calls.append({"name": str(name), "args": args})
+    return calls
 
 
 def _checks_summary(checks_out: dict[str, Any]) -> str:

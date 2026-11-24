@@ -127,7 +127,14 @@ class CodexResponsesLLM:
         self._backoff = backoff
 
     def complete(
-        self, *, model: ModelConfig, system: str, user: str, schema: type[T] | None = None
+        self,
+        *,
+        model: ModelConfig,
+        system: str,
+        user: str,
+        schema: type[T] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> tuple[Any, dict[str, int]]:
         payload: dict[str, Any] = {
             "model": model.model,
@@ -143,11 +150,36 @@ class CodexResponsesLLM:
             "stream": True,
             "max_output_tokens": model.max_tokens,
         }
+        if tools:
+            # Responses API는 chat/completions와 달리 function 스키마가 최상위 평탄화된다.
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "name": t.get("function", {}).get("name", ""),
+                    "description": t.get("function", {}).get("description", ""),
+                    "parameters": t.get("function", {}).get("parameters", {}),
+                }
+                for t in tools
+            ]
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
         url = f"{model.base_url.rstrip('/')}/responses"
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
-                text, usage = self._stream(url, payload, model)
+                text, usage, calls = self._stream(url, payload, model)
+                if calls:
+                    return {
+                        "tool_calls": [
+                            {
+                                "id": c.get("id", ""),
+                                "name": c.get("name", ""),
+                                "arguments": c.get("arguments", {}),
+                            }
+                            for c in calls
+                        ],
+                        "content": text or None,
+                    }, usage
                 if schema is not None:
                     return schema.model_validate(extract_json(text)), usage
                 try:
@@ -177,8 +209,10 @@ class CodexResponsesLLM:
 
     def _stream(
         self, url: str, payload: dict[str, Any], model: ModelConfig
-    ) -> tuple[str, dict[str, int]]:
+    ) -> tuple[str, dict[str, int], list[dict[str, Any]]]:
+        """SSE 스트림 수집. 반환: (text, usage, function_calls)."""
         parts: list[str] = []
+        calls: list[dict[str, Any]] = []
         usage = {"tokens_in": 0, "tokens_out": 0}
         with httpx.Client(timeout=model.timeout_seconds) as client:
             with client.stream("POST", url, headers=self._auth.headers(), json=payload) as resp:
@@ -196,6 +230,16 @@ class CodexResponsesLLM:
                     etype = ev.get("type", "")
                     if etype == "response.output_text.delta":
                         parts.append(ev.get("delta", ""))
+                    elif etype == "response.output_item.done":
+                        item = ev.get("item") or {}
+                        if item.get("type") == "function_call":
+                            calls.append(
+                                {
+                                    "id": item.get("call_id") or item.get("id") or "",
+                                    "name": item.get("name", ""),
+                                    "arguments": item.get("arguments", {}),
+                                }
+                            )
                     elif etype == "response.completed":
                         u = (ev.get("response") or {}).get("usage") or {}
                         usage = {
@@ -204,7 +248,7 @@ class CodexResponsesLLM:
                         }
                     elif etype in ("response.failed", "error"):
                         raise LLMError(f"codex stream error: {json.dumps(ev)[:300]}")
-        return "".join(parts), usage
+        return "".join(parts), usage, calls
 
 
 class CompositeLLM:
@@ -233,12 +277,40 @@ class CompositeLLM:
         return traceable(name="jobmate.llm.complete", run_type="llm")(self._complete)
 
     def complete(
-        self, *, model: ModelConfig, system: str, user: str, schema: type[T] | None = None
+        self,
+        *,
+        model: ModelConfig,
+        system: str,
+        user: str,
+        schema: type[T] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> tuple[Any, dict[str, int]]:
-        return self._impl(model=model, system=system, user=user, schema=schema)
+        return self._impl(
+            model=model,
+            system=system,
+            user=user,
+            schema=schema,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
 
     def _complete(
-        self, *, model: ModelConfig, system: str, user: str, schema: type[T] | None = None
+        self,
+        *,
+        model: ModelConfig,
+        system: str,
+        user: str,
+        schema: type[T] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> tuple[Any, dict[str, int]]:
         client = self._codex if model.provider == "codex" else self._compat
-        return client.complete(model=model, system=system, user=user, schema=schema)
+        return client.complete(
+            model=model,
+            system=system,
+            user=user,
+            schema=schema,
+            tools=tools,
+            tool_choice=tool_choice,
+        )

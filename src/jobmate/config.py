@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import ModelConfig
@@ -65,6 +65,33 @@ class Settings(BaseSettings):
     langsmith_tracing: bool = True
     langsmith_api_key_env: str = "LANGSMITH_API_KEY"
     langsmith_project: str = "jobmate"
+
+    # Google OAuth 로그인(웹) — 비어 있으면 /api/v1/auth/google 비활성.
+    # env: GOOGLE_OAUTH_* 우선, 레거시 GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI도 인식
+    # (실제 인증 경로는 app.py가 os.environ을 직접 읽는다 — 테스트 monkeypatch 호환).
+    google_oauth_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "GOOGLE_OAUTH_CLIENT_ID", "JOBMATE_GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_CLIENT_ID"
+        ),
+    )
+    google_oauth_client_secret: str = Field(
+        default="",
+        repr=False,  # 비밀값 — 로그/repr 노출 방지
+        validation_alias=AliasChoices(
+            "GOOGLE_OAUTH_CLIENT_SECRET",
+            "JOBMATE_GOOGLE_OAUTH_CLIENT_SECRET",
+            "GOOGLE_CLIENT_SECRET",
+        ),
+    )
+    google_oauth_redirect_uri: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "GOOGLE_OAUTH_REDIRECT_URI",
+            "JOBMATE_GOOGLE_OAUTH_REDIRECT_URI",
+            "GOOGLE_REDIRECT_URI",
+        ),
+    )
 
     # cron-job.org — 대시보드 설정을 실제 cron 스케줄에 반영
     cronjob_api_key_env: str = "CRONJOB_ORG_API_KEY"

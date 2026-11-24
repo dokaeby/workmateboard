@@ -7053,6 +7053,39 @@ $("#push-toggle").addEventListener("click", async () => {
 
 refreshPushState();
 VIEWS.radar();
+
+/* ── SSE 실시간 스트림 (/api/v1/stream) ──
+   run/stage/session 이벤트가 오면 기존 갱신 함수를 디바운스 호출한다.
+   EventSource는 헤더를 못 쓰므로 localStorage API 키는 ?api_key= 로 전달
+   (세션 쿠키 사용자는 그대로 동작). 연결 실패 시 EventSource가 자동
+   재연결하고, 아래 setInterval 폴링이 폴백으로 계속 동작한다. */
+let _sse = null, _sseKickTimer = 0;
+function _sseKick() {
+  clearTimeout(_sseKickTimer);
+  _sseKickTimer = setTimeout(() => {
+    refreshRuns();
+    updateInboxBadge();
+    const vis = (id) => { const el = document.getElementById(id); return el && !el.hidden; };
+    if (vis("view-office")) {
+      loadOffice();
+      // 스프라이트 사무실 — start()는 이미 빌드됐으면 provider load() 1회 유발
+      if (officeMode === "sprites" && window.JMOffice2D) JMOffice2D.start();
+    }
+    if (vis("view-approvals") && typeof loadApprovals === "function") loadApprovals();
+    if (vis("view-sessionlog") && typeof loadSessionlog === "function") loadSessionlog();
+  }, 300);
+}
+try {
+  const _sseKey = localStorage.getItem("jobmate_api_key") || "";
+  _sse = new EventSource(API + "/stream" +
+    (_sseKey ? "?api_key=" + encodeURIComponent(_sseKey) : ""));
+  for (const _ev of ["run", "stage", "session"]) {
+    _sse.addEventListener(_ev, _sseKick);
+  }
+  // snapshot/heartbeat는 무시 — 초기 로드와 폴링 폴백이 담당
+  _sse.onerror = () => { /* EventSource 자동 재연결 — 폴링 폴백 유지 */ };
+} catch (e) { _sse = null; }
+
 setInterval(() => { if (!document.getElementById("view-gmail").hidden) loadGmail(); }, 10000);
 setInterval(() => { if (!document.getElementById("view-office").hidden) loadOffice(); }, 3000);
 setInterval(refreshRuns, 5000);

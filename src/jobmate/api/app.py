@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -22,7 +23,14 @@ from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -1022,6 +1030,118 @@ def create_app(
         if d is None:
             return err(404, "not_found", "run not found", request)
         return JSONResponse(content=d)
+
+    # ---- SSE 실시간 이벤트 스트림 (/api/v1/stream) ----
+    # 인증은 /api/* 미들웨어와 동일 — EventSource는 헤더를 못 쓰므로
+    # 세션 쿠키(동일 출처) 또는 ?api_key=/?token= 쿼리 폴백(security.authorized).
+    _SSE_MAX_CONNECTIONS = 20
+    _SSE_POLL_SECONDS = 1.5
+    _SSE_HEARTBEAT_LOOPS = 10  # ~15초마다 주석 하트비트
+    _sse = {"count": 0}
+    _sse_lock = threading.Lock()
+
+    def _sse_snapshot() -> dict[str, Any]:
+        return {
+            "runs": [
+                {
+                    "id": r.id,
+                    "workflow": r.workflow_key,
+                    "status": r.status.value,
+                    "project": r.project,
+                    "created_at": r.created_at.isoformat(),
+                    "updated_at": r.updated_at.isoformat(),
+                }
+                for r in store.list_runs(30)
+            ]
+        }
+
+    @app.get("/api/v1/stream")
+    async def event_stream(request: Request) -> Any:
+        with _sse_lock:
+            if _sse["count"] >= _SSE_MAX_CONNECTIONS:
+                return err(503, "too_many_streams", "SSE 연결 수 제한을 초과했습니다", request)
+            _sse["count"] += 1
+        seq = 0
+
+        async def gen() -> AsyncIterator[str]:
+            nonlocal seq
+            # 테이블별 워터마크 — connect 시각 이후 행만 이벤트화.
+            # 경계(ts == wm)의 중복은 seen 집합으로 제거한다.
+            started = datetime.now(UTC).isoformat()
+            wm = {"runs": started, "stages": started, "sessions": started}
+            seen: dict[str, set[str]] = {"runs": set(), "stages": set(), "sessions": set()}
+            beats = 0
+            try:
+                snap = json.dumps(_sse_snapshot(), ensure_ascii=False)
+                yield f"event: snapshot\ndata: {snap}\n\n"
+                logger.debug("sse client connected total=%d", _sse["count"])
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    await asyncio.sleep(_SSE_POLL_SECONDS)
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        data = await run_in_threadpool(store.activity_since, min(wm.values()))
+                    except Exception:
+                        logger.warning("sse poll failed", exc_info=True)
+                        continue
+                    chunks: list[str] = []
+                    for kind, event_name in (
+                        ("runs", "run"),
+                        ("stages", "stage"),
+                        ("sessions", "session"),
+                    ):
+                        rows = data.get(kind) or []
+                        max_ts = wm[kind]
+                        emitted_at: dict[str, set[str]] = {}
+                        for row in rows:
+                            ts = str(row.get("ts") or "")
+                            rid = str(row.get("id") or "")
+                            if ts < wm[kind]:
+                                continue
+                            if ts == wm[kind] and rid in seen[kind]:
+                                continue
+                            payload = {k: v for k, v in row.items() if k != "ts"}
+                            seq += 1
+                            chunks.append(
+                                f"id: {seq}\nevent: {event_name}\n"
+                                f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                            )
+                            emitted_at.setdefault(ts, set()).add(rid)
+                            if ts > max_ts:
+                                max_ts = ts
+                        if max_ts > wm[kind]:
+                            wm[kind] = max_ts
+                            seen[kind] = emitted_at.get(max_ts, set())
+                        else:
+                            seen[kind] |= emitted_at.get(wm[kind], set())
+                    if chunks:
+                        beats = 0
+                        yield "".join(chunks)
+                    else:
+                        beats += 1
+                        if beats >= _SSE_HEARTBEAT_LOOPS:
+                            beats = 0
+                            yield ": heartbeat\n\n"
+            except (asyncio.CancelledError, GeneratorExit):
+                raise
+            except Exception:
+                logger.warning("sse stream error", exc_info=True)
+            finally:
+                with _sse_lock:
+                    _sse["count"] = max(0, _sse["count"] - 1)
+                logger.debug("sse client disconnected total=%d", _sse["count"])
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     def _do_approve(run_id: str, decision: str, comment: str, actor: str = "api") -> dict[str, Any]:
         """승인/거절 공통 경로 — API 엔드포인트와 메신저 커맨드가 공유.
@@ -2840,10 +2960,18 @@ def create_app(
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
+    def _google_oauth_env(suffix: str) -> str:
+        """Google 로그인 OAuth 설정 — GOOGLE_OAUTH_<suffix> 우선,
+        레거시 GOOGLE_<suffix>(GOOGLE_CLIENT_ID 등) 폴백."""
+        return (
+            os.environ.get(f"GOOGLE_OAUTH_{suffix}", "").strip()
+            or os.environ.get(f"GOOGLE_{suffix}", "").strip()
+        )
+
     @app.get("/api/v1/auth/config")
     def auth_config() -> dict[str, bool]:
         """로그인 화면용 공개 설정 — 외부 노출 정보 없음."""
-        return {"google_enabled": bool(os.environ.get("GOOGLE_CLIENT_ID", "").strip())}
+        return {"google_enabled": bool(_google_oauth_env("CLIENT_ID"))}
 
     @app.get("/api/v1/auth/me")
     def auth_me(request: Request) -> JSONResponse:
@@ -2853,13 +2981,13 @@ def create_app(
         return JSONResponse({"user": _pub_user(user)})
 
     def _google_redirect_uri(request: Request) -> str:
-        return os.environ.get("GOOGLE_REDIRECT_URI", "").strip() or (
+        return _google_oauth_env("REDIRECT_URI") or (
             str(request.base_url).rstrip("/") + "/api/v1/auth/google/callback"
         )
 
     @app.get("/api/v1/auth/google")
     def auth_google(request: Request) -> Any:
-        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        client_id = _google_oauth_env("CLIENT_ID")
         if not client_id:
             return err(501, "not_configured", "Google 로그인이 설정되지 않았습니다", request)
         state = new_session_token()
@@ -2898,8 +3026,8 @@ def create_app(
         if not state or not expected or state != expected:
             logger.warning("google oauth state mismatch")
             return err(400, "bad_state", "OAuth state 불일치", request)
-        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+        client_id = _google_oauth_env("CLIENT_ID")
+        client_secret = _google_oauth_env("CLIENT_SECRET")
         if not client_id or not client_secret:
             return err(501, "not_configured", "Google 로그인이 설정되지 않았습니다", request)
         try:

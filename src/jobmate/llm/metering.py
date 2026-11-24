@@ -31,9 +31,23 @@ class MeteredLLM:
         self._store = store
 
     def complete(
-        self, *, model: ModelConfig, system: str, user: str, schema: type[T] | None = None
+        self,
+        *,
+        model: ModelConfig,
+        system: str,
+        user: str,
+        schema: type[T] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> tuple[Any, dict[str, int]]:
-        out, usage = self._inner.complete(model=model, system=system, user=user, schema=schema)
+        out, usage = self._inner.complete(
+            model=model,
+            system=system,
+            user=user,
+            schema=schema,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
         self._record(model, usage)
         return out, usage
 

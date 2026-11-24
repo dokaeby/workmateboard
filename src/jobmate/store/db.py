@@ -3703,6 +3703,75 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # ---- SSE 스트림용 증분 조회 ----
+    def activity_since(self, since_iso: str, limit: int = 500) -> dict[str, list[dict[str, Any]]]:
+        """since_iso(ISO8601, 경계 포함) 이후 갱신된 행을 테이블별로 반환.
+
+        SSE 엔드포인트의 폴링 tailing용. 각 행의 "ts"는 워터마크 비교용
+        타임스탬프(runs=updated_at, stages=COALESCE(finished_at,started_at),
+        sessions=created_at). 같은 ts의 복수 행은 호출자가 id로 중복 제거한다.
+        """
+        out: dict[str, list[dict[str, Any]]] = {"runs": [], "stages": [], "sessions": []}
+        rows = self._conn.execute(
+            "SELECT id, workflow_key, status, project, created_at, updated_at"
+            " FROM runs WHERE updated_at >= ? ORDER BY updated_at, id LIMIT ?",
+            (since_iso, limit),
+        ).fetchall()
+        for r in rows:
+            out["runs"].append(
+                {
+                    "id": r["id"],
+                    "workflow": r["workflow_key"],
+                    "status": r["status"],
+                    "project": r["project"] or "",
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                    "ts": r["updated_at"],
+                }
+            )
+        rows = self._conn.execute(
+            "SELECT id, run_id, stage_key, attempt, status, started_at, finished_at"
+            " FROM stage_runs"
+            " WHERE COALESCE(finished_at, started_at) >= ?"
+            " ORDER BY COALESCE(finished_at, started_at), id LIMIT ?",
+            (since_iso, limit),
+        ).fetchall()
+        for r in rows:
+            ts = r["finished_at"] or r["started_at"] or ""
+            out["stages"].append(
+                {
+                    "id": r["id"],
+                    "run_id": r["run_id"],
+                    "stage_key": r["stage_key"],
+                    "attempt": r["attempt"],
+                    "status": r["status"],
+                    "started_at": r["started_at"],
+                    "finished_at": r["finished_at"],
+                    "ts": ts,
+                }
+            )
+        rows = self._conn.execute(
+            "SELECT id, tool, session_key, status, project, doing, ask, created_at"
+            " FROM agent_session_events WHERE created_at >= ?"
+            " ORDER BY created_at, id LIMIT ?",
+            (since_iso, limit),
+        ).fetchall()
+        for r in rows:
+            out["sessions"].append(
+                {
+                    "id": r["id"],
+                    "tool": r["tool"],
+                    "session_key": r["session_key"],
+                    "status": r["status"],
+                    "project": r["project"] or "",
+                    "doing": r["doing"] or "",
+                    "ask": r["ask"] or "",
+                    "created_at": r["created_at"],
+                    "ts": r["created_at"],
+                }
+            )
+        return out
+
     # ---- db 메타 (헬스 상세) ----
     def db_info(self) -> dict[str, Any]:
         """백엔드 종류/경로/SQLite 파일 크기(PG는 size_bytes=None)."""

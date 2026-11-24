@@ -20,7 +20,12 @@ class ModelConfig(BaseModel):
 
 
 class AgentSpec(BaseModel):
-    """LLM 에이전트 단계 정의. tools는 allowlist 이름 목록(서버 강제)."""
+    """LLM 에이전트 단계 정의. tools는 allowlist 이름 목록(서버 강제).
+
+    tools가 비어 있지 않으면 runner가 네이티브 function-calling 루프를 돌린다:
+    등록된 스키마(tools/schemas.py) ∩ allowlist만 LLM에 노출되고, 실행은
+    ToolExecutor.call을 통해 allowlist를 다시 강제한다.
+    """
 
     key: str
     role: str  # analysis|implementer|security|reviewer|qa|extractor

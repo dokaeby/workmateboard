@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      # ruff/mypy/pytest는 optional extra 'dev'에 있으므로 --extra dev가 필요하다.
+      - name: Install dependencies
+        run: python -m uv sync --extra dev
+      - name: Ruff check
+        run: python -m uv run ruff check src/jobmate tests
+      - name: Ruff format check
+        run: python -m uv run ruff format --check src/jobmate tests
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      # ruff/mypy/pytest는 optional extra 'dev'에 있으므로 --extra dev가 필요하다.
+      - name: Install dependencies
+        run: python -m uv sync --extra dev
+      - name: Mypy
+        run: python -m uv run mypy src/jobmate
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      # ruff/mypy/pytest는 optional extra 'dev'에 있으므로 --extra dev가 필요하다.
+      - name: Install dependencies
+        run: python -m uv sync --extra dev
+      - name: Pytest
+        # tests/ui는 Playwright 브라우저가 필요하므로 제외한다.
+        run: python -m uv run pytest tests/unit tests/api tests/integration -q
