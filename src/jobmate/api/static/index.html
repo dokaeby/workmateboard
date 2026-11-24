@@ -128,174 +128,261 @@
     border-radius: 999px; padding: 4px 12px;
   }
   .office-chip b { color: var(--accent); font-variant-numeric: tabular-nums; }
-  /* ── 3D 보드 — 미션 컨트롤 디자인 ── */
+  /* ── 3D 보드 — 커맨드 덱 (다크 메탈 벨브) ── */
   .office-stage {
-    position: relative; min-height: 460px; margin-bottom: 12px;
+    position: relative; margin-bottom: 12px;
     background:
-      radial-gradient(1200px 500px at 50% -10%, rgba(34,211,238,.10), transparent 60%),
-      radial-gradient(900px 420px at 85% 110%, rgba(167,139,250,.08), transparent 60%),
-      linear-gradient(180deg, #0a1120 0%, #0d1526 55%, #0a0f1c 100%);
-    border: 1px solid rgba(148,163,184,.18);
+      radial-gradient(ellipse at 51% 30%, rgba(15,70,123,.34),
+        rgba(4,30,52,.18) 42%, rgba(2,14,27,.92) 100%),
+      linear-gradient(180deg, #07192B 0%, #041426 56%, #03101D 100%);
+    border: 1px solid rgba(85,125,159,.5);
     border-radius: var(--radius); overflow: hidden; padding: 0;
-    box-shadow: 0 24px 60px rgba(2,8,20,.45), inset 0 1px 0 rgba(255,255,255,.05);
+    box-shadow: 0 24px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05);
   }
-  .office-perspective { perspective: 1400px; }
+  .office-stage::after {
+    content: ""; position: absolute; inset: 0; z-index: 6;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center,
+      transparent 45%, rgba(0,5,13,.55) 100%);
+  }
+  .office-perspective { position: relative; }
   .office-plate {
-    position: relative; height: 400px;
-    transform: rotateX(57deg);
-    transform-origin: 50% 62%;
-    background:
-      radial-gradient(60% 55% at 50% 42%, rgba(34,211,238,.10), transparent 70%),
-      linear-gradient(rgba(103,232,249,.10) 1px, transparent 1px) 0 0/48px 48px,
-      linear-gradient(90deg, rgba(103,232,249,.10) 1px, transparent 1px) 0 0/48px 48px,
-      linear-gradient(180deg, rgba(15,30,55,.0), rgba(10,18,36,.9));
-    border: 1px solid rgba(103,232,249,.16); border-radius: var(--radius);
-    box-shadow: inset 0 0 120px rgba(34,211,238,.06), 0 30px 80px rgba(0,0,0,.5);
+    position: relative; width: 100%; aspect-ratio: 1069 / 609;
     overflow: hidden;
   }
-  /* 플로어 위 떠다니는 앰비언트 오브 */
+  /* 플레이트 위 은은한 청색 면광 */
   .office-plate::before, .office-plate::after {
-    content: ""; position: absolute; border-radius: 50%;
-    filter: blur(60px); pointer-events: none; z-index: 0;
+    content: ""; position: absolute; z-index: 0; pointer-events: none;
+    border-radius: 50%; filter: blur(50px);
   }
   .office-plate::before {
-    width: 340px; height: 340px; left: 8%; top: 20%;
-    background: rgba(34,211,238,.12);
-    animation: office-orb-a 14s ease-in-out infinite alternate;
+    width: 46%; height: 60%; left: 6%; top: 18%;
+    background: rgba(30,110,200,.14);
   }
   .office-plate::after {
-    width: 300px; height: 300px; right: 6%; bottom: 8%;
-    background: rgba(167,139,250,.12);
-    animation: office-orb-b 18s ease-in-out infinite alternate;
+    width: 40%; height: 55%; right: 4%; bottom: 6%;
+    background: rgba(20,80,160,.12);
   }
-  @keyframes office-orb-a {
-    from { transform: translate(0,0) scale(1); }
-    to { transform: translate(60px,-30px) scale(1.15); }
+  .office-grid {
+    position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1;
   }
-  @keyframes office-orb-b {
-    from { transform: translate(0,0) scale(1.1); }
-    to { transform: translate(-70px,25px) scale(.95); }
+  /* 배경 3D 블록 장식 */
+  .office-block {
+    position: absolute; z-index: 1; opacity: .55; pointer-events: none;
   }
+  .office-block-bl {
+    left: 2%; top: 5%; width: 15%; height: 21%;
+    background: linear-gradient(180deg, #1b3a55, #0a1626);
+    clip-path: polygon(0 100%, 30% 0, 100% 0, 70% 100%);
+  }
+  .office-block-br {
+    right: 1.5%; top: 4%; width: 13%; height: 19%;
+    background: linear-gradient(180deg, #16293c, #081120);
+    clip-path: polygon(30% 0, 100% 0, 70% 100%, 0 100%);
+  }
+  /* 빨간 피드백 버스 레이어 */
+  .office-fx { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; }
   .office-edges {
     position: absolute; inset: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 1;
+    pointer-events: none; z-index: 4;
   }
-  .office-edge {
-    fill: none; stroke: rgba(148,163,184,.4); stroke-width: 1.6; opacity: .6;
+  .office-edge-glow, .office-edge-body, .office-edge-core, .office-edge-flow {
+    fill: none; stroke-linecap: round; stroke-linejoin: round;
     vector-effect: non-scaling-stroke;
   }
-  .office-edge-done { stroke: #34d399; opacity: .9; }
-  .office-edge-fail { stroke: #f87171; opacity: .95; }
-  .office-edge-live-base { stroke: rgba(103,232,249,.35); opacity: .9; }
-  .office-edge-live {
-    stroke: #22d3ee; stroke-width: 3; opacity: 1;
-    stroke-dasharray: 3 30;
-    filter: drop-shadow(0 0 5px rgba(34,211,238,.8));
+  .office-edge-glow { stroke-width: 7; opacity: .18; }
+  .office-edge-body { stroke-width: 2.8; opacity: .9; }
+  .office-edge-core { stroke-width: 1.1; opacity: .95; }
+  .office-edge-flow {
+    stroke: #eaf8ff; stroke-width: 1.6; opacity: .9;
+    stroke-dasharray: 2 22;
     animation: office-flow .9s linear infinite;
   }
-  @keyframes office-flow { to { stroke-dashoffset: -33; } }
+  @keyframes office-flow { to { stroke-dashoffset: -24; } }
+  .office-edge-dim .office-edge-glow { stroke: #3d5a75; }
+  .office-edge-dim .office-edge-body { stroke: #54708c; opacity: .5; }
+  .office-edge-dim .office-edge-core { stroke: #8ea9c2; opacity: .55; }
+  .office-edge-done .office-edge-glow { stroke: #087eff; }
+  .office-edge-done .office-edge-body { stroke: #47acff; }
+  .office-edge-done .office-edge-core { stroke: #eaf8ff; }
+  .office-edge-fail .office-edge-glow { stroke: #ff1d47; }
+  .office-edge-fail .office-edge-body { stroke: #ff5367; }
+  .office-edge-fail .office-edge-core { stroke: #fff1f3; }
+  .office-edge-live .office-edge-glow { stroke: #35a6ff; opacity: .3; }
+  .office-edge-live .office-edge-body { stroke: #35a6ff; }
+  .office-edge-live .office-edge-core { stroke: #eaf8ff; }
+  .office-edge-live .office-edge-flow { stroke: #bfe6ff; }
   /* 간선을 따라 흐르는 데이터 패킷 */
   .office-packet { filter: drop-shadow(0 0 4px currentColor); }
+  /* ── 노드: 금속 받침 + 발광 전면 카드 ── */
   .office-node {
+    --node-accent: #f4b43c; --node-accent-hot: #ffe19a;
     position: absolute; transform: translate(-50%, -50%);
-    width: 128px; padding: 11px 12px 10px; text-align: center; cursor: pointer;
-    z-index: 2;
-    background: linear-gradient(180deg, rgba(17,28,52,.92), rgba(10,18,36,.94));
-    border: 1px solid rgba(148,163,184,.28);
-    border-radius: 14px;
-    box-shadow: 0 14px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-    transition: transform .18s ease, box-shadow .25s ease, border-color .2s;
+    width: var(--nw, 24%); z-index: 5; cursor: pointer;
   }
-  .office-node:hover {
-    transform: translate(-50%, -50%) translateY(-3px);
-    border-color: rgba(103,232,249,.55);
-    box-shadow: 0 18px 40px rgba(0,0,0,.6), 0 0 24px rgba(34,211,238,.15),
-      inset 0 1px 0 rgba(255,255,255,.08);
+  .office-node-shadow {
+    position: absolute; left: 7%; right: 7%; bottom: -15px;
+    height: 24px; border-radius: 50%;
+    background: rgba(0,0,0,.7); filter: blur(10px);
   }
+  .office-node-base {
+    position: absolute; left: -5%; right: -5%; top: 56%; bottom: -9%;
+    clip-path: polygon(7% 0, 93% 0, 100% 26%, 100% 74%,
+      93% 100%, 7% 100%, 0 74%, 0 26%);
+    background:
+      linear-gradient(105deg, rgba(255,255,255,.14) 0%, transparent 18%,
+        transparent 78%, rgba(0,0,0,.35) 100%),
+      linear-gradient(180deg, #46648a 0%, #2a4560 34%, #16283c 70%, #0a1522 100%);
+    box-shadow: 0 18px 26px rgba(0,0,0,.6);
+  }
+  /* DEV — 원형 실행 플랫폼 */
+  .office-node[data-node="DEV"] .office-node-base {
+    left: -14%; right: -14%; top: 58%; bottom: -8%;
+    clip-path: polygon(18% 0, 82% 0, 97% 22%, 100% 55%, 97% 78%,
+      82% 100%, 18% 100%, 3% 78%, 0 55%, 3% 22%);
+    background:
+      linear-gradient(105deg, rgba(255,255,255,.18) 0%, transparent 22%,
+        transparent 76%, rgba(0,0,0,.4) 100%),
+      radial-gradient(circle at 50% 30%, #3d6ea8, #1b3d63 55%, #0a1e36);
+  }
+  .office-node[data-node="DEV"] .office-node-shadow {
+    left: 0; right: 0; bottom: -13px; height: 20px;
+    background: radial-gradient(ellipse, rgba(53,166,255,.35), transparent 70%);
+    filter: blur(6px);
+  }
+  .office-node-face {
+    position: relative; display: flex; align-items: center; gap: 10px;
+    min-height: 96px; padding: 12px 14px; border-radius: 14px;
+    background: linear-gradient(180deg, rgba(24,42,62,.97), rgba(8,25,39,.98));
+    border: 2px solid var(--node-accent);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.55),
+      inset 0 -14px 24px rgba(0,0,0,.32),
+      inset 0 0 0 1px rgba(255,255,255,.06),
+      0 0 6px color-mix(in srgb, var(--node-accent) 70%, transparent),
+      0 0 16px color-mix(in srgb, var(--node-accent) 32%, transparent),
+      0 12px 26px rgba(0,0,0,.5);
+    transition: transform .18s ease, box-shadow .25s ease;
+  }
+  .office-node:hover .office-node-face { transform: translateY(-3px); }
+  .office-node-ico {
+    flex: none; width: 36px; height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--node-accent-hot);
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--node-accent) 60%, transparent));
+  }
+  .office-node-ico svg { width: 26px; height: 26px; }
+  .office-node-body { flex: 1; min-width: 0; text-align: left; }
   .office-node-code {
-    font-size: 15px; font-weight: 800; letter-spacing: .14em;
-    color: #e2e8f0; font-variant-numeric: tabular-nums;
+    font-size: 17px; font-weight: 800; letter-spacing: .06em;
+    color: #f5f9ff; text-shadow: 0 1px 1px rgba(0,0,0,.8);
   }
-  .office-node-label { font-size: 11px; color: #94a3b8; margin: 3px 0 7px; }
+  .office-node-label {
+    font-size: 12.5px; color: #c5d3e1; margin: 2px 0 8px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .office-node-status {
-    display: inline-block; font-size: 10.5px; font-weight: 700;
-    letter-spacing: .04em; padding: 2px 9px; border-radius: 999px;
-    color: #94a3b8; background: rgba(148,163,184,.12);
-    border: 1px solid rgba(148,163,184,.22);
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .03em;
+    padding: 3px 10px; border-radius: 999px; color: #fff;
+    background: color-mix(in srgb, var(--node-accent) 30%, #0a1a2b);
+    border: 1px solid color-mix(in srgb, var(--node-accent) 65%, transparent);
+    text-shadow: 0 1px 1px rgba(0,0,0,.6);
   }
   .office-node-retry {
     position: absolute; top: -9px; right: -9px; min-width: 20px; height: 20px;
     display: inline-flex; align-items: center; justify-content: center;
     padding: 0 5px; border-radius: 999px; font-size: 11px; font-weight: 700;
     color: #1a1206; background: #fbbf24; border: 1px solid #f59e0b;
-    box-shadow: 0 0 12px rgba(251,191,36,.5);
+    box-shadow: 0 0 12px rgba(251,191,36,.5); z-index: 2;
   }
-  .office-node-running {
-    border-color: rgba(34,211,238,.7);
-    box-shadow: 0 0 0 1px rgba(34,211,238,.35), 0 0 34px rgba(34,211,238,.28),
-      0 14px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.07);
+  .office-node-pending { --node-accent: #f4b43c; --node-accent-hot: #ffe19a; }
+  .office-node-succeeded { --node-accent: #48f0a5; --node-accent-hot: #8cffd0; }
+  .office-node-running { --node-accent: #2692ff; --node-accent-hot: #73c5ff; }
+  .office-node-failed { --node-accent: #ff5267; --node-accent-hot: #ffc2ca; }
+  .office-node-skipped { --node-accent: #5b7186; --node-accent-hot: #8fa3b5; }
+  /* 실행 중 노드 — 회전 에너지 링 */
+  .office-node-running::before {
+    content: ""; position: absolute; inset: -7px;
+    border-radius: 20px; pointer-events: none;
+    border: 2px solid transparent;
+    border-top-color: var(--node-accent);
+    border-right-color: color-mix(in srgb, var(--node-accent) 55%, transparent);
+    animation: office-ring-spin 2.4s linear infinite;
+    filter: drop-shadow(0 0 6px var(--node-accent));
+  }
+  @keyframes office-ring-spin { to { transform: rotate(360deg); } }
+  .office-node-skipped .office-node-face { opacity: .6; filter: saturate(.4); }
+  .office-node-running .office-node-face {
     animation: office-pulse 1.6s ease-in-out infinite;
   }
   @keyframes office-pulse {
-    0%, 100% { box-shadow: 0 0 0 1px rgba(34,211,238,.35), 0 0 26px rgba(34,211,238,.22),
-      0 14px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.07); }
-    50% { box-shadow: 0 0 0 4px rgba(34,211,238,.12), 0 0 48px rgba(34,211,238,.4),
-      0 14px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.07); }
+    0%, 100% {
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.5),
+        inset 0 -12px 22px rgba(0,0,0,.28),
+        0 0 6px color-mix(in srgb, var(--node-accent) 70%, transparent),
+        0 0 18px color-mix(in srgb, var(--node-accent) 35%, transparent),
+        0 14px 30px rgba(0,0,0,.5);
+    }
+    50% {
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.5),
+        inset 0 -12px 22px rgba(0,0,0,.28),
+        0 0 10px color-mix(in srgb, var(--node-accent) 90%, transparent),
+        0 0 34px color-mix(in srgb, var(--node-accent) 55%, transparent),
+        0 14px 30px rgba(0,0,0,.5);
+    }
   }
-  .office-node-succeeded {
-    border-color: rgba(52,211,153,.55);
-    box-shadow: 0 0 22px rgba(52,211,153,.16), 0 14px 34px rgba(0,0,0,.5),
-      inset 0 1px 0 rgba(255,255,255,.06);
+  .office-node-selected .office-node-face {
+    border-color: #9fd8ff;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.5),
+      inset 0 -12px 22px rgba(0,0,0,.28),
+      0 0 0 2px rgba(159,216,255,.8),
+      0 0 30px rgba(53,166,255,.45),
+      0 14px 30px rgba(0,0,0,.5);
   }
-  .office-node-succeeded .office-node-code { color: #6ee7b7; }
-  .office-node-succeeded .office-node-status {
-    color: #6ee7b7; background: rgba(52,211,153,.14);
-    border-color: rgba(52,211,153,.35);
-  }
-  .office-node-failed {
-    border-color: rgba(248,113,113,.6);
-    box-shadow: 0 0 26px rgba(248,113,113,.2), 0 14px 34px rgba(0,0,0,.5),
-      inset 0 1px 0 rgba(255,255,255,.06);
-  }
-  .office-node-failed .office-node-code { color: #fca5a5; }
-  .office-node-failed .office-node-status {
-    color: #fca5a5; background: rgba(248,113,113,.14);
-    border-color: rgba(248,113,113,.4);
-  }
-  .office-node-skipped { opacity: .45; filter: saturate(.4); }
-  .office-node-selected {
-    outline: none;
-    border-color: #67e8f9;
-    box-shadow: 0 0 0 2px rgba(103,232,249,.7), 0 0 36px rgba(34,211,238,.35),
-      0 14px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08);
-  }
-  /* ORCH 코어 노드 — 회전 코어 링 */
+  /* ORCH — 헥사곤 지휘 콘솔 */
   .office-node-orch {
-    width: 148px; padding: 14px 14px 12px;
-    background: linear-gradient(180deg, rgba(23,38,70,.95), rgba(12,20,40,.96));
+    --node-accent: #4f9dff; --node-accent-hot: #bfe0ff;
   }
-  .office-node-orch::before {
-    content: ""; position: absolute; inset: -2px; border-radius: 16px;
-    padding: 2px; pointer-events: none;
-    background: conic-gradient(from var(--office-spin, 0deg),
-      transparent 0%, rgba(34,211,238,.9) 12%, transparent 26%,
-      transparent 55%, rgba(167,139,250,.8) 68%, transparent 82%);
-    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor; mask-composite: exclude;
-    animation: office-spin 5s linear infinite;
+  .office-node-orch .office-node-face {
+    flex-direction: column; justify-content: center;
+    min-height: 78px; padding: 10px 20px;
+    clip-path: polygon(10% 0, 90% 0, 96% 18%, 100% 50%, 96% 82%,
+      90% 100%, 10% 100%, 4% 82%, 0 50%, 4% 18%);
+    border-radius: 0;
+    background:
+      radial-gradient(circle at 50% 0%, rgba(80,136,255,.4), transparent 60%),
+      linear-gradient(180deg, #2856a8 0%, #123e8d 55%, #092966 100%);
+    filter: drop-shadow(0 0 10px rgba(52,151,255,.7))
+      drop-shadow(0 14px 26px rgba(0,0,0,.5));
+    box-shadow: none;
   }
-  @property --office-spin { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
-  @keyframes office-spin { to { --office-spin: 360deg; } }
+  .office-node-orch .office-node-ico { width: 40px; height: 40px; }
+  .office-node-orch .office-node-ico svg { width: 34px; height: 34px; }
+  .office-node-orch .office-node-code { font-size: 21px; }
+  .office-node-orch .office-node-label { font-size: 11.5px; }
+  .office-node-orch .office-node-base { left: -8%; right: -8%; }
+  .office-node-orch .office-node-running .office-node-face {
+    animation: office-orch-glow 1.8s ease-in-out infinite;
+  }
+  @keyframes office-orch-glow {
+    0%, 100% { filter: drop-shadow(0 0 8px rgba(52,151,255,.6))
+      drop-shadow(0 14px 26px rgba(0,0,0,.5)); }
+    50% { filter: drop-shadow(0 0 18px rgba(110,190,255,.95))
+      drop-shadow(0 14px 26px rgba(0,0,0,.5)); }
+  }
   /* ORCH 노드 테두리 상태: run.status 원문 표시용 색상 */
-  .office-st-running { color: #67e8f9 !important; }
+  .office-st-running { color: #7fd4ff !important; }
   .office-st-queued, .office-st-waiting_approval, .office-st-waiting_review,
-  .office-st-needs_human { color: #fbbf24 !important; }
-  .office-st-completed { color: #6ee7b7 !important; }
+  .office-st-needs_human { color: #ffd97a !important; }
+  .office-st-completed { color: #8cffd0 !important; }
   .office-st-failed, .office-st-rejected, .office-st-budget_exhausted {
-    color: #fca5a5 !important;
+    color: #ffc2ca !important;
   }
-  .office-st-cancelled { color: #94a3b8 !important; }
+  .office-st-cancelled { color: #8fa3b5 !important; }
   .office-kv { display: flex; gap: 8px; font-size: 13px; padding: 3px 0; }
   .office-kv > span { color: var(--muted); min-width: 90px; flex: none; }
   .office-kv > b { font-weight: 600; overflow-wrap: anywhere; }
@@ -458,13 +545,18 @@
   @media (max-width: 820px) {
     .office-split { grid-template-columns: 1fr; }
     /* 모바일: 입체감 제거하고 노드를 플레이트 위에 플렉스로 펼침 */
-    .office-perspective { perspective: none; }
+    .office-grid, .office-fx, .office-block,
+    .office-node-shadow, .office-node-base { display: none; }
     .office-plate {
-      transform: none; height: auto; display: flex; flex-wrap: wrap; gap: 10px;
-      padding: 14px;
+      height: auto; aspect-ratio: auto; display: flex; flex-wrap: wrap;
+      gap: 10px; padding: 14px;
     }
     .office-edges { display: none; }
-    .office-node { position: relative; transform: none; width: auto; flex: 1 1 40%; }
+    .office-node {
+      position: relative; transform: none; width: auto; flex: 1 1 40%;
+      min-width: 0;
+    }
+    .office-node-face { min-height: 0; }
     /* 세션 탭 모바일 대응 — 컨트롤 줄바꿈, 사이드 패널 세로 스택 */
     .office-controls { width: 100%; margin-left: 0; }
     #office-session-search, #office-project-filter { flex: 1 1 100%; max-width: none; width: auto; }
@@ -2196,22 +2288,34 @@ const OFFICE_STAGES = [
 ];
 const OFFICE_ACTIVE = new Set(
   ["running","waiting_approval","waiting_review","queued","needs_human"]);
-// 노드 배치: 플레이트 % 좌표 (x,y = 노드 중심). 상단 ANA→DEV→TEST,
-// 하단 ORCH·SEC→CR→QA→HUM 의 2단 계단 (spec B. Agent-Office 뷰)
+// 노드 배치: 보드 % 좌표 (x,y = 노드 중심, w = 너비%). 상단 ORCH →
+// ANA·DEV·TEST, 하단 SEC→CR→QA→HUM 스네이크 (커맨드 덱 레퍼런스)
 const OFFICE_NODES = [
-  {code:"ANA",  key:"analysis",    label:"요구사항 분석", x:13, y:14},
-  {code:"DEV",  key:"implement",   label:"구현",          x:46, y:11},
-  {code:"TEST", key:"auto_checks", label:"자동 검사",     x:80, y:15},
-  {code:"ORCH", key:null,          label:"오케스트레이터", x:13, y:57},
-  {code:"SEC",  key:"security",    label:"보안 검토",     x:38, y:59},
-  {code:"CR",   key:"code_review", label:"코드 리뷰",     x:58, y:56},
-  {code:"QA",   key:"qa",          label:"최종 검수",     x:76, y:59},
-  {code:"HUM",  key:"approval",    label:"사람 승인",     x:90, y:53},
+  {code:"ANA",  key:"analysis",    label:"요구사항 분석", x:20.6, y:40.7, w:25},
+  {code:"DEV",  key:"implement",   label:"구현",          x:52.2, y:40.1, w:25},
+  {code:"TEST", key:"auto_checks", label:"자동 검사",     x:83.4, y:40.4, w:23},
+  {code:"ORCH", key:null,          label:"오케스트레이터", x:51.0, y:14.0, w:31},
+  {code:"SEC",  key:"security",    label:"보안 검토",     x:16.7, y:77.2, w:20},
+  {code:"CR",   key:"code_review", label:"코드 리뷰",     x:41.4, y:77.2, w:20},
+  {code:"QA",   key:"qa",          label:"최종 검수",     x:65.3, y:77.2, w:19},
+  {code:"HUM",  key:"approval",    label:"사람 승인",     x:88.5, y:77.2, w:18},
 ];
 const OFFICE_EDGES = [
-  ["ANA","DEV"], ["DEV","TEST"], ["TEST","SEC"], ["SEC","CR"],
-  ["CR","QA"], ["QA","HUM"], ["ORCH","ANA"],
+  ["ORCH","ANA"], ["ORCH","DEV"], ["ORCH","TEST"],
+  ["ANA","DEV"], ["DEV","TEST"], ["TEST","SEC"],
+  ["SEC","CR"], ["CR","QA"], ["QA","HUM"],
 ];
+// 노드 아이콘 — 24×24 stroke SVG (currentColor)
+const OFFICE_ICONS = {
+  ANA:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><circle cx="11" cy="13.5" r="2.4"/><path d="M11 11.5v-1M9 13.5h-1.6M12.6 13.5H14.2"/></svg>',
+  DEV:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 7 4 12l4.5 5M15.5 7 20 12l-4.5 5"/><path d="M13.5 5l-3 14"/></svg>',
+  TEST: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 3h5M10.5 3v5.5L5.5 17a2.4 2.4 0 0 0 2.1 3.5h8.8a2.4 2.4 0 0 0 2.1-3.5l-5-8.5V3"/><path d="M8 14.5h8"/></svg>',
+  ORCH: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.4"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2.1 2.1M16.9 16.9 19 19M19 5l-2.1 2.1M7.1 16.9 5 19"/></svg>',
+  SEC:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 2.8v5.4c0 4.6-3.2 7.6-7.5 8.8-4.3-1.2-7.5-4.2-7.5-8.8V5.8z"/><path d="M9 11.8l2.2 2.2 4-4.2"/></svg>',
+  CR:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6" r="2.6"/><circle cx="6.5" cy="18" r="2.6"/><circle cx="17.5" cy="8" r="2.6"/><path d="M6.5 8.6v6.8M17.5 10.6c0 4.4-4.4 5.6-8.6 5.9"/></svg>',
+  QA:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M8.2 12.2l2.6 2.6 5-5.4"/></svg>',
+  HUM:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c.8-3.8 4-5.8 7.5-5.8s6.7 2 7.5 5.8"/></svg>',
+};
 // ORCH 노드 테두리 상태: run.status → 노드 상태 클래스
 const OFFICE_ORCH_CLS = {completed:"succeeded", failed:"failed",
   rejected:"failed", budget_exhausted:"failed", cancelled:"skipped",
@@ -2466,18 +2570,35 @@ function officeNodeInfo(code) {
   return {cls: status, statusText: status, retry};
 }
 
-// 노드 중심 좌표 사이의 3차 베지어 — 진행 방향에 맞춰 접선 핸들 사용
+// 노드 중심 좌표 사이의 직교(rounded) 경로 — 위→아래는 수직-수평-수직,
+// 같은 높이는 수평 직선, 나머지는 수평-수직 엘보
 function officeEdgePath(a, b) {
-  const dx = b.x - a.x, dy = b.y - a.y, f = 0.45;
-  let c1x, c1y, c2x, c2y;
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    c1x = a.x + dx * f; c1y = a.y;
-    c2x = b.x - dx * f; c2y = b.y;
-  } else {
-    c1x = a.x; c1y = a.y + dy * f;
-    c2x = b.x; c2y = b.y - dy * f;
+  const R = 4; // 코너 반경(%)
+  const sameRow = Math.abs(b.y - a.y) < 2.5;
+  const sameCol = Math.abs(b.x - a.x) < 2.5;
+  if (sameRow || sameCol) return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+  // 꼭짓점 목록 → 라운드 처리한 path
+  const ortho = pts => {
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [px, py] = pts[i - 1], [cx, cy] = pts[i], [nx, ny] = pts[i + 1];
+      const l1 = Math.hypot(cx - px, cy - py), l2 = Math.hypot(nx - cx, ny - cy);
+      const r = Math.min(R, l1 / 2, l2 / 2);
+      const sx = (cx - px) / l1, sy = (cy - py) / l1;
+      const ex = (nx - cx) / l2, ey = (ny - cy) / l2;
+      d += ` L ${cx - sx * r} ${cy - sy * r}` +
+           ` Q ${cx} ${cy} ${cx + ex * r} ${cy + ey * r}`;
+    }
+    const last = pts[pts.length - 1];
+    return d + ` L ${last[0]} ${last[1]}`;
+  };
+  if (b.y > a.y + 6) {
+    // 아래로: 수직 → 수평 → 수평(my) → 수직
+    const my = a.y + (b.y - a.y) * 0.52;
+    return ortho([[a.x, a.y], [a.x, my], [b.x, my], [b.x, b.y]]);
   }
-  return `M ${a.x} ${a.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${b.x} ${b.y}`;
+  // 위/같은층: 수평 → 수직 엘보
+  return ortho([[a.x, a.y], [b.x, a.y], [b.x, b.y]]);
 }
 
 // 화살표 끝 노드의 stage 상태로 간선 색상 결정
@@ -2497,28 +2618,86 @@ function officeRenderEdges() {
   const paths = OFFICE_EDGES.map(([f, t]) => {
     const d = officeEdgePath(byCode[f], byCode[t]);
     const st = officeEdgeState(t);
-    let cls = "office-edge";
-    if (st === "done") cls += " office-edge-done";
-    else if (st === "fail") cls += " office-edge-fail";
-    // live 간선은 기본 회색 경로 위에 base+진행 경로를 마지막에 그려
-    // 회색 .office-edge가 액센트 애니메이션을 덮지 않게 한다
+    const cls = st === "done" ? "office-edge-done"
+      : st === "fail" ? "office-edge-fail"
+      : st === "live" ? "office-edge-live" : "office-edge-dim";
+    // 3중 스트로크: 글로우(두꺼움·저투명) + 본선 + 밝은 코어
+    const grp = `<g class="office-edge-grp ${cls}">` +
+      `<path class="office-edge-glow" d="${d}"/>` +
+      `<path class="office-edge-body" d="${d}"/>` +
+      `<path class="office-edge-core" d="${d}"` +
+      ` marker-end="url(#office-edge-arr)"/></g>`;
+    // live 간선은 코어 위에 진행 대시를 추가로 그린다
     const extra = st === "live"
-      ? `<path class="office-edge office-edge-live-base" d="${d}"/>` +
-        `<path class="office-edge office-edge-live" d="${d}"/>`
-      : "";
+      ? `<path class="office-edge-flow" d="${d}"/>` : "";
     // 진행 중/완료 간선을 따라 흐르는 데이터 패킷
     const packet = (st === "live" || st === "done")
       ? `<circle class="office-packet" r="1.7" ` +
-        `fill="${st === "live" ? "#22d3ee" : "#34d399"}" ` +
-        `color="${st === "live" ? "#22d3ee" : "#34d399"}">` +
+        `fill="${st === "live" ? "#7fd4ff" : "#47acff"}" ` +
+        `color="${st === "live" ? "#7fd4ff" : "#47acff"}">` +
         `<animateMotion dur="${st === "live" ? "1.6" : "3.2"}s" ` +
         `begin="${(f.charCodeAt(0) * 7) % 30 / 10}s" ` +
         `repeatCount="indefinite" path="${d}"/></circle>`
       : "";
-    return `<path class="${cls}" d="${d}"/>` + extra + packet;
+    return grp + extra + packet;
   }).join("");
   return `<svg class="office-edges" viewBox="0 0 100 100" ` +
-         `preserveAspectRatio="none">${paths}</svg>`;
+         `preserveAspectRatio="none"><defs><marker id="office-edge-arr" ` +
+         `markerUnits="userSpaceOnUse" markerWidth="2.2" markerHeight="2.2" ` +
+         `refX="1.8" refY="1.1" orient="auto">` +
+         `<path d="M0 0L2.2 1.1L0 2.2z" fill="#9fd8ff"/></marker></defs>` +
+         paths + `</svg>`;
+}
+
+// 원근 플로어 그리드 — 소실점(51%,5%)에서 방사선 + 아래로 벌어지는 수평선
+function officeGridSvg() {
+  const vp = [51, 5];
+  let rays = "";
+  for (let x = -10; x <= 110; x += 8) {
+    rays += `M${vp[0]} ${vp[1]}L${x} 100 `;
+  }
+  const rows = [12, 19, 28, 40, 56, 78, 96];
+  let hz = "";
+  for (const y of rows) hz += `M0 ${y}H100 `;
+  return `<svg class="office-grid" viewBox="0 0 100 100" ` +
+    `preserveAspectRatio="none" aria-hidden="true">` +
+    `<path d="${rays}" stroke="rgba(70,160,230,.09)" stroke-width=".28"/>` +
+    `<path d="${hz}" stroke="rgba(70,160,230,.13)" stroke-width=".32"/>` +
+    `<path d="M0 100H100" stroke="rgba(120,200,255,.28)" stroke-width=".4"/></svg>`;
+}
+
+// 빨간 피드백 버스 — 검증 단계 결과가 DEV로 되돌아가는 재작업 경로 (장식 레이어)
+function officeFeedbackSvg() {
+  const busY = 58.5;
+  const xs = [16.7, 41.4, 65.3, 88.5];
+  const up = [45, 48.5, 52.5, 56.5];
+  const line = (x1, y1, x2, y2, mark) =>
+    `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"` +
+    `${mark ? ` marker-end="url(#office-arr)"` : ""}/>`;
+  let down = "";
+  for (const x of xs) down += line(x, 63.5, x, busY);
+  down += line(83.4, 51, 83.4, busY);               // TEST 하단 → 버스
+  let bus = line(Math.min(...xs), busY, Math.max(...xs), busY);
+  let arrows = "";
+  for (const x of up) {
+    arrows += `<path d="M${x} ${busY} L${x} 51.5" marker-end="url(#office-arr)"/>`;
+  }
+  const pulses = [30, 60, 85].map((x, i) =>
+    `<circle class="office-bus-pulse" cx="${x}" cy="${busY}" r=".7" ` +
+    `fill="#ffd7dd"><animate attributeName="opacity" values="1;.15;1" ` +
+    `dur="${1.4 + i * 0.5}s" repeatCount="indefinite"/></circle>`).join("");
+  return `<svg class="office-fx" viewBox="0 0 100 100" preserveAspectRatio="none" ` +
+    `aria-hidden="true"><defs><marker id="office-arr" ` +
+    `markerUnits="userSpaceOnUse" markerWidth="1.5" markerHeight="1.5" ` +
+    `refX="1.2" refY=".75" orient="auto">` +
+    `<path d="M0 0L1.5 .75L0 1.5z" fill="#ff8296"/></marker></defs>` +
+    `<g class="office-fx-glow" stroke="#ff1d47" stroke-width="3" ` +
+    `stroke-linecap="round" opacity=".14" fill="none">${down}${bus}${arrows}</g>` +
+    `<g class="office-fx-body" stroke="#ff5d74" stroke-width="1.2" ` +
+    `stroke-linecap="round" fill="none">${down}${bus}${arrows}</g>` +
+    `<g class="office-fx-core" stroke="#ffd9de" stroke-width=".5" ` +
+    `stroke-linecap="round" fill="none">${down}${bus}</g>` +
+    pulses + `</svg>`;
 }
 
 function officeRenderStage() {
@@ -2541,15 +2720,22 @@ function officeRenderStage() {
       `${n.code === "ORCH" ? " office-node-orch" : ""}` +
       `${isSel ? " office-node-selected" : ""}" data-node="${n.code}" ` +
       `title="${esc(tip)}" ` +
-      `style="left:${n.x}%;top:${n.y}%">` +
+      `style="left:${n.x}%;top:${n.y}%;--nw:${n.w}%">` +
+      `<i class="office-node-shadow"></i><i class="office-node-base"></i>` +
+      `<div class="office-node-face">` +
+      `<span class="office-node-ico">${OFFICE_ICONS[n.code] || ""}</span>` +
+      `<div class="office-node-body">` +
       `<div class="office-node-code">${n.code}</div>` +
       `<div class="office-node-label">${esc(n.label)}</div>` +
       `<div class="office-node-status${stCls}">${esc(info.statusText)}</div>` +
-      `${info.retry}</div>`;
+      `</div></div>${info.retry}</div>`;
   }).join("");
   $("#office-stage").innerHTML =
     `<div class="office-perspective"><div class="office-plate">` +
-    officeRenderEdges() + nodes + `</div></div>`;
+    officeGridSvg() +
+    `<i class="office-block office-block-bl"></i>` +
+    `<i class="office-block office-block-br"></i>` +
+    officeFeedbackSvg() + officeRenderEdges() + nodes + `</div></div>`;
 }
 
 // 노드 클릭 → 상세 패널 (이벤트 위임 — 폴링 리렌더 후에도 유지)
