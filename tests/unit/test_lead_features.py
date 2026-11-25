@@ -97,7 +97,7 @@ def test_auth_me_normalized_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     client, store = _client(tmp_path, monkeypatch)
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": "first@b.com", "password": "password123"},
+        json={"email": "first@b.com", "password": "password123", "agree_terms": True},
     )
     assert r.status_code == 201
     assert r.json()["user"]["role"] == "admin"  # 첫 사용자 자동 admin

@@ -49,7 +49,7 @@ def _verify_session(client, store, email):
 def _signup_verified(client, store, email, password="password123", name="U"):  # noqa: S107
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": email, "password": password, "display_name": name},
+        json={"email": email, "password": password, "display_name": name, "agree_terms": True},
     )
     assert r.status_code == 201, r.text
     _verify_session(client, store, email)
@@ -254,7 +254,7 @@ def _member_client(monkeypatch):
     # 두 번째 가입은 member — 별도 세션으로 로그인
     client.post(
         "/api/v1/auth/signup",
-        json={"email": "member@b.com", "password": "password123"},
+        json={"email": "member@b.com", "password": "password123", "agree_terms": True},
     )
     _verify_session(client, store, "member@b.com")
     return client, store
@@ -299,7 +299,7 @@ def test_custom_workflow_side_effect_needs_lead(monkeypatch):
     # member 계정으로 실행 시도 → 403
     client.post(
         "/api/v1/auth/signup",
-        json={"email": "m2@b.com", "password": "password123"},
+        json={"email": "m2@b.com", "password": "password123", "agree_terms": True},
     )
     _verify_session(client, store, "m2@b.com")
     r2 = client.post("/api/v1/runs", json={"workflow": "cw_sidefx", "task": "t"})
@@ -447,7 +447,7 @@ def test_verification_blocked_for_unknown_host(monkeypatch):
     # TestClient 기본 host는 testserver — 허용 목록에 없으므로 발송 거부
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": "host@b.com", "password": "password123"},
+        json={"email": "host@b.com", "password": "password123", "agree_terms": True},
         headers={"X-API-Key": "k", "Host": "evil.example.com"},
     )
     assert r.status_code == 201
@@ -456,7 +456,7 @@ def test_verification_blocked_for_unknown_host(monkeypatch):
     # 허용 호스트로는 발송됨
     r2 = client.post(
         "/api/v1/auth/signup",
-        json={"email": "host2@b.com", "password": "password123"},
+        json={"email": "host2@b.com", "password": "password123", "agree_terms": True},
         headers={"X-API-Key": "k", "Host": "jobmate.example.com"},
     )
     assert r2.status_code == 201
@@ -484,7 +484,7 @@ def test_verify_url_uses_public_base_url(monkeypatch):
     client = TestClient(app)
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": "base@b.com", "password": "password123"},
+        json={"email": "base@b.com", "password": "password123", "agree_terms": True},
         headers={"X-API-Key": "k"},
     )
     assert r.status_code == 201

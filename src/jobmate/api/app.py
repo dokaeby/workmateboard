@@ -127,17 +127,129 @@ def _session_view(row: dict[str, Any]) -> dict[str, Any]:
     return {**row, "health": _session_health(row), "est_cost_usd": _session_est_cost_usd(row)}
 
 
-# 마지막 자동화 틱 시각 — /health/detail의 cron.last_tick_at (모듈 공유)
+# 마지막 자동화 틱 시각 — /health/detail의 cron.last_tick_at.
+# automation_state('cron_tick')가 인스턴스 간 공유 1순위, 인메모리는 폴백.
 _LAST_CRON_TICK_AT: str | None = None
 
 
-def _mark_cron_tick() -> None:
+def _mark_cron_tick(store: Store | None = None) -> None:
     global _LAST_CRON_TICK_AT
-    _LAST_CRON_TICK_AT = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC).isoformat()
+    _LAST_CRON_TICK_AT = now
+    if store is not None:
+        try:
+            store.set_state("cron_tick", {"last_tick_at": now})
+        except Exception:
+            logger.debug("cron tick state persist failed", exc_info=True)
 
 
-def _last_cron_tick_at() -> str | None:
+def _last_cron_tick_at(store: Store | None = None) -> str | None:
+    """마지막 틱 시각 — DB(automation_state) 우선, 인메모리 폴백."""
+    if store is not None:
+        try:
+            v = store.get_state("cron_tick", {}).get("last_tick_at")
+            if v:
+                return str(v)
+        except Exception:
+            logger.debug("cron tick state read failed", exc_info=True)
     return _LAST_CRON_TICK_AT
+
+
+# ---- 동시 run 실행 세마포어 ----
+# Gmail 50건 동시 수신/악의적 호출 시 LLM 폭주 방지. JOBMATE_MAX_CONCURRENT_RUNS
+# 로 조정(기본 4). 백그라운드 job은 슬롯을 기다리고, API resume은 타임아웃 시 503.
+_RUN_SEMAPHORE: threading.BoundedSemaphore | None = None
+_RUN_SEM_LOCK = threading.Lock()
+_RUN_SEM_TIMEOUT_S = 600.0
+
+
+def _run_slots() -> threading.BoundedSemaphore:
+    """프로세스 전역 run 슬롯 세마포어 — env는 최초 생성 시 1회 읽는다."""
+    global _RUN_SEMAPHORE
+    if _RUN_SEMAPHORE is None:
+        with _RUN_SEM_LOCK:
+            if _RUN_SEMAPHORE is None:
+                try:
+                    n = int(os.environ.get("JOBMATE_MAX_CONCURRENT_RUNS", "4"))
+                except ValueError:
+                    n = 4
+                _RUN_SEMAPHORE = threading.BoundedSemaphore(max(1, n))
+    return _RUN_SEMAPHORE
+
+
+def _acquire_run_slot(run_id: str = "") -> bool:
+    """run 실행 슬롯 대기 — 타임아웃(기본 600s) 시 False.
+
+    무한 대기는 호출 스레드 고갈을 유발하므로 타임아웃을 두고, 실패 시
+    호출자가 run을 failed로 마감하거나 503을 반환하게 한다."""
+    if _run_slots().acquire(timeout=_RUN_SEM_TIMEOUT_S):
+        return True
+    worker_logger.warning("run slot acquire timeout run=%s", run_id)
+    return False
+
+
+# ---- stale run reaper ----
+_STALE_RUN_MINUTES = 30
+_REAPER_INTERVAL_S = 60.0  # cron tick이 분 단위로 와도 루프 중복 호출 방지
+_REAPER_STATE: dict[str, Any] = {"last_at": 0.0, "last_reaped": 0, "last_sweep_at": ""}
+
+
+def _reap_stale_runs(store: Store) -> int:
+    """30분 이상 갱신이 없는 queued/running run을 failed로 마감.
+
+    재시작/강제종료로 고착된 run 복구용 — waiting_approval은 사람 승인
+    대기라 제외. 인스턴스당 60초에 1회로 스로틀한다."""
+    now = time.time()
+    if now - float(_REAPER_STATE.get("last_at") or 0.0) < _REAPER_INTERVAL_S:
+        return 0
+    _REAPER_STATE["last_at"] = now
+    cutoff = (datetime.now(UTC) - timedelta(minutes=_STALE_RUN_MINUTES)).isoformat()
+    try:
+        n = store.fail_stale_runs(cutoff, error="stale_timeout")
+    except Exception:
+        worker_logger.exception("stale run reaper failed")
+        return 0
+    _REAPER_STATE["last_reaped"] = n
+    _REAPER_STATE["last_sweep_at"] = datetime.now(UTC).isoformat()
+    if n:
+        worker_logger.info("stale run reaper closed %d runs", n)
+    return n
+
+
+# ---- retention sweep ----
+_RETENTION_STATE_KEY = "retention_state"
+_RETENTION_INTERVAL_S = 20 * 3600  # 하루 1회
+
+
+def _retention_sweep(store: Store) -> dict[str, int] | None:
+    """보존 기간 경과 데이터 삭제 — automation_state에 마지막 실행을 기록해
+    인스턴스/서버리스 간에도 하루 1회만 돌도록 한다. 20시간 내 재호출 스킵."""
+    try:
+        state = store.get_state(_RETENTION_STATE_KEY, {})
+        last = str(state.get("last_sweep_at") or "")
+        if last:
+            prev = datetime.fromisoformat(last)
+            if prev.tzinfo is None:
+                prev = prev.replace(tzinfo=UTC)
+            if (datetime.now(UTC) - prev).total_seconds() < _RETENTION_INTERVAL_S:
+                return None
+    except Exception:
+        logger.debug("retention state read failed — sweep will run", exc_info=True)
+    try:
+        counts = store.retention_sweep()
+    except Exception:
+        worker_logger.exception("retention sweep failed")
+        return None
+    try:
+        store.set_state(
+            _RETENTION_STATE_KEY,
+            {"last_sweep_at": datetime.now(UTC).isoformat(), "last_counts": counts},
+        )
+    except Exception:
+        worker_logger.debug("retention state persist failed", exc_info=True)
+    if any(counts.values()):
+        worker_logger.info("retention sweep deleted: %s", counts)
+    return counts
 
 
 class RunCreateRequest(BaseModel):
@@ -827,6 +939,9 @@ def create_app(
         쿼리스트링(secret 파라미터 포함 가능)과 요청 본문은 기록하지 않는다."""
         started = time.perf_counter()
         request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+        # err() 등 하위 계층이 같은 request_id를 재사용하도록 state에 심는다 —
+        # 접근 로그의 rid와 에러 응답의 request_id가 항상 일치해야 한다.
+        request.state.request_id = request_id
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - started) * 1000
         response.headers.setdefault("X-Request-ID", request_id)
@@ -847,16 +962,29 @@ def create_app(
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     def err(status: int, code: str, message: str, request: Request) -> JSONResponse:
+        # request_id는 access_log_middleware가 심은 값을 재사용 — 별도 uuid를
+        # 만들면 접근 로그의 rid와 응답의 request_id가 어긋난다.
+        rid = (
+            getattr(request.state, "request_id", "")
+            or request.headers.get("x-request-id", "")
+            or uuid.uuid4().hex[:12]
+        )
         return JSONResponse(
             status_code=status,
-            content={
-                "error": {
-                    "code": code,
-                    "message": message,
-                    "request_id": request.headers.get("x-request-id", uuid.uuid4().hex[:12]),
-                }
-            },
+            content={"error": {"code": code, "message": message, "request_id": rid}},
         )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        """최상위 예외 → 500 JSON. 스택/내부 정보는 응답에 노출하지 않고
+        logger.exception에 request_id를 포함해 접근 로그와 상관시킨다."""
+        logger.exception(
+            "unhandled exception rid=%s method=%s path=%s",
+            getattr(request.state, "request_id", ""),
+            request.method,
+            request.url.path,
+        )
+        return err(500, "internal_error", "internal server error", request)
 
     def run_detail(run_id: str) -> dict[str, Any] | None:
         run = store.get_run(run_id)
@@ -1067,17 +1195,57 @@ def create_app(
         _email_check_last["at"] = now
         return False
 
+    # ---- 월간 LLM 예산 (POST /runs 집행용) ----
+    _budget_cache = {"at": 0.0, "mtd": 0.0}
+    _BUDGET_CACHE_TTL_S = 60.0
+
+    def _monthly_budget_usd() -> float | None:
+        """prefs.monthly_budget_usd — 미설정/파싱 실패 시 None(무제한)."""
+        try:
+            raw = _prefs().get("monthly_budget_usd")
+            return float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _mtd_llm_cost_usd() -> float:
+        """월초(UTC) 이후 llm_usage 추정 비용 합계 — 60초 인메모리 캐시.
+
+        usage/summary와 동일하게 cost_usd(모델별 토큰 단가)로 계산한다."""
+        now = time.time()
+        if now - _budget_cache["at"] < _BUDGET_CACHE_TTL_S:
+            return float(_budget_cache["mtd"])
+        month_start = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        mtd = 0.0
+        for r in store.llm_usage_rows(month_start.isoformat()):
+            mtd += cost_usd(
+                str(r.get("model") or ""),
+                int(r.get("tokens_in") or 0),
+                int(r.get("tokens_out") or 0),
+            )
+        _budget_cache["at"] = now
+        _budget_cache["mtd"] = mtd
+        return mtd
+
     @app.get("/")
     def index() -> HTMLResponse:
         # 로그인제가 도입되어 API 키는 더 이상 페이지에 주입하지 않는다.
         # ?key= 파라미터나 localStorage 키는 관리자/머신용 폴백으로 유지.
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        return HTMLResponse(html.replace("__JOBMATE_API_KEY__", ""))
+        # no-cache — 배포 후 heuristic 캐시가 구버전 HTML을 붙잡지 않게
+        return HTMLResponse(
+            html.replace("__JOBMATE_API_KEY__", ""),
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/sw.js")
     def service_worker() -> FileResponse:
-        # 루트 스코프로 서빙해야 push 수신 후 openWindow 등이 동작한다
-        return FileResponse(STATIC_DIR / "sw.js", media_type="application/javascript")
+        # 루트 스코프로 서빙해야 push 수신 후 openWindow 등이 동작한다.
+        # no-cache — 구버전 SW가 heuristic 캐시로 잔존해 업데이트를 막지 않게.
+        return FileResponse(
+            STATIC_DIR / "sw.js",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
@@ -1096,7 +1264,10 @@ def create_app(
                 "api": {"uptime_s": round(time.time() - started, 1)},
                 "db": store.db_info(),
                 "bridge": bridge,
-                "cron": {"last_tick_at": _last_cron_tick_at()},
+                "cron": {
+                    "last_tick_at": _last_cron_tick_at(store),
+                    "reaper": dict(_REAPER_STATE),
+                },
                 "version": "0.1.0",
             }
         )
@@ -1138,6 +1309,30 @@ def create_app(
             gate = _lead_gate(request)
             if gate is not None:
                 return gate
+        # 월간 LLM 예산 집행 — MTD 비용이 monthly_budget_usd를 초과하면
+        # run 생성 자체를 거부한다(usage/summary의 budget_exceeded와 동일 기준).
+        # llm_usage 전수 합산 비용이 크므로 60초 인메모리 캐시를 둔다.
+        budget = _monthly_budget_usd()
+        if budget is not None:
+            mtd = _mtd_llm_cost_usd()
+            if mtd > budget:
+                _audit_api(
+                    request,
+                    "run_budget_exceeded",
+                    body.workflow,
+                    {"budget_usd": budget, "mtd_cost_usd": round(mtd, 6)},
+                )
+                logger.warning(
+                    "run rejected: monthly budget exceeded mtd=%.4f budget=%.4f",
+                    mtd,
+                    budget,
+                )
+                return err(
+                    429,
+                    "budget_exceeded",
+                    "monthly LLM budget exceeded",
+                    request,
+                )
         run = store.create_run(
             body.workflow,
             WORKFLOWS[body.workflow].version,
@@ -1312,43 +1507,51 @@ def create_app(
                 "status": 409,
                 "error": f"run status is {run.status.value}, not waiting_approval",
             }
-        # 원자 claim — 동시 승인/거절(API+메신저 등)이 둘 다 resume하지 못하게
-        # status를 running으로 조건부 전이한다. rowcount 0이면 이미 처리 중.
-        if not store.claim_run_status(
-            run_id, RunStatus.WAITING_APPROVAL.value, RunStatus.RUNNING.value
-        ):
-            return {
-                "ok": False,
-                "status": 409,
-                "error": "run is already being resumed by another request",
-            }
+        # 동시 run 세마포어 — resume의 graph.invoke도 LLM을 태우므로
+        # 신규 run과 같은 슬롯을 공유한다. claim 전에 획득해 슬롯 대기 중
+        # running으로 고착된 claim이 생기지 않게 한다.
+        if not _acquire_run_slot(run_id):
+            return {"ok": False, "status": 503, "error": "run concurrency limit reached"}
         try:
-            # build_runner 실패도 claim을 running에 고착시키지 않도록 try 안에서 호출
-            runner = build_runner(
-                run.workflow_key,
-                store=store,
-                llm=llm,
-                settings=settings,
-                adapters=adapters,
-            )
-            # runner.resume()는 status==waiting_approval을 요구하지만 claim이 이미
-            # running으로 전이했으므로, 동등한 graph 재개를 직접 수행한다
-            # (claim 자체가 직렬화 지점 — resume()의 상태 재검사는 이중 방어).
-            from langgraph.types import Command
+            # 원자 claim — 동시 승인/거절(API+메신저 등)이 둘 다 resume하지 못하게
+            # status를 running으로 조건부 전이한다. rowcount 0이면 이미 처리 중.
+            if not store.claim_run_status(
+                run_id, RunStatus.WAITING_APPROVAL.value, RunStatus.RUNNING.value
+            ):
+                return {
+                    "ok": False,
+                    "status": 409,
+                    "error": "run is already being resumed by another request",
+                }
+            try:
+                # build_runner 실패도 claim을 running에 고착시키지 않도록 try 안에서 호출
+                runner = build_runner(
+                    run.workflow_key,
+                    store=store,
+                    llm=llm,
+                    settings=settings,
+                    adapters=adapters,
+                )
+                # runner.resume()는 status==waiting_approval을 요구하지만 claim이 이미
+                # running으로 전이했으므로, 동등한 graph 재개를 직접 수행한다
+                # (claim 자체가 직렬화 지점 — resume()의 상태 재검사는 이중 방어).
+                from langgraph.types import Command
 
-            runner._graph.invoke(  # noqa: SLF001 — resume()의 claim-우회 경로
-                Command(resume={"decision": decision, "comment": comment}),
-                {"configurable": {"thread_id": run_id}},
-            )
-        except Exception as e:
-            logger.warning("run %s resume failed: %s", run_id, str(e)[:200])
-            # resume 실패 시 대기 상태로 복구 — claim이 running으로 바꿔둔 것을
-            # 되돌려 재시도/재승인이 가능하게 한다(이미 다른 상태면 그대로 둠).
-            store.claim_run_status(
-                run_id, RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value
-            )
-            store.audit(run_id, actor, "run_resume_error", run_id, {"error": str(e)[:300]})
-            return {"ok": False, "status": 500, "error": str(e)[:300]}
+                runner._graph.invoke(  # noqa: SLF001 — resume()의 claim-우회 경로
+                    Command(resume={"decision": decision, "comment": comment}),
+                    {"configurable": {"thread_id": run_id}},
+                )
+            except Exception as e:
+                logger.warning("run %s resume failed: %s", run_id, str(e)[:200])
+                # resume 실패 시 대기 상태로 복구 — claim이 running으로 바꿔둔 것을
+                # 되돌려 재시도/재승인이 가능하게 한다(이미 다른 상태면 그대로 둠).
+                store.claim_run_status(
+                    run_id, RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value
+                )
+                store.audit(run_id, actor, "run_resume_error", run_id, {"error": str(e)[:300]})
+                return {"ok": False, "status": 500, "error": str(e)[:300]}
+        finally:
+            _run_slots().release()
         store.mark_inbox_read_dedupe(f"approval:{run_id}")
         store.audit(run_id, actor, f"run_{decision}", run_id, {"comment": comment[:200]})
         logger.info("run %s resume decision=%s actor=%s", run_id, decision, actor)
@@ -2496,7 +2699,10 @@ def create_app(
         if not valid:
             logger.warning("cron tick rejected: invalid credentials")
             return err(401, "unauthorized", "invalid cron credentials", request)
-        _mark_cron_tick()
+        _mark_cron_tick(store)
+        # 고착 run 복구 + 보존 기간 정리 — 틱마다 호출하되 내부 스로틀 적용
+        _reap_stale_runs(store)
+        _retention_sweep(store)
         _process_pending_messages(store, settings, llm, adapters)
         _process_due_notification_jobs(store, adapters)
         schedule_jobs: list = []
@@ -3452,11 +3658,21 @@ padding:32px;max-width:360px;text-align:center">
         if not email_allowed(email):
             logger.warning("signup denied (not allowed): %s", email)
             return err(403, "email_not_allowed", "허용되지 않은 이메일입니다", request)
+        # 이용약관 동의 — 인증 필요 모드(실배포)에서만 필수.
+        # 로컬 개발 모드(api_key·allowed_emails·VERCEL 모두 없음)는 면제.
+        terms_agreed = body.get("agree_terms") is True
+        if _email_verification_required() and not terms_agreed:
+            return err(
+                422,
+                "terms_required",
+                "이용약관 및 개인정보처리방침에 동의해야 가입할 수 있습니다",
+                request,
+            )
         user = store.create_user(email, hash_password(password), name)
         if user is None:
             return err(409, "email_taken", "이미 가입된 이메일입니다", request)
         _maybe_first_user_admin(user)
-        store.audit("", user["email"], "auth_signup", user["id"], {})
+        store.audit("", user["email"], "auth_signup", user["id"], {"terms_agreed": terms_agreed})
         logger.info("auth signup: user=%s", user["id"])
         verify_required = _email_verification_required()
         verify_sent = True
@@ -3661,6 +3877,78 @@ padding:32px;max-width:360px;text-align:center">
         store.audit("", str(user.get("email") or "-"), "auth_session_revoke", session_id[:12], {})
         logger.info("session revoked: user=%s", user["id"])
         return JSONResponse({"status": "revoked"})
+
+    @app.delete("/api/v1/auth/account")
+    def auth_delete_account(body: dict[str, Any], request: Request) -> JSONResponse:
+        """계정 삭제(개인정보보호법 대응) — 세션 인증 필수.
+
+        비밀번호 계정은 {password} 검증, Google-only(비밀번호 해시 없음)는
+        {confirm_email} 일치로 본인 확인한다. 마지막 admin은 409.
+        audit_events는 법적 보존을 위해 actor만 'deleted_user'로 마스킹해 유지."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        uid = str(user["id"])
+        email = str(user.get("email") or "")
+        # 마지막 admin 보호 — 삭제 후 관리자가 0명이 되는 것을 막는다.
+        if _effective_role(user) == "admin":
+            admins = [u for u in store.list_users() if _effective_role(u) == "admin"]
+            if len(admins) <= 1:
+                store.audit("", email, "auth_account_delete_blocked", uid, {"reason": "last_admin"})
+                logger.warning("account delete blocked: last admin user=%s", uid)
+                return err(
+                    409,
+                    "last_admin",
+                    "마지막 관리자 계정은 삭제할 수 없습니다",
+                    request,
+                )
+        row = store.get_user_password_hash(email)
+        if row is not None and row[1]:
+            # 비밀번호 계정 — 현재 비밀번호 재확인 (타인 세션 탈취 대비)
+            if not verify_password(str(body.get("password", "")), row[1]):
+                store.audit("", email, "auth_account_delete_failed", uid, {})
+                logger.info("account delete failed (bad password): user=%s", uid)
+                return err(401, "invalid_credentials", "비밀번호가 올바르지 않습니다", request)
+        else:
+            # Google-only 계정 — 비밀번호가 없으므로 이메일 재입력으로 확인
+            confirm = str(body.get("confirm_email", "")).strip().lower()
+            if confirm != email.lower():
+                store.audit(
+                    "",
+                    email,
+                    "auth_account_delete_failed",
+                    uid,
+                    {"reason": "confirm_mismatch"},
+                )
+                return err(
+                    422,
+                    "confirm_required",
+                    "confirm_email이 가입 이메일과 일치해야 합니다",
+                    request,
+                )
+        # 감사 기록은 actor 마스킹 전에 남긴다 — 삭제 후에도 행위가 추적된다
+        store.audit("", email, "auth_account_delete", uid, {})
+        counts = store.delete_user_cascade(uid)
+        logger.info("account deleted: user=%s removed=%s", uid, counts)
+        resp = JSONResponse({"status": "deleted", "removed": counts})
+        resp.delete_cookie(SESSION_COOKIE, path="/")
+        return resp
+
+    @app.get("/api/v1/auth/export")
+    def auth_export(request: Request) -> JSONResponse:
+        """본인 데이터 다운로드(개인정보 열람권) — 비밀번호 해시·세션/인증
+        토큰 해시는 제외하고 본인 귀속 데이터만 반환한다."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        uid = str(user["id"])
+        data = store.export_user_data(uid)
+        store.audit("", str(user.get("email") or "-"), "auth_data_export", uid, {})
+        logger.info("data export: user=%s", uid)
+        return JSONResponse(
+            content=data,
+            headers={"Content-Disposition": 'attachment; filename="jobmate-data-export.json"'},
+        )
 
     def _google_oauth_env(suffix: str) -> str:
         """Google 로그인 OAuth 설정 — GOOGLE_OAUTH_<suffix> 우선,
@@ -4506,14 +4794,24 @@ def _execute_run_job(
     ctx: dict[str, Any] | None = None,
 ) -> None:
     """run 1건을 동기 실행 — automation loop/스레드/cron tick 공용."""
-    try:
-        runner = build_runner(workflow, store=store, llm=llm, settings=settings, adapters=adapters)
-        runner.invoke(run_id, payload, gmail_ctx=ctx)
-    except Exception as e:
-        store.update_run(run_id, status=RunStatus.FAILED, error=str(e)[:500])
-        store.audit(run_id, "system", "runner_error", "", {"error": str(e)[:300]})
-        logger.warning("run %s failed: %s", run_id, str(e)[:200])
+    # 동시 run 세마포어 — 슬롯 대기 후 실행. 타임아웃 시 run을 failed로 마감.
+    if not _acquire_run_slot(run_id):
+        store.update_run(run_id, status=RunStatus.FAILED, error="concurrency_timeout")
+        store.audit(run_id, "system", "run_queue_timeout", run_id, {})
         return
+    try:
+        try:
+            runner = build_runner(
+                workflow, store=store, llm=llm, settings=settings, adapters=adapters
+            )
+            runner.invoke(run_id, payload, gmail_ctx=ctx)
+        except Exception as e:
+            store.update_run(run_id, status=RunStatus.FAILED, error=str(e)[:500])
+            store.audit(run_id, "system", "runner_error", "", {"error": str(e)[:300]})
+            logger.warning("run %s failed: %s", run_id, str(e)[:200])
+            return
+    finally:
+        _run_slots().release()
     run = store.get_run(run_id)
     logger.info("run %s finished status=%s", run_id, getattr(run, "status", "?"))
 
@@ -4705,6 +5003,7 @@ def _sync_cronjob(settings: Settings, store: Store, prefs: dict[str, Any]) -> di
         create_job,
         daily_at,
         interval_schedule,
+        make_schedule,
         weekly_at,
     )
 
@@ -4723,15 +5022,21 @@ def _sync_cronjob(settings: Settings, store: Store, prefs: dict[str, Any]) -> di
         body: str,
         schedule: dict[str, Any],
         label: str,
+        bearer: str = "",
     ) -> str:
-        """job id 확보(기존 → env → 자동 생성) 후 스케줄 갱신."""
+        """job id 확보(기존 → env → 자동 생성) 후 스케줄 갱신.
+        bearer 지정 시 X-API-Key 대신 Authorization: Bearer 헤더 사용
+        (cron/tick은 Vercel에서 CRON_SECRET Bearer만 허용)."""
         job_id = job_id or str(prefs.get(pref_key) or "")
         # 요청 헤더/URL은 생성·갱신 모두에 사용 — API 키 로테이션 시
         # 기존 job의 stale 헤더를 함께 갱신하기 위함.
         req_headers: dict[str, str] = {"Content-Type": "application/json"}
-        jm_key = os.environ.get("JOBMATE_API_KEY", "")
-        if jm_key:
-            req_headers["X-API-Key"] = jm_key
+        if bearer:
+            req_headers["Authorization"] = f"Bearer {bearer}"
+        else:
+            jm_key = os.environ.get("JOBMATE_API_KEY", "")
+            if jm_key:
+                req_headers["X-API-Key"] = jm_key
         req_url = (public_base.rstrip("/") + path) if public_base else ""
         extended = {"headers": req_headers, "body": body} if (req_headers or body) else None
         if not job_id:
@@ -4794,6 +5099,23 @@ def _sync_cronjob(settings: Settings, store: Store, prefs: dict[str, Any]) -> di
         radar_schedule,
         "radar",
     )
+    # 자동화 tick — 스케줄/메시지/리포트/트리거/알림의 유일한 구동 신호.
+    # 매분 호출(cron-job.org 최소 주기). Vercel의 tick 인증은 CRON_SECRET
+    # Bearer만 허용하므로 bearer로 전달한다.
+    cron_secret = os.environ.get("CRON_SECRET") or os.environ.get("JOBMATE_CRON_SECRET", "")
+    if cron_secret:
+        ensure_job(
+            "",
+            "cronjob_tick_job_id",
+            "jobMate automation tick",
+            "/api/v1/cron/tick",
+            "",
+            make_schedule(minutes=[-1]),
+            "tick",
+            bearer=cron_secret,
+        )
+    else:
+        out["tick"] = "skipped(no cron secret)"
     return out
 
 
@@ -4804,7 +5126,9 @@ def _automation_loop(
     gmail 폴링 + radar 일일 수집."""
     while not stop.is_set():
         try:
-            _mark_cron_tick()
+            _mark_cron_tick(store)
+            _reap_stale_runs(store)
+            _retention_sweep(store)
             _process_pending_messages(store, settings, llm, adapters)
             _process_due_notification_jobs(store, adapters)
             _process_due_schedules(store, settings, llm, adapters)
@@ -4910,18 +5234,32 @@ def _create_and_run(
         trace_id=uuid.uuid4().hex,
         created_by="system:intake",
     )
-    try:
-        # build_runner 실패도 run을 pending/running에 고착시키지 않도록 try 안에서 호출
-        runner = build_runner(workflow, store=store, llm=llm, settings=settings, adapters=adapters)
-        runner.invoke(run.id, {"task": task}, gmail_ctx=ctx)
-    except Exception as e:
-        # invoke가 예외로 죽으면 run이 running에 영구 고착된다 — FAILED로 마감 후 재전파
+    # 동시 run 세마포어 — 메시지 폭주 시 LLM 동시 호출 상한.
+    # 타임아웃 시 run을 failed로 마감하고 호출자(_process_message_job)의
+    # 재시도 경로로 예외를 전파한다.
+    if not _acquire_run_slot(run.id):
         try:
-            store.update_run(run.id, status=RunStatus.FAILED, error=str(e)[:500])
+            store.update_run(run.id, status=RunStatus.FAILED, error="concurrency_timeout")
         except Exception:
             logger.warning("run %s FAILED 마킹 실패", run.id, exc_info=True)
-        logger.warning("run %s invoke failed: %s", run.id, str(e)[:200])
-        raise
+        raise RuntimeError(f"run {run.id} concurrency slot timeout")
+    try:
+        try:
+            # build_runner 실패도 run을 pending/running에 고착시키지 않도록 try 안에서 호출
+            runner = build_runner(
+                workflow, store=store, llm=llm, settings=settings, adapters=adapters
+            )
+            runner.invoke(run.id, {"task": task}, gmail_ctx=ctx)
+        except Exception as e:
+            # invoke가 예외로 죽으면 run이 running에 영구 고착된다 — FAILED로 마감 후 재전파
+            try:
+                store.update_run(run.id, status=RunStatus.FAILED, error=str(e)[:500])
+            except Exception:
+                logger.warning("run %s FAILED 마킹 실패", run.id, exc_info=True)
+            logger.warning("run %s invoke failed: %s", run.id, str(e)[:200])
+            raise
+    finally:
+        _run_slots().release()
     done = store.get_run(run.id)
     logger.info("run %s finished status=%s", run.id, getattr(done, "status", "?"))
     return run.id

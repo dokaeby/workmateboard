@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     db_path: Path = Path("data/jobmate.db")
     # postgres(ql):// DSN — 설정 시 db_path 대신 PostgreSQL 사용 (Vercel/Neon 등)
     database_url: str = ""
+    # release/VERCEL에서 DSN 없이 /tmp SQLite 휘발 DB를 허용하는 명시적 opt-out.
+    # 운영 실수 방지용 — 평소에는 설정하지 않는다.
+    allow_ephemeral_db: bool = False
     # debug: 모든 역할 gemini만. release: 가벼운 작업=gemini, 중요 작업=codex
     mode: Literal["debug", "release"] = "debug"
     default_model: str = "gemini-3.5-flash-lite"
@@ -174,9 +177,44 @@ def database_dsn(settings: Settings) -> str:
     return str(settings.db_path)
 
 
+def has_pg_dsn(settings: Settings) -> bool:
+    """Store/checkpointer가 PostgreSQL을 쓰는지 — DSN 3종 우선순위와 동일."""
+    return bool(
+        settings.database_url
+        or os.environ.get("POSTGRES_URL", "")
+        or os.environ.get("POSTGRES_PRISMA_URL", "")
+    )
+
+
+def _enforce_production_db(settings: Settings) -> None:
+    """release/VERCEL에서 PG DSN 미설정 시 기동을 중단한다 (fail-fast).
+
+    이전에는 /tmp SQLite로 조용히 휘발되어 run/체크포인트가 인스턴스와 함께
+    사라졌다. 로컬 debug 모드는 기존 동작(경고 후 SQLite)을 유지한다.
+    """
+    if settings.allow_ephemeral_db:
+        return
+    if not (settings.mode == "release" or os.environ.get("VERCEL")):
+        return
+    if has_pg_dsn(settings):
+        return
+    raise RuntimeError(
+        "JOBMATE_MODE=release 또는 VERCEL 환경에서는 PostgreSQL DSN이 필수입니다 "
+        "(JOBMATE_DATABASE_URL 또는 POSTGRES_URL/POSTGRES_PRISMA_URL). "
+        "DSN 없이 기동하면 /tmp SQLite에 모든 데이터가 휘발됩니다. "
+        "일회성 로컬 검증이 필요하면 JOBMATE_ALLOW_EPHEMERAL_DB=1로 명시적으로 opt-out 하세요."
+    )
+
+
 @lru_cache
 def get_settings() -> Settings:
     # .env를 os.environ에 로드 — GEMINI_API_KEY/GITHUB_TOKEN 등 비밀값은
     # Settings 필드가 아니라 os.environ에서 직접 읽으므로 반드시 필요.
     load_dotenv()
-    return Settings()
+    settings = Settings()
+    _enforce_production_db(settings)
+    # 프로덕션에서 암호화 키 없이 평문 시크릿이 저장되는 것을 기동 시점에 차단
+    from .security import enforce_production_secrets
+
+    enforce_production_secrets()
+    return settings

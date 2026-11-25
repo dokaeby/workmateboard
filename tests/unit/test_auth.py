@@ -101,7 +101,7 @@ def test_session_cookie_authorizes_api(monkeypatch):
     # API 키가 있으면 이메일 인증이 강제된다 — 인증 링크로 세션을 발급받는다
     client.post(
         "/api/v1/auth/signup",
-        json={"email": "s@b.com", "password": "password123"},
+        json={"email": "s@b.com", "password": "password123", "agree_terms": True},
         headers={"X-API-Key": "secret-key"},
     )
     token = store.create_email_verification("s@b.com")

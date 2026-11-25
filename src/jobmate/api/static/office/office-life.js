@@ -171,7 +171,11 @@ const OfficeLife = (() => {
   const chairOf = d => d.chair ?? OFFICE_DESKS.indexOf(d);     // 책상이면 책상 번호, 회의실 자리면 그 의자 번호
 
   // ---------- 무엇을 할까 ----------
-  const homeOf = p => (p.home && Object.hasOwn(OFFICE_HOMES, p.home) ? OFFICE_HOMES[p.home] : null);
+  // Object.hasOwn 은 ES2022 — 구형 브라우저 대비 hasOwnProperty.call 폴백
+  const hasOwn = (o, k) =>
+    (Object.hasOwn ? Object.hasOwn(o, k)
+                   : Object.prototype.hasOwnProperty.call(o, k));
+  const homeOf = p => (p.home && hasOwn(OFFICE_HOMES, p.home) ? OFFICE_HOMES[p.home] : null);
   function choose(p) {
     leaveChat(p);
     release(p);

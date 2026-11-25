@@ -27,7 +27,8 @@ def test_signup_is_open_when_no_allowlist(client, monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", "admin-key")
     c, store = client
     r = c.post(
-        "/api/v1/auth/signup", json={"email": "owner@example.com", "password": "password123"}
+        "/api/v1/auth/signup",
+        json={"email": "owner@example.com", "password": "password123", "agree_terms": True},
     )
     assert r.status_code == 201
     assert store.get_user_by_email("owner@example.com") is not None
@@ -38,7 +39,8 @@ def test_allowed_email_cannot_be_claimed_without_admin_key(client, monkeypatch):
     c, _ = client
     assert (
         c.post(
-            "/api/v1/auth/signup", json={"email": "owner@example.com", "password": "password123"}
+            "/api/v1/auth/signup",
+            json={"email": "owner@example.com", "password": "password123", "agree_terms": True},
         ).status_code
         == 403
     )
@@ -48,7 +50,8 @@ def test_removed_email_loses_session_access(client, monkeypatch):
     c, _ = client
     assert (
         c.post(
-            "/api/v1/auth/signup", json={"email": "old@example.com", "password": "password123"}
+            "/api/v1/auth/signup",
+            json={"email": "old@example.com", "password": "password123", "agree_terms": True},
         ).status_code
         == 201
     )
@@ -64,7 +67,8 @@ def test_vercel_without_api_key_keeps_machine_api_closed(client, monkeypatch):
     assert c.get("/api/v1/settings").status_code == 401
     assert (
         c.post(
-            "/api/v1/auth/signup", json={"email": "any@example.com", "password": "password123"}
+            "/api/v1/auth/signup",
+            json={"email": "any@example.com", "password": "password123", "agree_terms": True},
         ).status_code
         == 201
     )

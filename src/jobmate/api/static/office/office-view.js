@@ -461,8 +461,10 @@
     if (document.hidden || now - st.last < FRAME_MS) return;
     const dt = Math.min(0.1, (now - (st.last || now)) / 1000);
     st.last = now;
-    OfficeLife.update(dt);
-    particles();
+    // prefers-reduced-motion — 장식용 파티클(코드 조각·z 글자)만 끈다.
+    // OfficeLife.update 는 캐릭터 상태 동기화(스폰 alpha·퇴장·데이터 반영)에
+    // 필요해 그대로 둔다 — dt=0 으로 멈추면 신규 캐릭터가 alpha=0 에서 멈춘다.
+    if (!REDUCED) particles();
     draw();
   }
 

@@ -202,14 +202,18 @@ const JMO_I18N = (() => {
 
   const t = (key, vars) => fill(TEXT[lang][key] ?? TEXT.ko[key] ?? key, vars);
   const lines = name => LINES[lang][name] || LINES.ko[name] || [""];
+  // Object.hasOwn 은 ES2022 — 구형 브라우저 대비 hasOwnProperty.call 폴백
+  const hasOwn = (o, k) =>
+    (Object.hasOwn ? Object.hasOwn(o, k)
+                   : Object.prototype.hasOwnProperty.call(o, k));
   function act(x) {
     if (!x) return "";
     if (typeof x === "string") return x;                     // 옛 형식(이미 글)이면 그대로
     const k = String(x.k || ""), a = String(x.a ?? "").trim();
     if (k === "text" && !a) return "";
-    const tpl = Object.hasOwn(ACT[lang], k) ? ACT[lang][k] : "";   // 모르는 k 는 인자만
+    const tpl = hasOwn(ACT[lang], k) ? ACT[lang][k] : "";   // 모르는 k 는 인자만
     if (!tpl) return a ? `⚙️ ${a}` : "";
-    return fill(tpl, { a: a || (Object.hasOwn(ACT_EMPTY[lang], k) ? ACT_EMPTY[lang][k] : "") });
+    return fill(tpl, { a: a || (hasOwn(ACT_EMPTY[lang], k) ? ACT_EMPTY[lang][k] : "") });
   }
   // 승인 문구 — Claude 의 영어 알림을 한국어 화면에서는 짧게 바꾼다. 영어 화면은 원문 그대로,
   // short(말풍선·로그)일 때만 짧게("Allow Bash?"). 모르는 문구는 그대로.

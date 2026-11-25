@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -23,6 +24,7 @@ from ..models import (
     StageStatus,
     WorkflowSpec,
 )
+from ..pricing import cost_usd
 from ..sensors import downgrade_approve, filter_findings
 from ..store.db import Store
 from ..tools.executor import ToolDeniedError
@@ -216,6 +218,13 @@ class WorkflowRunner:
                 "stage_outputs": {stage.key: parsed},
                 "tokens_in": state.get("tokens_in", 0) + usage.get("tokens_in", 0),
                 "tokens_out": state.get("tokens_out", 0) + usage.get("tokens_out", 0),
+                # cost_budget이 실제로 집행되도록 단계 사용량을 USD로 환산해 누적
+                "cost_usd": state.get("cost_usd", 0.0)
+                + cost_usd(
+                    agent.model.model,
+                    usage.get("tokens_in", 0),
+                    usage.get("tokens_out", 0),
+                ),
             }
             if tool_execs:
                 update["tool_calls"] = state.get("tool_calls", 0) + tool_execs
@@ -268,17 +277,21 @@ class WorkflowRunner:
             # function 단계 내부 LLM 호출(radar_summarize 등)의 사용량을
             # run budget에 반영하기 위해 stage output에서 분리해 state에 합산.
             fn_tokens_in = fn_tokens_out = 0
+            fn_cost = 0.0
             if isinstance(out, dict):
                 try:
                     fn_tokens_in = int(out.pop("tokens_in", 0) or 0)
                     fn_tokens_out = int(out.pop("tokens_out", 0) or 0)
+                    fn_cost = float(out.pop("cost_usd", 0.0) or 0.0)
                 except (TypeError, ValueError):
                     fn_tokens_in = fn_tokens_out = 0
+                    fn_cost = 0.0
             self.store.finish_stage(stage_run.id, status=StageStatus.SUCCEEDED, output=out)
             update: dict[str, Any] = {
                 "stage_outputs": {stage.key: out},
                 "tokens_in": state.get("tokens_in", 0) + fn_tokens_in,
                 "tokens_out": state.get("tokens_out", 0) + fn_tokens_out,
+                "cost_usd": state.get("cost_usd", 0.0) + fn_cost,
             }
             # 자동 검사 FAIL → fix 회귀 카운터
             if stage.key == "auto_checks" and out.get("passed") is False:
@@ -740,25 +753,87 @@ def build_checkpointer(db_path: str) -> SqliteSaver:
     return saver
 
 
-def build_checkpointer_for(settings: Settings) -> Any:
-    """Postgres DSN이 있으면 PostgresSaver, 아니면 SQLite.
+# ---------- checkpointer (프로세스 수명 동안 1회 생성 후 재사용) ----------
+# run마다 psycopg.connect/SqliteSaver를 새로 만들면 PG 커넥션이 누수된다.
+# (kind, target) 키로 캐시해 build_runner 호출이 같은 saver를 공유하게 한다.
+_CHECKPOINTER_CACHE: dict[str, Any] = {}
+_CHECKPOINTER_LOCK = threading.Lock()
 
-    서버리스(Vercel)에서는 /tmp가 인스턴스별로 분리되어 SQLite 체크포인트가
-    invoke 인스턴스와 resume 인스턴스 사이에서 유실된다. DB가 Postgres면
-    checkpoint도 같은 DB에 두어 어느 인스턴스든 interrupt를 재개할 수 있게 한다.
+
+def _checkpointer_target(settings: Settings) -> tuple[str, str]:
+    """(kind, target) — "pg"+DSN 또는 "sqlite"+checkpoint 파일 경로.
+
+    sqlite 경로는 Store와 동일한 database_dsn() 기준을 쓴다 — Vercel에서는
+    /tmp/jobmate.db 이므로 checkpoint도 /tmp/jobmate.db.checkpoints가 되어
+    Store DB와 같은 위치/수명을 갖는다 (이전에는 settings.db_path 그대로라
+    Vercel에서 Store와 다른 경로를 가리켰다).
     """
+    from ..config import database_dsn
+
     dsn = (
         settings.database_url
         or os.environ.get("POSTGRES_URL", "")
         or os.environ.get("POSTGRES_PRISMA_URL", "")
     )
     if dsn:
-        import psycopg
-        from langgraph.checkpoint.postgres import PostgresSaver
-        from psycopg.rows import dict_row
+        return "pg", dsn
+    return "sqlite", database_dsn(settings) + ".checkpoints"
 
-        conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
-        saver = PostgresSaver(conn)
-        saver.setup()  # checkpoint 테이블 생성 (idempotent)
+
+def _build_pg_checkpointer(dsn: str) -> Any:
+    import psycopg
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+
+    conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+    saver = PostgresSaver(conn)
+    saver.setup()  # checkpoint 테이블 생성 (idempotent) — 캐시로 프로세스당 1회
+    return saver
+
+
+def build_checkpointer_for(settings: Settings) -> Any:
+    """Postgres DSN이 있으면 PostgresSaver, 아니면 SQLite — 프로세스당 1회 생성.
+
+    서버리스(Vercel)에서는 /tmp가 인스턴스별로 분리되어 SQLite 체크포인트가
+    invoke 인스턴스와 resume 인스턴스 사이에서 유실된다. DB가 Postgres면
+    checkpoint도 같은 DB에 두어 어느 인스턴스든 interrupt를 재개할 수 있게 한다.
+
+    반환값은 모듈 레벨 캐시의 공유 인스턴스다 — run마다 새 커넥션을 열지
+    않으므로 커넥션 누수가 없다. 명시적 정리가 필요하면 close_checkpointers().
+    """
+    kind, target = _checkpointer_target(settings)
+    key = f"{kind}:{target}"
+    with _CHECKPOINTER_LOCK:
+        saver = _CHECKPOINTER_CACHE.get(key)
+        if saver is not None:
+            return saver
+        saver = _build_pg_checkpointer(target) if kind == "pg" else build_checkpointer(target)
+        _CHECKPOINTER_CACHE[key] = saver
+        # pg DSN에는 비밀번호가 포함될 수 있으므로 kind만 기록한다.
+        logger.info("checkpointer created kind=%s", kind)
         return saver
-    return build_checkpointer(str(settings.db_path) + ".checkpoints")
+
+
+def _close_saver(saver: Any) -> None:
+    """checkpointer의 커넥션/컨텍스트를 best-effort로 닫는다."""
+    ctx = getattr(saver, "_ctx", None)  # SqliteSaver의 from_conn_string 컨텍스트
+    if ctx is not None:
+        try:
+            ctx.__exit__(None, None, None)
+        except Exception:
+            logger.debug("checkpointer ctx close failed", exc_info=True)
+    conn = getattr(saver, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            logger.debug("checkpointer conn close failed", exc_info=True)
+
+
+def close_checkpointers() -> None:
+    """캐시된 모든 checkpointer를 닫고 캐시를 비운다 (테스트/재빌드용 훅)."""
+    with _CHECKPOINTER_LOCK:
+        savers = list(_CHECKPOINTER_CACHE.values())
+        _CHECKPOINTER_CACHE.clear()
+    for saver in savers:
+        _close_saver(saver)

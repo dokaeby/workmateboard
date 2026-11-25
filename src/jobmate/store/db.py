@@ -1243,6 +1243,39 @@ class Store:
             )
         return cur.rowcount > 0
 
+    def fail_stale_runs(self, stale_before_iso: str, error: str = "stale_timeout") -> int:
+        """updated_at이 stale_before_iso보다 오래된 queued/running run을 failed로 마감.
+
+        재시작/강제종료로 running에 고착된 run 복구용. waiting_approval 등
+        사람 승인 대기 상태는 정상 대기이므로 절대 건드리지 않는다.
+        각 run의 아직 running인 stage_runs도 failed로 정리하고 audit을 남긴다.
+        반환값: 마감된 run 수."""
+        now = _iso(_now())
+        reaped: list[str] = []
+        with self.tx() as c:
+            rows = c.execute(
+                "SELECT id FROM runs WHERE status IN ('queued','running') AND updated_at < ?",
+                (stale_before_iso,),
+            ).fetchall()
+            for r in rows:
+                rid = str(r["id"])
+                cur = c.execute(
+                    "UPDATE runs SET status='failed', error=?, updated_at=?"
+                    " WHERE id=? AND status IN ('queued','running')",
+                    (error, now, rid),
+                )
+                if int(getattr(cur, "rowcount", 0) or 0) <= 0:
+                    continue  # 조회~갱신 사이 상태 전이 — 다른 경로가 처리 중
+                reaped.append(rid)
+                c.execute(
+                    "UPDATE stage_runs SET status='failed', error=?, finished_at=?"
+                    " WHERE run_id=? AND status='running'",
+                    (error, now, rid),
+                )
+        for rid in reaped:
+            self.audit(rid, "system", "run_stale_reaped", rid, {"error": error})
+        return len(reaped)
+
     def _row_to_run(self, row: Any) -> Run:
         return Run(
             id=row["id"],
@@ -3286,6 +3319,70 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def retention_sweep(self, now: datetime | None = None) -> dict[str, int]:
+        """보존 기간 경과 데이터 정리 — cron tick에서 하루 1회 호출 권장.
+
+        - audit_events: created_at < now-90d 삭제
+        - llm_usage: created_at < now-180d 삭제
+        - auth_sessions: expires_at < now 삭제(만료 세션)
+        - runs/stage_runs: completed|failed 이고 created_at < now-180d 삭제
+          (진행 중 queued/running/waiting_* 는 절대 삭제하지 않는다)
+        - message_extractions: processed 이고 created_at < now-30d면
+          source_text만 비움(행은 유지 — 재처리 방지용 키/상태 보존)
+        - agent_session_events: created_at < now-30d 삭제
+        반환값: 테이블별 삭제/정리 건수."""
+        now = now or _now()
+        d30 = _iso(now - timedelta(days=30))
+        d90 = _iso(now - timedelta(days=90))
+        d180 = _iso(now - timedelta(days=180))
+        now_iso = _iso(now)
+        counts: dict[str, int] = {}
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM audit_events WHERE created_at < ?", (d90,))
+            counts["audit_events"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute("DELETE FROM llm_usage WHERE created_at < ?", (d180,))
+            counts["llm_usage"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute("DELETE FROM auth_sessions WHERE expires_at < ?", (now_iso,))
+            counts["auth_sessions"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute("DELETE FROM agent_session_events WHERE created_at < ?", (d30,))
+            counts["agent_session_events"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "UPDATE message_extractions SET source_text=''"
+                " WHERE processing_status='processed' AND created_at < ? AND source_text <> ''",
+                (d30,),
+            )
+            counts["message_extractions_cleared"] = int(getattr(cur, "rowcount", 0) or 0)
+            # 종결 run만 삭제 — 자식(stage_runs/approvals/run_comments)부터 정리.
+            # IN 리스트 대신 동일 조건의 서브쿼리로 지워 바인딩 변수 수를
+            # 일정하게 유지한다(삭제 대상 수와 무관하게 단일 문장).
+            cur = c.execute(
+                "DELETE FROM stage_runs WHERE run_id IN "
+                "(SELECT id FROM runs WHERE status IN ('completed','failed')"
+                " AND created_at < ?)",
+                (d180,),
+            )
+            counts["stage_runs"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM approvals WHERE run_id IN "
+                "(SELECT id FROM runs WHERE status IN ('completed','failed')"
+                " AND created_at < ?)",
+                (d180,),
+            )
+            counts["approvals"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM run_comments WHERE run_id IN "
+                "(SELECT id FROM runs WHERE status IN ('completed','failed')"
+                " AND created_at < ?)",
+                (d180,),
+            )
+            counts["run_comments"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM runs WHERE status IN ('completed','failed') AND created_at < ?",
+                (d180,),
+            )
+            counts["runs"] = int(getattr(cur, "rowcount", 0) or 0)
+        return counts
+
     # ---- agent_sessions 브릿지/헬스 집계 ----
     def agent_sessions_bridge_info(self) -> dict[str, Any]:
         """last_push_at(전체 최신 updated_at) + 머신별 그룹 집계."""
@@ -3346,6 +3443,83 @@ class Store:
                 (_iso(_now()), user_id),
             )
             return int(getattr(cur, "rowcount", 0) or 0) > 0
+
+    def delete_user_cascade(self, user_id: str) -> dict[str, int]:
+        """계정 삭제(개인정보보호법 대응) — users + auth_sessions +
+        email_verifications + 본인 귀속 데이터(run_comments)를 정리한다.
+
+        audit_events는 법적 보존이 필요할 수 있으므로 삭제하지 않고
+        actor만 'deleted_user'로 마스킹해 유지한다. 호출 측에서 삭제 행위를
+        audit에 먼저 기록해야 한다(마스킹 후에도 action은 남는다).
+        타 사용자 데이터는 절대 건드리지 않는다.
+        반환값: 테이블별 삭제 건수."""
+        user = self.get_user_by_id(user_id)
+        email = str((user or {}).get("email") or "").lower()
+        counts: dict[str, int] = {}
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
+            counts["auth_sessions"] = int(getattr(cur, "rowcount", 0) or 0)
+            if email:
+                cur = c.execute("DELETE FROM email_verifications WHERE email=?", (email,))
+                counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
+                c.execute(
+                    "UPDATE audit_events SET actor='deleted_user' WHERE actor=? OR lower(actor)=?",
+                    (user_id, email),
+                )
+                c.execute(
+                    "DELETE FROM run_comments WHERE user_id=? OR lower(email)=?",
+                    (user_id, email),
+                )
+            cur = c.execute("DELETE FROM users WHERE id=?", (user_id,))
+            counts["users"] = int(getattr(cur, "rowcount", 0) or 0)
+        return counts
+
+    def export_user_data(self, user_id: str) -> dict[str, Any]:
+        """본인 데이터 export(개인정보 열람권) — 비밀번호 해시·세션 토큰
+        해시·인증 토큰 해시는 제외하고 본인 귀속 데이터만 반환한다."""
+        user = self.get_user_by_id(user_id) or {}
+        email = str(user.get("email") or "").lower()
+        with self.tx() as c:
+            sess_rows = c.execute(
+                "SELECT created_at, expires_at, revoked_at FROM auth_sessions"
+                " WHERE user_id=? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+            audit_rows = c.execute(
+                "SELECT run_id,actor,action,object_ref,detail,created_at"
+                " FROM audit_events WHERE actor=? OR lower(actor)=?"
+                " ORDER BY created_at DESC LIMIT 1000",
+                (user_id, email),
+            ).fetchall()
+            comment_rows = c.execute(
+                "SELECT run_id,body,created_at FROM run_comments"
+                " WHERE user_id=? OR lower(email)=? ORDER BY created_at DESC LIMIT 1000",
+                (user_id, email),
+            ).fetchall()
+            verify_rows = c.execute(
+                "SELECT email,expires_at,used_at,created_at FROM email_verifications"
+                " WHERE email=? ORDER BY created_at DESC",
+                (email,),
+            ).fetchall()
+        safe_user = {k: v for k, v in user.items() if k != "password_hash"}
+        return {
+            "exported_at": _iso(_now()),
+            "user": safe_user,
+            "sessions": [dict(r) for r in sess_rows],
+            "audit_events": [
+                {
+                    "run_id": r["run_id"],
+                    "actor": r["actor"],
+                    "action": r["action"],
+                    "target": r["object_ref"],
+                    "detail": _loads(r["detail"]),
+                    "created_at": r["created_at"],
+                }
+                for r in audit_rows
+            ],
+            "run_comments": [dict(r) for r in comment_rows],
+            "email_verifications": [dict(r) for r in verify_rows],
+        }
 
     # ---- playbooks (원클릭 작업 템플릿) ----
     @staticmethod

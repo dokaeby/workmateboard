@@ -50,12 +50,46 @@ def _fernet() -> Any | None:
         return Fernet(derived)
 
 
+def production_mode() -> bool:
+    """JOBMATE_MODE=release 또는 VERCEL — 프로덕션 fail-fast 판정.
+
+    Settings.mode는 JOBMATE_MODE env로 설정된다. config.py를 import하지 않고
+    env를 직접 읽어 순환 import를 피한다.
+    """
+    return bool(os.environ.get("VERCEL")) or os.environ.get("JOBMATE_MODE", "") == "release"
+
+
+def enforce_production_secrets() -> None:
+    """프로덕션 모드에서 암호화 키 부재 시 RuntimeError — 기동 시점 검증용.
+
+    키 없이 encrypt_str이 평문을 저장하면 push endpoint·시크릿이 DB에
+    그대로 남는다. 로컬 debug 모드는 기존 동작(평문 허용)을 유지한다.
+    """
+    if not production_mode():
+        return
+    if not _key_material():
+        raise RuntimeError(
+            "JOBMATE_ENCRYPTION_KEY(또는 JOBMATE_API_KEY/CRON_SECRET) 미설정 — "
+            "프로덕션 모드에서는 저장 데이터 암호화 키가 필수입니다. "
+            "키 없이 기동하면 민감값이 평문으로 DB에 저장됩니다."
+        )
+
+
 def encrypt_str(value: str) -> str:
-    """평문 → "enc:v1:" + Fernet 토큰. 키 없으면 평문 그대로."""
+    """평문 → "enc:v1:" + Fernet 토큰. 키 없으면 평문 그대로.
+
+    프로덕션 모드에서 키가 없으면 평문 저장 대신 raise — 기동 검증
+    (enforce_production_secrets)을 우회한 경로에서도 시크릿 평문 저장을
+    막는 방어선이다.
+    """
     if not value:
         return value
     f = _fernet()
     if f is None:
+        if production_mode():
+            raise RuntimeError(
+                "암호화 키 미설정 상태에서 encrypt_str 호출 — JOBMATE_ENCRYPTION_KEY를 설정하세요."
+            )
         return value
     return PREFIX + f.encrypt(value.encode()).decode()
 

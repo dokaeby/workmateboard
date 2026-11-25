@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..budgets import BudgetTracker
 from ..models import LinkStatus, NotificationStatus
+from ..pricing import cost_usd
 from ..sensors import (
     build_gmail_url,
     git_apply_check,
@@ -476,6 +479,68 @@ def _radar_llm_models(ctx: FunctionContext) -> tuple[Any, Any]:
     )
 
 
+def _radar_budget_tracker(ctx: FunctionContext) -> BudgetTracker:
+    """run state의 누적 사용량으로 시드한 BudgetTracker.
+
+    function 단계는 runner의 단계 경계에서만 예산을 검사하므로, radar처럼
+    단계 내부에서 수십 회 LLM을 호출하는 루프는 자체적으로 주기적 검사가
+    필요하다. state.started_at은 time.time() 기준, BudgetTracker는
+    monotonic 기준이므로 경과 시간을 환산해 시드한다.
+    """
+    s = ctx.settings
+    st = ctx.state or {}
+    elapsed = max(0.0, time.time() - float(st.get("started_at") or time.time()))
+    return BudgetTracker(
+        max_tokens=int(getattr(s, "budget_max_tokens", 200_000) or 200_000),
+        max_tool_calls=int(getattr(s, "budget_max_tool_calls", 20) or 20),
+        max_seconds=float(getattr(s, "budget_max_seconds", 600.0) or 600.0),
+        max_cost_usd=float(getattr(s, "budget_max_cost_usd", 5.0) or 5.0),
+        tokens_in=int(st.get("tokens_in", 0) or 0),
+        tokens_out=int(st.get("tokens_out", 0) or 0),
+        tool_calls=int(st.get("tool_calls", 0) or 0),
+        cost_usd=float(st.get("cost_usd", 0.0) or 0.0),
+        started_at=time.monotonic() - elapsed,
+    )
+
+
+def _tracker_sync(
+    tracker: BudgetTracker, acc: dict[str, int], model_name: str, seen: list[int]
+) -> float:
+    """usage_acc의 마지막 sync 이후 델타를 tracker에 반영. 반환: 추가된 비용(USD)."""
+    cur_in = int(acc.get("tokens_in", 0) or 0)
+    cur_out = int(acc.get("tokens_out", 0) or 0)
+    din, dout = max(0, cur_in - seen[0]), max(0, cur_out - seen[1])
+    seen[0], seen[1] = cur_in, cur_out
+    if din == 0 and dout == 0:
+        return 0.0
+    cost = cost_usd(model_name, din, dout)
+    tracker.add_usage(din, dout, cost)
+    return cost
+
+
+def _skipped_budget_item(r: dict[str, Any], reason: str) -> dict[str, Any]:
+    """예산 소진으로 LLM 처리를 건너뛴 repo 항목 — fallback 요약 + skipped_budget."""
+    from ..radar import fallback_summaries_translated
+
+    item = dict(r)
+    name = r.get("full_name", "")
+    fb = fallback_summaries_translated(r.get("description"), name)
+    item.update(
+        {
+            "summary_en": "\n".join(fb["en"]),
+            "summary_zh": "\n".join(fb["zh"]),
+            "summary_ko": "\n".join(fb["ko"]),
+            "_summary_en_lines": fb["en"],
+            "taxonomy": "other",
+            "taxonomy_confidence": 0.0,
+            "summary_status": "skipped_budget",
+            "summary_source": "skipped_budget",
+            "budget_reason": reason,
+        }
+    )
+    return item
+
+
 def radar_summarize(ctx: FunctionContext) -> dict[str, Any]:
     """sanitize → classify → 3개 언어 요약. content_hash 캐시 우선.
 
@@ -502,8 +567,13 @@ def radar_summarize(ctx: FunctionContext) -> dict[str, Any]:
     platform = _radar_platform_name(ctx)
     metrics = new_metrics()
     out_repos: list[dict[str, Any]] = []
-    tokens = {"tokens_in": 0, "tokens_out": 0}
-    for r in repos:
+    # 모델별 사용량 분리 — cost_usd는 모델 라벨별 단가로 환산해야 정확하다.
+    tokens = {"tokens_in": 0, "tokens_out": 0}  # summarize_repo (sum_model)
+    judge_tokens = {"tokens_in": 0, "tokens_out": 0}  # classify_repo (judge_model)
+    tracker = _radar_budget_tracker(ctx)
+    cost_total = 0.0
+    skipped = 0
+    for idx, r in enumerate(repos):
         item = dict(r)
         sanitized = sanitize_readme(r.get("readme"))
         item["sanitized_readme"] = sanitized
@@ -533,6 +603,29 @@ def radar_summarize(ctx: FunctionContext) -> dict[str, Any]:
             metrics["cache_hits"]["classify"] += 1
             out_repos.append(item)
             continue
+        # 캐시 미스 — LLM 호출이 필요한 시점에 run 예산을 검사해 조기 종료.
+        # 이전에는 단계 종료 후에야 사용량이 합산되어 run 내내 예산 검사가 없었다.
+        reason = tracker.exhausted_reason()
+        if reason:
+            for rest in repos[idx:]:
+                out_repos.append(_skipped_budget_item(rest, reason))
+                skipped += 1
+            ctx.store.audit(
+                ctx.run_id,
+                "tool",
+                "radar_budget_exhausted",
+                "summarize",
+                {"reason": reason, "skipped": skipped},
+            )
+            logger.warning(
+                "radar summarize budget exhausted run=%s reason=%s skipped=%d",
+                ctx.run_id,
+                reason,
+                skipped,
+            )
+            break
+        sum_seen = [tokens["tokens_in"], tokens["tokens_out"]]
+        judge_seen = [judge_tokens["tokens_in"], judge_tokens["tokens_out"]]
         try:
             cls = classify_repo(
                 ctx.llm,
@@ -541,7 +634,7 @@ def radar_summarize(ctx: FunctionContext) -> dict[str, Any]:
                 description=r.get("description"),
                 topics=list(r.get("topics") or []),
                 readme=sanitized,
-                usage_acc=tokens,
+                usage_acc=judge_tokens,
             )
             metrics["llm_calls"] += 1
             item["taxonomy"] = cls.label
@@ -599,9 +692,20 @@ def radar_summarize(ctx: FunctionContext) -> dict[str, Any]:
                 name,
                 str(e)[:200],
             )
+        cost_total += _tracker_sync(tracker, tokens, sum_model.model, sum_seen)
+        cost_total += _tracker_sync(tracker, judge_tokens, judge_model.model, judge_seen)
         out_repos.append(item)
     metrics["repos_processed"] = len(out_repos)
-    return {"status": "ok", "repos": out_repos, "metrics": metrics, **tokens}
+    if skipped:
+        metrics["budget_skipped"] = skipped
+    return {
+        "status": "ok",
+        "repos": out_repos,
+        "metrics": metrics,
+        "tokens_in": tokens["tokens_in"] + judge_tokens["tokens_in"],
+        "tokens_out": tokens["tokens_out"] + judge_tokens["tokens_out"],
+        "cost_usd": round(cost_total, 6),
+    }
 
 
 def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
@@ -625,29 +729,62 @@ def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
     _sum_model, judge_model = _radar_llm_models(ctx)
     platform = _radar_platform_name(ctx)
     retries: dict[str, int] = {}
-    tokens = {"tokens_in": 0, "tokens_out": 0}
+    # 모델별 사용량 분리 — verify는 judge_model, 재요약은 sum_model 사용.
+    tokens = {"tokens_in": 0, "tokens_out": 0}  # summarize_repo 재시도
+    judge_tokens = {"tokens_in": 0, "tokens_out": 0}  # verify_summary
+    tracker = _radar_budget_tracker(ctx)
+    cost_total = 0.0
+    skipped = 0
 
-    for item in repos:
+    for idx, item in enumerate(repos):
         name = item.get("full_name", "")
         if item.get("summary_status") != "ok":
             continue
         if item.get("_cache_verified"):
             metrics["cache_hits"]["verify"] += 1
             continue
+        # LLM 호출 전 run 예산 검사 — 소진 시 남은 항목을 조기 skipped 처리.
+        reason = tracker.exhausted_reason()
+        if reason:
+            for rest in repos[idx:]:
+                if rest.get("summary_status") == "ok" and not rest.get("_cache_verified"):
+                    rest["summary_status"] = "skipped_budget"
+                    rest["budget_reason"] = reason
+                    skipped += 1
+            ctx.store.audit(
+                ctx.run_id,
+                "tool",
+                "radar_budget_exhausted",
+                "verify",
+                {"reason": reason, "skipped": skipped},
+            )
+            logger.warning(
+                "radar verify budget exhausted run=%s reason=%s skipped=%d",
+                ctx.run_id,
+                reason,
+                skipped,
+            )
+            break
         readme = item.get("sanitized_readme") or item.get("readme") or ""
+        sum_seen = [tokens["tokens_in"], tokens["tokens_out"]]
+        judge_seen = [judge_tokens["tokens_in"], judge_tokens["tokens_out"]]
         try:
             ok = verify_summary(
                 ctx.llm,
                 judge_model,
                 readme=readme,
                 summary_lines=item.get("_summary_en_lines") or [],
-                usage_acc=tokens,
+                usage_acc=judge_tokens,
             )
             metrics["llm_calls"] += 1
             metrics["verify_calls"] += 1
             if ok:
                 metrics["verify_passed"] += 1
-            while not ok and retries.get(name, 0) < MAX_VERIFY_RETRIES:
+            while (
+                not ok
+                and retries.get(name, 0) < MAX_VERIFY_RETRIES
+                and tracker.exhausted_reason() is None
+            ):
                 retries[name] = retries.get(name, 0) + 1
                 summ, status = summarize_repo(
                     ctx.llm,
@@ -670,18 +807,35 @@ def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
                     judge_model,
                     readme=readme,
                     summary_lines=item.get("_summary_en_lines") or [],
-                    usage_acc=tokens,
+                    usage_acc=judge_tokens,
                 )
                 metrics["llm_calls"] += 1
                 metrics["verify_calls"] += 1
                 if ok:
                     metrics["verify_passed"] += 1
             if not ok:
-                item["summary_status"] = "unverified"
+                # 재시도 루프가 예산 소진으로 끊긴 경우 unverified 대신
+                # skipped_budget으로 표시해 원인을 구분한다.
+                item["summary_status"] = (
+                    "skipped_budget" if tracker.exhausted_reason() else "unverified"
+                )
+                if item["summary_status"] == "skipped_budget":
+                    skipped += 1
         except Exception as e:
             logger.warning("radar verify failed run=%s repo=%s: %s", ctx.run_id, name, str(e)[:200])
             ctx.store.audit(ctx.run_id, "tool", "radar_verify_error", name, {"error": str(e)[:200]})
-    return {"status": "ok", "repos": repos, "metrics": metrics, **tokens}
+        cost_total += _tracker_sync(tracker, tokens, _sum_model.model, sum_seen)
+        cost_total += _tracker_sync(tracker, judge_tokens, judge_model.model, judge_seen)
+    if skipped:
+        metrics["budget_skipped"] = skipped
+    return {
+        "status": "ok",
+        "repos": repos,
+        "metrics": metrics,
+        "tokens_in": tokens["tokens_in"] + judge_tokens["tokens_in"],
+        "tokens_out": tokens["tokens_out"] + judge_tokens["tokens_out"],
+        "cost_usd": round(cost_total, 6),
+    }
 
 
 def radar_rank(ctx: FunctionContext) -> dict[str, Any]:

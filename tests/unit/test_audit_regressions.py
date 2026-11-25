@@ -25,7 +25,10 @@ def client(tmp_path, monkeypatch):
 
 
 def _signup(c: TestClient, email: str) -> None:
-    r = c.post("/api/v1/auth/signup", json={"email": email, "password": "password123"})
+    r = c.post(
+        "/api/v1/auth/signup",
+        json={"email": email, "password": "password123", "agree_terms": True},
+    )
     assert r.status_code == 201, r.text
 
 

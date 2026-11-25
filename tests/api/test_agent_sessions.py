@@ -118,7 +118,7 @@ def test_post_rejects_session_cookie_only(monkeypatch: pytest.MonkeyPatch):
     client, store = _client()
     client.post(
         "/api/v1/auth/signup",
-        json={"email": "a@b.com", "password": "password123"},
+        json={"email": "a@b.com", "password": "password123", "agree_terms": True},
         headers=_headers(),
     )
     _verify_session(client, store, "a@b.com")
@@ -188,7 +188,7 @@ def test_get_auth_policy_same_as_dashboard(monkeypatch: pytest.MonkeyPatch):
     # 세션 쿠키 인증도 허용 (대시보드와 동일)
     client.post(
         "/api/v1/auth/signup",
-        json={"email": "g@b.com", "password": "password123"},
+        json={"email": "g@b.com", "password": "password123", "agree_terms": True},
         headers=_headers(),
     )
     _verify_session(client, store, "g@b.com")

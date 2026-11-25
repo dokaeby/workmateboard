@@ -48,7 +48,12 @@ _PW = "password123"
 def _signup(client, email="v@b.com", password=_PW):
     return client.post(
         "/api/v1/auth/signup",
-        json={"email": email, "password": password, "display_name": "V"},
+        json={
+            "email": email,
+            "password": password,
+            "display_name": "V",
+            "agree_terms": True,
+        },
     )
 
 
