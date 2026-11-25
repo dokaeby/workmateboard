@@ -1,6 +1,30 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useI18n, registerI18n } from "../i18n";
 
 /** 공통 UI 프리미티브 — 모든 feature는 이 컴포넌트만 사용한다. */
+
+registerI18n({
+  ko: {
+    "ui.loading": "로딩…",
+    "ui.retry": "다시 시도",
+    "common.all": "전체",
+    "common.delete": "삭제",
+    "common.last7": "최근 7일",
+    "common.last30": "최근 30일",
+    "common.last90": "최근 90일",
+    "common.last365": "최근 365일",
+  },
+  en: {
+    "ui.loading": "Loading…",
+    "ui.retry": "Retry",
+    "common.all": "All",
+    "common.delete": "Delete",
+    "common.last7": "Last 7 days",
+    "common.last30": "Last 30 days",
+    "common.last90": "Last 90 days",
+    "common.last365": "Last 365 days",
+  },
+});
 
 type BtnVariant = "primary" | "secondary" | "danger" | "ghost";
 const btnCls: Record<BtnVariant, string> = {
@@ -43,20 +67,22 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted">{children}</div>;
 }
 
-export function Spinner({ label = "로딩…" }: { label?: string }) {
+export function Spinner({ label }: { label?: string }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted">
       <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-border border-t-accent" />
-      {label}
+      {label ?? t("ui.loading", "로딩…")}
     </div>
   );
 }
 
 export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="rounded-lg border border-err-border bg-err-soft p-4 text-sm text-err">
       <div>{message}</div>
-      {onRetry && <Button variant="secondary" className="mt-2" onClick={onRetry}>다시 시도</Button>}
+      {onRetry && <Button variant="secondary" className="mt-2" onClick={onRetry}>{t("ui.retry", "다시 시도")}</Button>}
     </div>
   );
 }

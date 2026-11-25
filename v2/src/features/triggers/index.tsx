@@ -2,9 +2,12 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs } from "../../shared/lib/format";
+import { STR } from "./i18n";
+
+registerI18n(STR);
 
 interface Trigger {
   id: string;
@@ -49,18 +52,20 @@ function useWorkflowKeys() {
   });
 }
 
-function matchText(m?: Trigger["match"]): string {
+type TFn = (key: string, fallback?: string) => string;
+
+function matchText(t: TFn, m?: Trigger["match"]): string {
   const p: string[] = [];
-  if (m?.tool) p.push(`도구=${m.tool}`);
-  if (m?.project) p.push(`프로젝트=${m.project}`);
-  if (m?.state) p.push(`상태=${m.state}`);
-  return p.join(" · ") || "전체 세션";
+  if (m?.tool) p.push(`${t("trg.mTool", "도구")}=${m.tool}`);
+  if (m?.project) p.push(`${t("trg.mProject", "프로젝트")}=${m.project}`);
+  if (m?.state) p.push(`${t("trg.mState", "상태")}=${m.state}`);
+  return p.join(" · ") || t("trg.mAll", "전체 세션");
 }
-function actionText(a?: Trigger["action"]): string {
+function actionText(t: TFn, a?: Trigger["action"]): string {
   if (!a) return "-";
-  if (a.type === "run_workflow") return `워크플로 실행: ${a.workflow || "-"}`;
-  if (a.type === "run_playbook") return `플레이북 실행: #${a.playbook_id || "-"}`;
-  if (a.type === "report") return `리포트 생성: ${a.report_kind || "daily"}`;
+  if (a.type === "run_workflow") return `${t("trg.aRunWf", "워크플로 실행")}: ${a.workflow || "-"}`;
+  if (a.type === "run_playbook") return `${t("trg.aPlaybook", "플레이북 실행")}: #${a.playbook_id || "-"}`;
+  if (a.type === "report") return `${t("trg.aReport", "리포트 생성")}: ${a.report_kind || "daily"}`;
   return a.type || "-";
 }
 
@@ -198,9 +203,9 @@ function TriggerRow({ trg }: { trg: Trigger }) {
     <div className="flex flex-wrap items-center gap-3 border-b border-border py-3 last:border-0">
       <div className="min-w-0 flex-1">
         <div className="text-sm text-ink">
-          <b>IF</b> {matchText(trg.match)}
+          <b>IF</b> {matchText(t, trg.match)}
           <span className="mx-1 text-muted">→</span>
-          <b>THEN</b> {actionText(trg.action)}
+          <b>THEN</b> {actionText(t, trg.action)}
         </div>
         <div className="mt-0.5 text-xs text-muted">
           {t("trg.lastFired", "마지막 발동")}: {fmtTs(trg.last_fired_at)}

@@ -41,6 +41,7 @@ registerI18n({
     "office.kv.attempt": "시도",
     "office.kv.model": "모델",
     "office.kv.tokens": "토큰",
+    "office.kv.tokensTotal": "합계",
     "office.kv.duration": "소요시간",
     "office.kv.started": "시작",
     "office.kv.finished": "완료",
@@ -63,6 +64,7 @@ registerI18n({
     "office.diffTitle": "승인 대상 변경 사항 (diff)",
     "office.diffEmpty": "변경된 파일이 없습니다",
     "office.diffTruncated": "… (이하 생략)",
+    "office.diffLoading": "diff 로딩…",
     "office.demoBadge": "DEMO",
   },
   en: {
@@ -89,6 +91,7 @@ registerI18n({
     "office.kv.attempt": "Attempt",
     "office.kv.model": "Model",
     "office.kv.tokens": "Tokens",
+    "office.kv.tokensTotal": "total",
     "office.kv.duration": "Duration",
     "office.kv.started": "Started",
     "office.kv.finished": "Finished",
@@ -111,6 +114,7 @@ registerI18n({
     "office.diffTitle": "Changes pending approval (diff)",
     "office.diffEmpty": "No changed files",
     "office.diffTruncated": "… (truncated)",
+    "office.diffLoading": "Loading diff…",
     "office.demoBadge": "DEMO",
   },
 });
@@ -462,7 +466,7 @@ function StageDetail({
       <Kv k={t("office.kv.attempt", "시도")} v={`attempt ${sr.attempt || 1}`} />
       <Kv k={t("office.kv.model", "모델")} v={sr.model || "-"} />
       <Kv k={t("office.kv.tokens", "토큰")}
-        v={`in ${sr.tokens_in || 0} / out ${sr.tokens_out || 0} (합계 ${tokens})`} />
+        v={`in ${sr.tokens_in || 0} / out ${sr.tokens_out || 0} (${t("office.kv.tokensTotal", "합계")} ${tokens})`} />
       <Kv k={t("office.kv.duration", "소요시간")} v={fmtDuration(sr, now)} />
       <Kv k={t("office.kv.started", "시작")} v={fmtTsRaw(sr.started_at)} />
       <Kv k={t("office.kv.finished", "완료")} v={fmtTsRaw(sr.finished_at)} />
@@ -511,11 +515,11 @@ function OrchDetail({ run, t }: { run: BoardRun; t: (k: string, f?: string) => s
   );
 }
 
-function diffCap200(diff: string | undefined): string {
+function diffCap200(diff: string | undefined, t: (k: string, f?: string) => string): string {
   const s = String(diff ?? "");
   const lines = s.split("\n");
   return lines.length > 200
-    ? lines.slice(0, 200).join("\n") + "\n… (이하 생략)"
+    ? lines.slice(0, 200).join("\n") + "\n" + t("office.diffTruncated", "… (이하 생략)")
     : s;
 }
 
@@ -548,7 +552,7 @@ function DiffPreview({ diff, t }: { diff: StageBoardProps["diff"]; t: (k: string
             </span>
           </button>
           {open === i && (
-            <pre className="office-pre office-diff-pre">{diffCap200(f.diff)}</pre>
+            <pre className="office-pre office-diff-pre">{diffCap200(f.diff, t)}</pre>
           )}
         </div>
       ))}
@@ -792,7 +796,7 @@ export function StageBoard({
             <>
               <OrchDetail run={run} t={t} />
               {showDiff && (diffLoading
-                ? <div className="text-xs text-muted" style={{ marginTop: 12 }}>diff 로딩…</div>
+                ? <div className="text-xs text-muted" style={{ marginTop: 12 }}>{t("office.diffLoading", "diff 로딩…")}</div>
                 : diff ? <DiffPreview diff={diff} t={t} /> : null)}
               {showApprove && (
                 <div style={{ marginTop: 12, display: "flex", gap: 8 }}>

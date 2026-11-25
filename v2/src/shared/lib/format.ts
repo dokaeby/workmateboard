@@ -1,12 +1,15 @@
 /** 표시 포맷 헬퍼 — 기존 index.html의 officeFmtTs/jmFmtAge/usd와 동일 규칙. */
 
+import { getLang } from "../i18n";
+
 export function fmtAge(sec: number | null | undefined): string {
   const s = Number(sec);
   if (!isFinite(s) || s < 0) return "-";
-  if (s < 60) return "방금 전";
-  if (s < 3600) return `${Math.floor(s / 60)}분 전`;
-  if (s < 86400) return `${Math.floor(s / 3600)}시간 전`;
-  return `${Math.floor(s / 86400)}일 전`;
+  const en = getLang() === "en";
+  if (s < 60) return en ? "just now" : "방금 전";
+  if (s < 3600) return en ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 60)}분 전`;
+  if (s < 86400) return en ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 3600)}시간 전`;
+  return en ? `${Math.floor(s / 86400)}d ago` : `${Math.floor(s / 86400)}일 전`;
 }
 
 export function fmtTs(iso: string | null | undefined): string {
@@ -23,9 +26,15 @@ export function fmtElapsed(startIso: string | null | undefined, endIso?: string 
   const e = endIso ? new Date(endIso).getTime() : Date.now();
   if (isNaN(s) || isNaN(e)) return "-";
   const sec = Math.max(0, Math.floor((e - s) / 1000));
-  if (sec < 60) return `${sec}초`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}분 ${sec % 60}초`;
-  return `${Math.floor(sec / 3600)}시간 ${Math.floor((sec % 3600) / 60)}분`;
+  const en = getLang() === "en";
+  if (sec < 60) return en ? `${sec}s` : `${sec}초`;
+  if (sec < 3600)
+    return en
+      ? `${Math.floor(sec / 60)}m ${sec % 60}s`
+      : `${Math.floor(sec / 60)}분 ${sec % 60}초`;
+  return en
+    ? `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+    : `${Math.floor(sec / 3600)}시간 ${Math.floor((sec % 3600) / 60)}분`;
 }
 
 export function usd(v: number | null | undefined): string {

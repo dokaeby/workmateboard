@@ -20,6 +20,25 @@ interface ArchiveResponse { items?: ArchiveItem[]; query?: string }
 
 registerI18n({
   ko: {
+    "arch.title": "아카이브",
+    "arch.desc": "리포트·실행·종료 세션 통합 검색",
+    "arch.placeholder": "제목/내용 검색…",
+    "arch.allKinds": "전체 종류",
+    "arch.kindReport": "리포트",
+    "arch.kindRun": "실행",
+    "arch.kindSession": "세션",
+    "arch.search": "검색",
+    "arch.hint": "검색어를 입력하고 검색을 누르세요",
+    "arch.empty": "검색 결과가 없습니다",
+    "arch.noTitle": "(제목 없음)",
+    "arch.exportTitle": "내보내기",
+    "arch.expRuns": "실행",
+    "arch.expSessions": "세션",
+    "arch.expUsage": "사용량",
+    "arch.expReports": "리포트",
+    "arch.exporting": "내보내는 중…",
+    "arch.download": "다운로드",
+    "arch.exportFail": "내보내기 실패",
     "arch.share": "공유 링크",
     "arch.shareDesc": "공유 링크는 로그인 없이 열리는 읽기 전용 URL입니다 (30일 만료).",
     "arch.shareKind": "종류",
@@ -36,6 +55,25 @@ registerI18n({
     "arch.shareExpires": "만료",
   },
   en: {
+    "arch.title": "Archive",
+    "arch.desc": "Unified search across reports, runs, and ended sessions",
+    "arch.placeholder": "Search title/content…",
+    "arch.allKinds": "All kinds",
+    "arch.kindReport": "Report",
+    "arch.kindRun": "Run",
+    "arch.kindSession": "Session",
+    "arch.search": "Search",
+    "arch.hint": "Enter a query and press search",
+    "arch.empty": "No results",
+    "arch.noTitle": "(no title)",
+    "arch.exportTitle": "Export",
+    "arch.expRuns": "Runs",
+    "arch.expSessions": "Sessions",
+    "arch.expUsage": "Usage",
+    "arch.expReports": "Reports",
+    "arch.exporting": "Exporting…",
+    "arch.download": "Download",
+    "arch.exportFail": "Export failed",
     "arch.share": "Share link",
     "arch.shareDesc": "Share links are read-only URLs that open without login (expires in 30 days).",
     "arch.shareKind": "Kind",
@@ -53,7 +91,12 @@ registerI18n({
   },
 });
 
-const KIND_LABEL: Record<string, string> = { report: "리포트", run: "실행", session: "세션" };
+const KIND_LABEL_KEY: Record<string, string> = {
+  report: "arch.kindReport", run: "arch.kindRun", session: "arch.kindSession",
+};
+const KIND_LABEL_FALLBACK: Record<string, string> = {
+  report: "리포트", run: "실행", session: "세션",
+};
 /** 백엔드 link 값 → 뷰 키 (레거시 VIEW_ALIASES: reports→inbox). */
 const LINK_TO_VIEW: Record<string, ViewKey> = { reports: "inbox", inbox: "inbox", runs: "runs", office: "office", sessionlog: "sessionlog" };
 
@@ -130,7 +173,7 @@ export default function ArchivePage() {
       const r = await fetch(`/api/v1/export?${qs}`, { headers: apiHeaders() });
       if (!r.ok) {
         const j = (await r.json().catch(() => ({}))) as { error?: { message?: string } };
-        alert(j.error?.message || `내보내기 실패: ${r.status}`);
+        alert(`${t("arch.exportFail", "내보내기 실패")}: ${j.error?.message || r.status}`);
         return;
       }
       const blob = await r.blob();
@@ -199,9 +242,9 @@ export default function ArchivePage() {
           />
           <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm">
             <option value="">{t("arch.allKinds", "전체 종류")}</option>
-            <option value="report">{KIND_LABEL.report}</option>
-            <option value="run">{KIND_LABEL.run}</option>
-            <option value="session">{KIND_LABEL.session}</option>
+            <option value="report">{t("arch.kindReport", "리포트")}</option>
+            <option value="run">{t("arch.kindRun", "실행")}</option>
+            <option value="session">{t("arch.kindSession", "세션")}</option>
           </select>
           <Button type="submit" className="px-3 py-1 text-xs">{t("arch.search", "검색")}</Button>
           {submitted && (
@@ -227,7 +270,9 @@ export default function ArchivePage() {
         >
           <div className="mb-1 flex items-center gap-2">
             <Badge tone={it.kind === "run" ? "accent" : it.kind === "session" ? "warn" : "muted"}>
-              {KIND_LABEL[it.kind || ""] || it.kind || "-"}
+              {it.kind && KIND_LABEL_KEY[it.kind]
+                ? t(KIND_LABEL_KEY[it.kind], KIND_LABEL_FALLBACK[it.kind] || it.kind)
+                : it.kind || "-"}
             </Badge>
             <span className="ml-auto text-xs text-muted">{fmtTs(it.created_at)}</span>
           </div>
@@ -236,13 +281,13 @@ export default function ArchivePage() {
         </button>
       ))}
 
-      <Card title={t("cost.export", "내보내기")} className="mt-4">
+      <Card title={t("arch.exportTitle", "내보내기")} className="mt-4">
         <div className="flex flex-wrap items-center gap-2">
           <select value={expKind} onChange={(e) => setExpKind(e.target.value)} className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm">
-            <option value="runs">{t("cost.expRuns", "실행")}</option>
-            <option value="sessions">{t("cost.expSessions", "세션")}</option>
-            <option value="usage">{t("cost.expUsage", "사용량")}</option>
-            <option value="reports">{t("cost.expReports", "리포트")}</option>
+            <option value="runs">{t("arch.expRuns", "실행")}</option>
+            <option value="sessions">{t("arch.expSessions", "세션")}</option>
+            <option value="usage">{t("arch.expUsage", "사용량")}</option>
+            <option value="reports">{t("arch.expReports", "리포트")}</option>
           </select>
           <select value={expFormat} onChange={(e) => setExpFormat(e.target.value)} className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm">
             <option value="csv">CSV</option>
@@ -252,7 +297,7 @@ export default function ArchivePage() {
             {["7", "30", "90", "365"].map((x) => <option key={x} value={x}>{t(`common.last${x}`, `최근 ${x}일`)}</option>)}
           </select>
           <Button className="px-3 py-1 text-xs" disabled={exporting} onClick={doExport}>
-            {exporting ? t("cost.exporting", "내보내는 중…") : t("cost.download", "다운로드")}
+            {exporting ? t("arch.exporting", "내보내는 중…") : t("arch.download", "다운로드")}
           </Button>
         </div>
       </Card>

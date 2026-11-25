@@ -4,9 +4,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPatch, ApiError } from "../../shared/api/client";
 import type { Me, Role } from "../../shared/api/types";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Badge } from "../../shared/ui";
 import { fmtTs } from "../../shared/lib/format";
+import { STR } from "./i18n";
+
+registerI18n(STR);
 
 interface TeamMember {
   id?: string;

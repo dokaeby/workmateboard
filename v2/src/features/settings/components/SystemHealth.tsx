@@ -65,7 +65,7 @@ export default function SystemHealth({ active }: { active: boolean }) {
             <Kv
               key={i}
               k={t("settings.system.machine", "머신")}
-              v={`${m.machine || "-"} — ${fmtTsShort(m.last_push_at)} · ${t("settings.sess.title", "세션")} ${m.sessions ?? 0}`}
+              v={`${m.machine || "-"} — ${fmtTsShort(m.last_push_at)} · ${t("settings.system.sessions", "세션")} ${m.sessions ?? 0}`}
             />
           ))
         ) : (

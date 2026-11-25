@@ -2,9 +2,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
+import { STR } from "./i18n";
+
+registerI18n(STR);
 
 interface BridgeMachine {
   machine?: string;
@@ -20,13 +23,15 @@ interface HealthDetail {
   version?: string;
 }
 
-function fmtSecs(sec: number | null | undefined): string {
+type TFunc = (key: string, fallback?: string) => string;
+
+function fmtSecs(sec: number | null | undefined, t: TFunc): string {
   const s = Number(sec);
   if (!isFinite(s) || s < 0) return "-";
-  if (s < 60) return `${Math.floor(s)}초`;
-  if (s < 3600) return `${Math.floor(s / 60)}분`;
-  if (s < 86400) return `${Math.floor(s / 3600)}시간 ${Math.floor((s % 3600) / 60)}분`;
-  return `${Math.floor(s / 86400)}일 ${Math.floor((s % 86400) / 3600)}시간`;
+  if (s < 60) return `${Math.floor(s)}${t("sys.unit.s", "초")}`;
+  if (s < 3600) return `${Math.floor(s / 60)}${t("sys.unit.m", "분")}`;
+  if (s < 86400) return `${Math.floor(s / 3600)}${t("sys.unit.h", "시간")} ${Math.floor((s % 3600) / 60)}${t("sys.unit.m", "분")}`;
+  return `${Math.floor(s / 86400)}${t("sys.unit.d", "일")} ${Math.floor((s % 86400) / 3600)}${t("sys.unit.h", "시간")}`;
 }
 
 function dbLabel(db: HealthDetail["db"]): string {
@@ -74,7 +79,7 @@ function SystemBody() {
             <dl className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
               <div className="flex justify-between gap-2 border-b border-border py-1">
                 <dt className="text-muted">{t("sys.uptime", "API 가동시간")}</dt>
-                <dd>{fmtSecs(data.api?.uptime_s)}</dd>
+                <dd>{fmtSecs(data.api?.uptime_s, t)}</dd>
               </div>
               <div className="flex justify-between gap-2 border-b border-border py-1">
                 <dt className="text-muted">{t("sys.version", "버전")}</dt>
@@ -126,7 +131,7 @@ function SystemBody() {
                     </div>
                     <dl className="grid gap-y-1 text-xs">
                       <div className="flex justify-between gap-2">
-                        <dt className="text-muted">{t("sys.lastPush", "마지막 push")}</dt>
+                        <dt className="text-muted">{t("sys.lastPushShort", "마지막 push")}</dt>
                         <dd>{fmtTs(m.last_push_at)}</dd>
                       </div>
                       <div className="flex justify-between gap-2">

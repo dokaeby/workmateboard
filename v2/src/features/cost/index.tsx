@@ -2,9 +2,12 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, apiHeaders } from "../../shared/api/client";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button } from "../../shared/ui";
 import { usd } from "../../shared/lib/format";
+import { STR } from "./i18n";
+
+registerI18n(STR);
 
 interface UsageSummary {
   total_cost_usd?: number;
@@ -89,7 +92,7 @@ export default function CostPage() {
       const r = await fetch(`/api/v1/export?${q}`, { headers: apiHeaders() });
       if (!r.ok) {
         const j = (await r.json().catch(() => ({}))) as { error?: { message?: string } };
-        alert(j.error?.message || `내보내기 실패: ${r.status}`);
+        alert(j.error?.message || `${t("cost.exportFail", "내보내기 실패")}: ${r.status}`);
         return;
       }
       const blob = await r.blob();

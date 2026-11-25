@@ -212,7 +212,7 @@ export function OfficeSidePanel({ people, selectedId, onPick, events, onTogglePi
                   style={{ padding: "2px 8px", fontSize: 11 }}
                   onClick={(e) => { e.stopPropagation(); onTogglePin(d.id); }}
                 >
-                  {d.pinned ? "📌 해제" : "📌 고정"}
+                  {d.pinned ? I18N.t("pin.off") : I18N.t("pin.on")}
                 </button>
               </p>
             )}

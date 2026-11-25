@@ -5,10 +5,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
+import { STR } from "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, fmtAge } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
+
+registerI18n(STR);
 
 interface StageAgg {
   stage_key: string; calls: number; failures: number;
@@ -103,24 +106,39 @@ export default function MonitorPage() {
   if (data) {
     const topStage = data.by_stage[0];
     if (topStage?.latency_s.p95 != null && topStage.latency_s.p95 > 0) {
-      insights.push(`가장 느린 stage: ${topStage.stage_key} (p95 ${fmtSecs(topStage.latency_s.p95)}, 호출 ${topStage.calls}회)`);
+      insights.push(t("monitor.insight.slowest", "가장 느린 stage: {stage} (p95 {lat}, 호출 {calls}회)")
+        .replace("{stage}", topStage.stage_key)
+        .replace("{lat}", fmtSecs(topStage.latency_s.p95))
+        .replace("{calls}", String(topStage.calls)));
     }
     if (data.retry.token_pct != null && data.retry.token_pct > 0) {
-      insights.push(`재시도로 소모한 토큰: 전체의 ${data.retry.token_pct}% (${data.retry.tokens.toLocaleString()} tok, ${data.retry.calls}회)`);
+      insights.push(t("monitor.insight.retryTokens", "재시도로 소모한 토큰: 전체의 {pct}% ({tok} tok, {calls}회)")
+        .replace("{pct}", String(data.retry.token_pct))
+        .replace("{tok}", data.retry.tokens.toLocaleString())
+        .replace("{calls}", String(data.retry.calls)));
     }
     const topTokStage = [...(data.by_stage || [])].sort((a, b) => b.tokens - a.tokens)[0];
     if (topTokStage && data.tokens.total > 0) {
-      insights.push(`토큰 소비 1위 stage: ${topTokStage.stage_key} (${((topTokStage.tokens / data.tokens.total) * 100).toFixed(0)}%)`);
+      insights.push(t("monitor.insight.topTok", "토큰 소비 1위 stage: {stage} ({pct}%)")
+        .replace("{stage}", topTokStage.stage_key)
+        .replace("{pct}", ((topTokStage.tokens / data.tokens.total) * 100).toFixed(0)));
     }
     if (data.budget?.alert) {
-      insights.push(`월 토큰 예산 ${data.budget.used_pct}% 사용 — 모델 다운그레이드 또는 샘플링 강화 검토`);
+      insights.push(t("monitor.insight.budget", "월 토큰 예산 {pct}% 사용 — 모델 다운그레이드 또는 샘플링 강화 검토")
+        .replace("{pct}", String(data.budget.used_pct)));
     }
     if (data.approval_backlog.waiting > 0 && data.approval_backlog.oldest_wait_s != null) {
-      insights.push(`승인 대기 ${data.approval_backlog.waiting}건 — 최장 ${fmtAge(data.approval_backlog.oldest_wait_s)}, 총 대기 ${fmtAge(data.approval_backlog.total_wait_s)}`);
+      insights.push(t("monitor.insight.backlog", "승인 대기 {n}건 — 최장 {oldest}, 총 대기 {total}")
+        .replace("{n}", String(data.approval_backlog.waiting))
+        .replace("{oldest}", fmtAge(data.approval_backlog.oldest_wait_s))
+        .replace("{total}", fmtAge(data.approval_backlog.total_wait_s)));
     }
     const worstModel = data.stage_model_matrix.find((r) => (r.failure_rate_pct ?? 0) > 20);
     if (worstModel) {
-      insights.push(`높은 실패율 조합: ${worstModel.stage_key} × ${worstModel.model} (${worstModel.failure_rate_pct}%)`);
+      insights.push(t("monitor.insight.badCombo", "높은 실패율 조합: {stage} × {model} ({pct}%)")
+        .replace("{stage}", worstModel.stage_key)
+        .replace("{model}", worstModel.model)
+        .replace("{pct}", String(worstModel.failure_rate_pct)));
     }
   }
 
@@ -135,7 +153,7 @@ export default function MonitorPage() {
           onChange={(e) => setDays(Number(e.target.value))}
           className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
         >
-          {[7, 14, 30, 90].map((d) => <option key={d} value={d}>{t("monitor.days", `최근 ${d}일`)}</option>)}
+          {[7, 14, 30, 90].map((d) => <option key={d} value={d}>{t("monitor.days", "최근 {n}일").replace("{n}", String(d))}</option>)}
         </select>
         <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => refetch()}>
           {t("common.reload", "새로고침")}
@@ -225,7 +243,7 @@ export default function MonitorPage() {
             </Card>
 
             {/* 토큰 + 승인 백로그 */}
-            <Card title={t("monitor.tokens", "토큰 사용량")}>
+            <Card title={t("monitor.tokenUsage", "토큰 사용량")}>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                 <dt className="text-muted">{t("monitor.tokIn", "입력")}</dt>
                 <dd className="text-right font-medium text-ink">{data.tokens.total_in.toLocaleString()}</dd>
@@ -369,7 +387,7 @@ export default function MonitorPage() {
                 {Object.keys(data.retry.attempts_hist).length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
                     {Object.entries(data.retry.attempts_hist).map(([a, n]) => (
-                      <Badge key={a} tone={Number(a) > 1 ? "warn" : "muted"}>attempt {a}: {n}회</Badge>
+                      <Badge key={a} tone={Number(a) > 1 ? "warn" : "muted"}>{t("monitor.attempts", "attempt {a}: {n}회").replace("{a}", a).replace("{n}", String(n))}</Badge>
                     ))}
                   </div>
                 )}
@@ -458,7 +476,11 @@ export default function MonitorPage() {
               <>
                 <div className="flex h-20 items-end gap-[2px]">
                   {daily.map((x) => (
-                    <div key={x.date} className="flex flex-1 flex-col justify-end" title={`${x.date} · ${x.runs}회 · 오류 ${x.errors} · 토큰 ${x.tokens.toLocaleString()}`}>
+                    <div key={x.date} className="flex flex-1 flex-col justify-end" title={t("monitor.dailyTitle", "{date} · {runs}회 · 오류 {errors} · 토큰 {tokens}")
+                      .replace("{date}", x.date)
+                      .replace("{runs}", String(x.runs))
+                      .replace("{errors}", String(x.errors))
+                      .replace("{tokens}", x.tokens.toLocaleString())}>
                       <div className="rounded-t bg-red-400/80" style={{ height: `${x.runs ? Math.max(2, Math.round(x.errors / dMax * 100)) : 0}%` }} />
                       <div className="rounded-t bg-accent/70" style={{ height: `${Math.max(4, Math.round(x.runs / dMax * 100))}%` }} />
                     </div>

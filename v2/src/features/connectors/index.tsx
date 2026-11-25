@@ -2,9 +2,12 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
+import { STR } from "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, safeUrl } from "../../shared/lib/format";
+
+registerI18n(STR);
 
 interface Connector {
   id: string;
@@ -93,7 +96,7 @@ function NewConnectorForm({ onDone }: { onDone: () => void }) {
         {fields.map(([k, label, ty]) => (
           <input
             key={k} type={ty} value={cfg[k] || ""} autoComplete="off"
-            placeholder={label}
+            placeholder={t(`conn.f.${type}.${k}`, label)}
             onChange={(e) => setCfg((c) => ({ ...c, [k]: e.target.value }))}
             className={inputCls}
           />

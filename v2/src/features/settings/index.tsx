@@ -363,7 +363,7 @@ export default function SettingsPage() {
             const on = d.menu[it.view] === true;
             return (
               <div key={it.view} className="flex items-center gap-3 border-b border-border py-2 last:border-0">
-                <span className="min-w-0 flex-1 truncate text-sm text-ink">{it.label}</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-ink">{t(`nav.${it.view}`, it.label)}</span>
                 {it.minRole && <Badge>{it.minRole}+</Badge>}
                 <span className="inline-flex overflow-hidden rounded-lg border border-border">
                   {([true, false] as const).map((v) => (

@@ -3,9 +3,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
+import { STR } from "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
+
+registerI18n(STR);
 
 const PLATFORMS = ["claude", "chatgpt", "gemini"];
 const TAXONOMIES = ["all", "agents", "mcp", "skills", "plugins", "devtools", "automation", "data", "other"];
@@ -387,7 +390,7 @@ export default function RadarPage() {
                         <div className="mt-1 flex flex-wrap items-center gap-1">
                           {item.platform && <Badge tone="accent">{item.platform}</Badge>}
                           {item.taxonomy && <Badge>{item.taxonomy}</Badge>}
-                          {(item.appearances || 1) > 1 && <Badge>{item.appearances}회</Badge>}
+                          {(item.appearances || 1) > 1 && <Badge>{t("radar.appearances", "{n}회").replace("{n}", String(item.appearances))}</Badge>}
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
                           {item.license
@@ -487,7 +490,7 @@ function RepoDetail({ item, lang, onBack, onTopic, onRun, runState, setView, t }
             {item.license
               ? <span title={`License: ${item.license}`}><Badge>{licenseShort(item.license)}</Badge></span>
               : <Badge>{t("radar.noLicense", "라이선스 없음")}</Badge>}
-            {(item.appearances || 1) > 1 && <Badge>{item.appearances}회</Badge>}
+            {(item.appearances || 1) > 1 && <Badge>{t("radar.appearances", "{n}회").replace("{n}", String(item.appearances))}</Badge>}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">

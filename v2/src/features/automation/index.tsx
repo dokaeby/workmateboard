@@ -2,9 +2,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
+import { STR } from "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
+
+registerI18n(STR);
 
 interface ScheduleItem {
   id?: string;
@@ -97,7 +100,7 @@ function AutomationBody() {
                     {schedules.map((s, i) => (
                       <tr key={s.id || i} className="border-b border-border last:border-0">
                         <td className="py-2 pr-3 font-mono text-xs">{s.workflow || "-"}</td>
-                        <td className="py-2 pr-3 text-xs">{s.interval_minutes != null ? `${s.interval_minutes}분` : "-"}</td>
+                        <td className="py-2 pr-3 text-xs">{s.interval_minutes != null ? t("auto.minFmt", "{n}분").replace("{n}", String(s.interval_minutes)) : "-"}</td>
                         <td className="py-2 pr-3">
                           {s.enabled
                             ? <Badge tone="ok">{t("auto.on", "사용")}</Badge>

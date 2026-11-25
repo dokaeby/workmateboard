@@ -50,6 +50,16 @@ registerI18n({
     "inbox.cardDisabled": "비활성화된 카드입니다",
     "inbox.rptGenerated": "생성",
     "inbox.cardErr": "오류",
+    "inbox.countUnit": "건",
+    "inbox.rptSec.runs": "실행",
+    "inbox.rptSec.sessions": "세션",
+    "inbox.rptSec.llm": "LLM 비용",
+    "inbox.rptSec.approvals": "승인",
+    "inbox.rptSec.radar": "Radar",
+    "inbox.rptSec.notable_failures": "주요 실패",
+    "inbox.rptSec.narrative": "요약",
+    "inbox.rptSec.highlights": "주요 사항",
+    "inbox.rptSec.risks": "리스크",
   },
   en: {
     "inbox.title": "Inbox",
@@ -90,6 +100,16 @@ registerI18n({
     "inbox.cardDisabled": "This card is disabled",
     "inbox.rptGenerated": "Generated",
     "inbox.cardErr": "Error",
+    "inbox.countUnit": " items",
+    "inbox.rptSec.runs": "Runs",
+    "inbox.rptSec.sessions": "Sessions",
+    "inbox.rptSec.llm": "LLM cost",
+    "inbox.rptSec.approvals": "Approvals",
+    "inbox.rptSec.radar": "Radar",
+    "inbox.rptSec.notable_failures": "Notable failures",
+    "inbox.rptSec.narrative": "Summary",
+    "inbox.rptSec.highlights": "Highlights",
+    "inbox.rptSec.risks": "Risks",
   },
 });
 
@@ -214,7 +234,7 @@ function renderReportBody(r: unknown, t: (k: string, f?: string) => string): Rea
         return (
           <div key={k} className="rounded-lg border border-border p-3">
             <h4 className="mb-1 text-sm font-semibold text-ink">
-              {RPT_SECTION_LABEL[k] || k}
+              {t(`inbox.rptSec.${k}`, RPT_SECTION_LABEL[k] || k)}
             </h4>
             {Array.isArray(v) ? (
               v.length ? (
@@ -380,7 +400,7 @@ function CardWidget({ card }: { card: CardItem }) {
     <div className="mb-3 rounded-lg border border-border p-3 last:mb-0">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
-          {card.title || "(제목 없음)"}
+          {card.title || t("inbox.noTitle", "(제목 없음)")}
         </span>
         <Badge tone={enabled ? "ok" : "muted"}>
           {enabled ? t("inbox.cardOn", "사용") : t("inbox.cardOff", "중지")}
@@ -518,7 +538,7 @@ export default function InboxPage() {
         desc={t("inbox.desc", "세션 주의·승인·일정·리포트 알림")}
       >
         <Badge tone={unreadCount > 0 ? "accent" : "muted"}>
-          {t("inbox.unread", "읽지 않음")} {unreadCount}건
+          {t("inbox.unread", "읽지 않음")} {unreadCount}{t("inbox.countUnit", "건")}
         </Badge>
         <Button
           variant={unreadOnly ? "primary" : "secondary"}

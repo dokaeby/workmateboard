@@ -2,34 +2,41 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
+import { STR } from "./i18n";
 import { useAppStore } from "../../shared/store/appStore";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button } from "../../shared/ui";
+
+registerI18n(STR);
 
 interface CustomWorkflow { name: string; spec?: unknown; created_at?: string }
 interface CustomListResponse { items?: CustomWorkflow[] }
 
+type TFn = (key: string, fallback?: string) => string;
+
 /** 레거시 WF_TEMPLATE과 동일한 예시 스펙. */
-const WF_TEMPLATE = {
-  key: "my_flow",
-  version: "0.1.0",
-  description: "커스텀 워크플로 예시",
-  entry: "analyze",
-  stages: [
-    { key: "analyze", kind: "llm", agent: "analysis", description: "입력 분석" },
-    { key: "review", kind: "llm", agent: "qa", description: "결과 검수" },
-    { key: "done", kind: "human", description: "사람 확인" },
-  ],
-  branches: {},
-};
+function wfTemplate(t: TFn) {
+  return {
+    key: "my_flow",
+    version: "0.1.0",
+    description: t("wf.tpl.desc", "커스텀 워크플로 예시"),
+    entry: "analyze",
+    stages: [
+      { key: "analyze", kind: "llm", agent: "analysis", description: t("wf.tpl.analyze", "입력 분석") },
+      { key: "review", kind: "llm", agent: "qa", description: t("wf.tpl.review", "결과 검수") },
+      { key: "done", kind: "human", description: t("wf.tpl.done", "사람 확인") },
+    ],
+    branches: {},
+  };
+}
 
 const SPEC_PLACEHOLDER = '{"key":"...","version":"0.1.0","entry":"...","stages":[...]}';
 
-function parseSpec(raw: string): Record<string, unknown> {
-  if (!raw.trim()) throw new Error("스펙 JSON을 입력하세요");
+function parseSpec(raw: string, t: TFn): Record<string, unknown> {
+  if (!raw.trim()) throw new Error(t("wf.needSpecJson", "스펙 JSON을 입력하세요"));
   const spec: unknown = JSON.parse(raw);
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
-    throw new Error("스펙은 JSON 객체여야 합니다");
+    throw new Error(t("wf.specNotObject", "스펙은 JSON 객체여야 합니다"));
   }
   return spec as Record<string, unknown>;
 }
@@ -72,7 +79,7 @@ export default function BuilderPage() {
   /** 저장/실행 공용 — 스펙 파싱 후 spec.key를 name과 일치시킨다(백엔드 요구사항). */
   const prepare = (): { name: string; spec: Record<string, unknown> } | null => {
     try {
-      const spec = parseSpec(specText);
+      const spec = parseSpec(specText, t);
       const n = name.trim() || String(spec.key || "");
       if (!n) {
         setStatus({ text: t("wf.needName", "워크플로 이름(key)을 입력하세요"), err: true });
@@ -95,7 +102,7 @@ export default function BuilderPage() {
     try {
       await apiPost("/workflows/custom", { name: p.name, spec: p.spec });
       setName(p.name);
-      setStatus({ text: t("common.saved", "저장했습니다: {name}").replace("{name}", p.name) });
+      setStatus({ text: t("wf.saved", "저장했습니다: {name}").replace("{name}", p.name) });
       qc.invalidateQueries({ queryKey: ["custom-workflows"] });
       qc.invalidateQueries({ queryKey: ["workflow-keys"] });
     } catch (e) {
@@ -153,8 +160,9 @@ export default function BuilderPage() {
                 className="min-w-44 flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
               />
               <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => {
-                setSpecText(JSON.stringify(WF_TEMPLATE, null, 2));
-                if (!name.trim()) setName(WF_TEMPLATE.key);
+                const tpl = wfTemplate(t);
+                setSpecText(JSON.stringify(tpl, null, 2));
+                if (!name.trim()) setName(tpl.key);
               }}>
                 {t("wf.template", "템플릿 삽입")}
               </Button>
@@ -180,7 +188,7 @@ export default function BuilderPage() {
             {status.text && <div className={`mt-2 text-xs ${status.err ? "text-err" : "text-ok"}`}>{status.text}</div>}
           </Card>
           <Card title={t("wf.specTitle", "스펙 형식")}>
-            <pre className="overflow-auto rounded-md bg-surface-hover p-2 text-[11px] leading-relaxed text-muted">{`{
+            <pre className="overflow-auto rounded-md bg-surface-hover p-2 text-[11px] leading-relaxed text-muted">{t("wf.specFormat", `{
   "key": "my_flow",            // 워크플로 이름 — 저장 name과 반드시 일치
   "version": "0.1.0",
   "description": "...",
@@ -191,7 +199,7 @@ export default function BuilderPage() {
     {"key": "done",    "kind": "human",    "description": "사람 확인"}
   ],
   "branches": {}               // stage_key -> {output_field: {value: next_stage}}
-}`}</pre>
+}`)}</pre>
             <p className="mt-2 text-xs text-muted">
               {t("wf.specHint", "kind는 llm/function/human 중 하나. llm은 agent, function은 function 필수. spec.key는 워크플로 이름과 같아야 합니다.")}
             </p>

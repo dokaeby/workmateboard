@@ -108,7 +108,7 @@ export default function RisksPage() {
             <Card key={`${r.type}:${r.ref_kind}:${r.ref_id}:${i}`} className="border-l-4">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={sevTone(sev)}>{sevLabel(sev, t)}</Badge>
-                <span className="text-sm font-semibold text-ink">{r.title || r.type || "리스크"}</span>
+                <span className="text-sm font-semibold text-ink">{r.title || r.type || t("risks.title", "리스크")}</span>
                 <span className="ml-auto text-xs text-muted">
                   {r.type ? <span className="mr-1 rounded bg-surface-hover px-1">{r.type}</span> : null}
                   {fmtAge(r.age_seconds)} · {fmtTs(r.at)}

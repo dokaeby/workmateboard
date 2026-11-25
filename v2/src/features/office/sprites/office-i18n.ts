@@ -43,6 +43,7 @@ const TEXT: Record<"ko" | "en", Dict> = {
     "ev.check": "확인 필요", "ev.task": "일 받음", "ev.end": "일 끝",
     "sound.on": "알림 소리 켜기", "sound.off": "알림 소리 끄기",
     "meet.zone": "회의",
+    "pin.on": "📌 고정", "pin.off": "📌 해제",
   },
   en: {
     title: "3D Office",
@@ -79,6 +80,7 @@ const TEXT: Record<"ko" | "en", Dict> = {
     "ev.check": "check needed", "ev.task": "new task", "ev.end": "done",
     "sound.on": "Unmute notifications", "sound.off": "Mute notifications",
     "meet.zone": "Meeting",
+    "pin.on": "📌 Pin", "pin.off": "📌 Unpin",
   },
 };
 

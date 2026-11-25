@@ -3,10 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../shared/api/client";
 import type { Me, Prefs, ViewKey } from "../shared/api/types";
 import { useAppStore, roleAllows } from "../shared/store/appStore";
-import { useI18n, setLang, getLang, type Lang } from "../shared/i18n";
+import { useI18n, setLang, getLang, registerI18n, type Lang } from "../shared/i18n";
 import { NAV_ITEMS, visibleNavItems } from "./nav";
+import { STR as APP_I18N } from "./i18n";
 import { ViewLoader } from "./views";
 import { useSseInvalidation } from "../shared/stream";
+
+registerI18n(APP_I18N);
 
 async function fetchMe(): Promise<Me | null> {
   try {
@@ -79,7 +82,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               }`}
             >
               <span className="w-5 text-center">{it.icon}</span>
-              {it.label}
+              {t(`nav.${it.view}`, it.label)}
               {it.view === "approvals" && badgeCount > 0 && (
                 <span className="ml-auto rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
                   {badgeCount > 99 ? "99+" : badgeCount}
@@ -89,9 +92,9 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           ))}
         </nav>
         <div className="border-t border-border p-3 text-xs text-muted">
-          <a href="/static/privacy.html" target="_blank" rel="noopener" className="hover:text-accent">개인정보처리방침</a>
+          <a href="/static/privacy.html" target="_blank" rel="noopener" className="hover:text-accent">{t("app.privacy", "개인정보처리방침")}</a>
           {" · "}
-          <a href="/static/terms.html" target="_blank" rel="noopener" className="hover:text-accent">이용약관</a>
+          <a href="/static/terms.html" target="_blank" rel="noopener" className="hover:text-accent">{t("app.terms", "이용약관")}</a>
         </div>
       </aside>
     </>
@@ -276,7 +279,7 @@ function MobileBar() {
           key={it.view + it.label}
           onClick={() => {
             if (it.view === "approvals" && !roleAllows("lead", useAppStore.getState().role)) {
-              alert("승인 대기열은 리드 이상 권한이 필요합니다");
+              alert(t("app.approvalLeadOnly", "승인 대기열은 리드 이상 권한이 필요합니다"));
               return;
             }
             setView(it.view);
@@ -284,7 +287,7 @@ function MobileBar() {
           className="flex flex-col items-center py-2 text-[11px] text-muted"
         >
           <b className="text-sm text-ink">{it.value}</b>
-          <span>{it.label}</span>
+          <span>{t(`nav.${it.view}`, it.label)}</span>
         </button>
       ))}
     </nav>

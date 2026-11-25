@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { createLife, type Life } from "./sprites/office-life";
 import { createOfficeView, type OfficeView } from "./sprites/office-view";
 import type { LifeEvent, PersonInput } from "./sprites/types";
+import * as I18N from "./sprites/office-i18n";
 import { useI18n } from "../../shared/i18n";
 
 const FRAME_MS = 1000 / 30;
@@ -150,7 +151,7 @@ export function SpriteBoard({
         onMouseMove={onMove}
         onPointerDown={wake}
         role="img"
-        aria-label="sprite office canvas"
+        aria-label={I18N.t("canvas.label")}
         style={{ display: "block", width: "100%", height: "100%" }}
       />
     </div>

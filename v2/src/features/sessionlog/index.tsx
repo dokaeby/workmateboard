@@ -32,6 +32,10 @@ registerI18n({
     "sl.tokensOut": "토큰 out",
     "sl.cost": "비용",
     "sl.totalTime": "총 시간",
+    "sl.others": "외 {n}개",
+    "sl.durH": "시간",
+    "sl.durM": "분",
+    "sl.durS": "초",
   },
   en: {
     "sl.title": "Session Log",
@@ -56,6 +60,10 @@ registerI18n({
     "sl.tokensOut": "Tokens out",
     "sl.cost": "Cost",
     "sl.totalTime": "Total time",
+    "sl.others": "+{n} more",
+    "sl.durH": "h",
+    "sl.durM": "m",
+    "sl.durS": "s",
   },
 });
 
@@ -114,17 +122,17 @@ function statusTone(status: string | undefined): "muted" | "warn" | "accent" | "
   return "muted";
 }
 
-// 레거시 officeFmtSecs 대응 — 초 → "N시간 N분 N초"
-function fmtDurSec(sec: number | null | undefined): string {
+// 레거시 officeFmtSecs 대응 — 초 → "N시간 N분 N초" (단위는 t() 로 언어 전환)
+function fmtDurSec(sec: number | null | undefined, t: (k: string, f?: string) => string): string {
   const s = Number(sec);
   if (!isFinite(s) || s < 0) return "-";
   const total = Math.floor(s);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const r = total % 60;
-  if (h > 0) return `${h}시간 ${m}분`;
-  if (m > 0) return `${m}분 ${r}초`;
-  return `${r}초`;
+  if (h > 0) return `${h}${t("sl.durH", "시간")} ${m}${t("sl.durM", "분")}`;
+  if (m > 0) return `${m}${t("sl.durM", "분")} ${r}${t("sl.durS", "초")}`;
+  return `${r}${t("sl.durS", "초")}`;
 }
 
 function filesList(files: unknown): string[] {
@@ -326,7 +334,7 @@ export default function SessionlogPage() {
                   {t("sl.tokensOut", "토큰 out")} {(stats.tokens_out ?? 0).toLocaleString()}
                 </Badge>
                 <Badge tone="muted">{t("sl.cost", "비용")} {usd(stats.est_cost_usd)}</Badge>
-                <Badge tone="muted">{t("sl.totalTime", "총 시간")} {fmtDurSec(stats.total_seconds)}</Badge>
+                <Badge tone="muted">{t("sl.totalTime", "총 시간")} {fmtDurSec(stats.total_seconds, t)}</Badge>
               </div>
 
               {/* 상태 전이 타임라인 */}
@@ -350,7 +358,7 @@ export default function SessionlogPage() {
                           {trans ? <b className="text-xs">{trans}</b> : null}
                           {tl.text ? <span className="min-w-0 flex-1">{tl.text}</span> : null}
                           {tl.duration_s != null ? (
-                            <span className="text-xs text-muted">({fmtDurSec(tl.duration_s)})</span>
+                            <span className="text-xs text-muted">({fmtDurSec(tl.duration_s, t)})</span>
                           ) : null}
                         </li>
                       );
@@ -370,7 +378,7 @@ export default function SessionlogPage() {
                         {f}
                       </span>
                     ))}
-                    {files.length > 40 ? <span className="text-xs text-muted">외 {files.length - 40}개</span> : null}
+                    {files.length > 40 ? <span className="text-xs text-muted">{t("sl.others", "외 {n}개").replace("{n}", String(files.length - 40))}</span> : null}
                   </div>
                 </div>
               ) : null}

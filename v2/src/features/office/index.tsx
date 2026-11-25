@@ -68,6 +68,25 @@ registerI18n({
     "office.mode.board": "3D 보드",
     "office.mode.sprites": "스프라이트 사무실",
     "office.demo": "데모",
+    "office.modeLabel": "관제 모드",
+    "office.toolFilter": "세션 도구 필터",
+    "office.sessFilter": "세션 필터",
+    "office.active": "활성",
+    "office.ended": "종료",
+    "office.projFilter": "프로젝트 필터",
+    "office.allProjects": "전체 프로젝트",
+    "office.sessSearch": "세션 검색…",
+    "office.stage.analysis": "요구사항 분석",
+    "office.stage.implement": "구현",
+    "office.stage.auto_checks": "자동 검사",
+    "office.stage.security": "보안 검토",
+    "office.stage.code_review": "코드 리뷰",
+    "office.stage.qa": "최종 검수",
+    "office.stage.approval": "사람 승인",
+    "office.hourSuffix": "시",
+    "office.minuteSuffix": "분",
+    "office.minUnit": "분",
+    "office.timesUnit": "회",
   },
   en: {
     "office.title": "Agent Office",
@@ -116,6 +135,25 @@ registerI18n({
     "office.mode.board": "3D Board",
     "office.mode.sprites": "Sprite Office",
     "office.demo": "Demo",
+    "office.modeLabel": "View mode",
+    "office.toolFilter": "Session tool filter",
+    "office.sessFilter": "Session filter",
+    "office.active": "Active",
+    "office.ended": "Ended",
+    "office.projFilter": "Project filter",
+    "office.allProjects": "All projects",
+    "office.sessSearch": "Search sessions…",
+    "office.stage.analysis": "Requirements analysis",
+    "office.stage.implement": "Implement",
+    "office.stage.auto_checks": "Auto checks",
+    "office.stage.security": "Security review",
+    "office.stage.code_review": "Code review",
+    "office.stage.qa": "Final QA",
+    "office.stage.approval": "Human approval",
+    "office.hourSuffix": "h",
+    "office.minuteSuffix": "m",
+    "office.minUnit": " min",
+    "office.timesUnit": " times",
   },
 });
 
@@ -329,7 +367,7 @@ function PipelineCard({ runId }: { runId: string | null }) {
             >
               <div className="flex items-center justify-between gap-1">
                 <span className="truncate text-xs font-semibold text-ink">
-                  {STAGE_LABEL[key] || key}
+                  {t(`office.stage.${key}`, STAGE_LABEL[key] || key)}
                 </span>
                 <Badge tone={stageTone(status)}>{status}</Badge>
               </div>
@@ -609,8 +647,8 @@ function SessionStatsCard() {
       {stats.error && <ErrorBox message={stats.error instanceof Error ? stats.error.message : String(stats.error)} />}
       {ended.error && <ErrorBox message={ended.error instanceof Error ? ended.error.message : String(ended.error)} />}
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-        <span>{t("office.statsWork", "오늘 working")} <b className="text-ink">{Math.round(workSec / 60)}분</b></span>
-        <span>{t("office.statsDecisions", "decision")} <b className="text-ink">{decisions}회</b></span>
+        <span>{t("office.statsWork", "오늘 working")} <b className="text-ink">{Math.round(workSec / 60)}{t("office.minUnit", "분")}</b></span>
+        <span>{t("office.statsDecisions", "decision")} <b className="text-ink">{decisions}{t("office.timesUnit", "회")}</b></span>
         <span>{t("office.statsEnded", "ended")} <b className="text-ink">{endedN}</b></span>
         {lastEndedText && (
           <span className="min-w-0 truncate">
@@ -633,13 +671,13 @@ function SessionStatsCard() {
                   key={i}
                   className={`flex-1 rounded-sm ${sec ? "bg-accent" : "bg-surface-hover"}`}
                   style={{ height: `${pct}%` }}
-                  title={`${hh}시 ${Math.round(sec / 60)}분`}
+                  title={`${hh}${t("office.hourSuffix", "시")} ${Math.round(sec / 60)}${t("office.minuteSuffix", "분")}`}
                 />
               );
             })}
           </div>
           <div className="mt-0.5 flex justify-between text-[10px] text-muted">
-            <span>00시</span><span>12시</span><span>23시</span>
+            <span>00{t("office.hourSuffix", "시")}</span><span>12{t("office.hourSuffix", "시")}</span><span>23{t("office.hourSuffix", "시")}</span>
           </div>
         </div>
       )}

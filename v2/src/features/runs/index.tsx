@@ -3,10 +3,13 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
 import type { Run, StageRun, RunStats, RunDiff, AuditEvent } from "../../shared/api/types";
-import { useI18n } from "../../shared/i18n";
+import { useI18n, registerI18n } from "../../shared/i18n";
+import { STR } from "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
+
+registerI18n(STR);
 
 interface RunListItem {
   id: string; workflow?: string; status: string; project?: string; created_at?: string;
@@ -29,18 +32,28 @@ export function useRunsList() {
   });
 }
 
-function fmtSecs(sec: number | null | undefined): string {
+type TFn = (key: string, fallback?: string) => string;
+
+function fmtSecs(sec: number | null | undefined, t: TFn): string {
   const s = Number(sec);
   if (!isFinite(s) || s < 0) return "-";
-  if (s < 60) return `${Math.round(s)}초`;
-  if (s < 3600) return `${Math.floor(s / 60)}분 ${Math.round(s % 60)}초`;
-  return `${Math.floor(s / 3600)}시간 ${Math.floor((s % 3600) / 60)}분`;
+  if (s < 60) return t("runs.sec", "{n}초").replace("{n}", String(Math.round(s)));
+  if (s < 3600) {
+    return t("runs.min", "{m}분 {s}초")
+      .replace("{m}", String(Math.floor(s / 60)))
+      .replace("{s}", String(Math.round(s % 60)));
+  }
+  return t("runs.hour", "{h}시간 {m}분")
+    .replace("{h}", String(Math.floor(s / 3600)))
+    .replace("{m}", String(Math.floor((s % 3600) / 60)));
 }
 
-function diffCap200(diff: string | undefined): string {
+function diffCap200(diff: string | undefined, t: TFn): string {
   const s = String(diff ?? "");
   const lines = s.split("\n");
-  return lines.length > 200 ? lines.slice(0, 200).join("\n") + "\n… (이하 생략)" : s;
+  return lines.length > 200
+    ? lines.slice(0, 200).join("\n") + "\n" + t("runs.diffTruncated", "… (이하 생략)")
+    : s;
 }
 
 // ── 실행 통계 (GET /runs/stats?days=30&workflow=) — details 열 때만 로드 ──
@@ -111,7 +124,7 @@ function RunStatsCard() {
             </div>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted">
               <dt>{t("runs.avgDuration", "평균 소요시간")}</dt>
-              <dd className="text-ink">{fmtSecs(data.avg_duration_s)}</dd>
+              <dd className="text-ink">{fmtSecs(data.avg_duration_s, t)}</dd>
               <dt>{t("runs.totalTokens", "총 토큰")}</dt>
               <dd className="text-ink">
                 in {(data.total_tokens_in || 0).toLocaleString()} / out {(data.total_tokens_out || 0).toLocaleString()}
@@ -126,7 +139,10 @@ function RunStatsCard() {
                       key={x.date}
                       className="flex-1 rounded-t bg-accent/70"
                       style={{ height: `${Math.max(4, Math.round((x.runs || 0) / dMax * 100))}%` }}
-                      title={`${x.date} · ${x.runs ?? 0}회 · 토큰 ${(x.tokens || 0).toLocaleString()}`}
+                      title={t("runs.dailyTitle", "{date} · {runs}회 · 토큰 {tokens}")
+                        .replace("{date}", x.date)
+                        .replace("{runs}", String(x.runs ?? 0))
+                        .replace("{tokens}", (x.tokens || 0).toLocaleString())}
                     />
                   ))}
                 </div>
@@ -215,7 +231,7 @@ function RunDiffSection({ runId }: { runId: string }) {
               <span className="shrink-0 text-muted">+{f.additions || 0} / −{f.deletions || 0}</span>
             </summary>
             <pre className="max-h-72 overflow-auto border-t border-border bg-surface-hover p-2 text-[11px] leading-snug">
-              {diffCap200(f.diff)}
+              {diffCap200(f.diff, t)}
             </pre>
           </details>
         ))}
