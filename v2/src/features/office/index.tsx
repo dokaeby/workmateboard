@@ -496,12 +496,17 @@ function AuditFeed({ runId }: { runId: string | null }) {
   );
 }
 
-// ── 활성 세션 목록 + 활동 기록 ──
-function SessionsPanel() {
+// ── 활성 세션 목록 + 활동 기록 + 통계/스케줄 — 하단 3열 그리드 ──
+// 세션 선택 상태를 공유하기 위해 한 컴포넌트로 묶고, 카드 배치는
+// 바깥 그리드(5:4:3)가 담당한다 — 이전 중첩 그리드는 박스 크기가
+// 제각각이라 시각적으로 어긋나 보였다.
+function OfficeBottomGrid() {
   const { t } = useI18n();
   const [selKey, setSelKey] = useState<string | null>(null);
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["office-sessions"],
+    // "active"/"all" 키 분리 — 같은 키에 다른 queryFn을 쓰면 React Query가
+    // dedupe하면서 include_ended=false 결과가 모든 뷰에 캐시된다.
+    queryKey: ["office-sessions", "active"],
     queryFn: () => apiGet<SessionView[]>("/agent-sessions?limit=50&include_ended=false"),
     refetchInterval: 10000,
   });
@@ -521,8 +526,8 @@ function SessionsPanel() {
   });
 
   return (
-    <div className="grid gap-3 lg:grid-cols-[1fr_320px]">
-      <Card title={t("office.sessions", "활성 세션")}>
+    <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_minmax(280px,3fr)]">
+      <Card title={t("office.sessions", "활성 세션")} className="max-h-[480px] overflow-y-auto">
         {isLoading && <Spinner />}
         {error && <ErrorBox message={error instanceof Error ? error.message : String(error)} onRetry={() => refetch()} />}
         {data && !sessions.length && <Empty>{t("office.noSessions", "활성 세션이 없습니다")}</Empty>}
@@ -594,6 +599,11 @@ function SessionsPanel() {
           </div>
         )}
       </Card>
+
+      <div className="space-y-4">
+        <SessionStatsCard />
+        <ScheduleCard />
+      </div>
     </div>
   );
 }
@@ -913,9 +923,10 @@ function OfficeSpriteSection({ paused = false }: { paused?: boolean }) {
   const pickEnded = (v: string) => { setEnded(v); lsSet("jobmate.officeEnded", v); };
   const pickProject = (v: string) => { setProject(v); lsSet("jobmate.officeProject", v); };
 
-  // include_ended=true — 활성/종료 필터는 클라이언트에서 적용 (SessionsPanel과 캐시 공유)
+  // include_ended=true — 활성/종료 필터는 클라이언트에서 적용.
+  // queryKey는 "all" — "active"(include_ended=false)와 캐시를 공유하면 안 된다.
   const { data, isLoading, error } = useQuery({
-    queryKey: ["office-sessions"],
+    queryKey: ["office-sessions", "all"],
     queryFn: () => apiGet<SessionView[]>("/agent-sessions?limit=50&include_ended=true"),
     refetchInterval: 10000,
   });
@@ -1173,14 +1184,8 @@ export default function OfficePage() {
         </div>
       </div>
 
-      {/* 하단 정보 — 세션 목록(넓게) | 통계+스케줄(세로 스택) 좌우 배치 */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-        <SessionsPanel />
-        <div className="space-y-4">
-          <SessionStatsCard />
-          <ScheduleCard />
-        </div>
-      </div>
+      {/* 하단 정보 — 세션 | 활동 | 통계+스케줄 3열 (OfficeBottomGrid 내부 그리드) */}
+      <OfficeBottomGrid />
     </div>
   );
 }

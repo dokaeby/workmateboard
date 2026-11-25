@@ -36,7 +36,7 @@ export function OfficeStageBoard({ runId }: { runId: string | null }) {
 
   // 레거시 officeLiveSessionsState — 데모 OFF + run 없음 + 활성 세션 있음이면
   // 실제 세션을 dev_review 모양의 가상 run으로 보드에 띄운다.
-  // SessionsPanel·스프라이트 사무실과 같은 queryKey 라 요청이 합쳐진다.
+  // OfficeBottomGrid와 같은 queryKey("active")라 요청이 합쳐진다.
   const liveEnabled = !demo && !run && !(runId && runPending);
   const [, setLiveTick] = useState(0);
   useEffect(() => {
@@ -46,7 +46,7 @@ export function OfficeStageBoard({ runId }: { runId: string | null }) {
     return () => clearInterval(id);
   }, [liveEnabled]);
   const sessionsQ = useQuery({
-    queryKey: ["office-sessions"],
+    queryKey: ["office-sessions", "active"],
     queryFn: () => apiGet<LiveSession[]>("/agent-sessions?limit=50&include_ended=false"),
     refetchInterval: 10000,
   });
