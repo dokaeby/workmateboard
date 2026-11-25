@@ -108,7 +108,7 @@ export function OfficeSidePanel({ people, selectedId, onPick, events, onTogglePi
   // ---------- 사람 목록 ----------
   const what = (d: PersonInput, open: boolean): string => {
     const mode = modeOf(d);
-    if (mode === "decision") return I18N.cut(I18N.ask(d.ask) || I18N.t("needs"), open ? 80 : 40);
+    if (mode === "decision") return I18N.cut(I18N.ask(d.ask) || I18N.t("needs"), open ? 160 : 64);
     if (mode === "working") return I18N.act(d.doing) || (d.subCount ? I18N.t("doing.subs") : I18N.t("doing.work"));
     return open ? I18N.t("d.idle") : "";
   };
