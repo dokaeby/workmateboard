@@ -98,7 +98,20 @@ def test_run_comments():
 # ---------------- connectors ----------------
 
 
+def _public_dns(monkeypatch):
+    """생성/-fetch 시점 SSRF 가드의 DNS 해석을 공인 IP로 결정화."""
+    import socket
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+    webutil._dns_cache.clear()
+
+
 def test_connector_secret_encryption(monkeypatch):
+    _public_dns(monkeypatch)
     monkeypatch.setenv("JOBMATE_ENCRYPTION_KEY", "unit-test-key-material")
     client, store, _s, _l = _env()
     r = client.post(
@@ -136,6 +149,7 @@ def test_connector_secret_encryption(monkeypatch):
 
 
 def test_connector_items_fetch_and_cache(monkeypatch):
+    _public_dns(monkeypatch)
     client, store, _s, _l = _env()
     r = client.post(
         "/api/v1/connectors",
@@ -199,7 +213,14 @@ def test_connector_github_items(monkeypatch):
         json={
             "type": "github",
             "name": "gh",
-            "config": {"owner": "o", "repo": "r", "token": "ghp_x"},
+            "config": {
+                "owner": "o",
+                "repo": "r",
+                "token": "ghp_x",
+                # github는 api.github.com 고정 — config.url은 무시되므로
+                # 사설 URL을 넣어도 생성/검증에 영향이 없어야 한다
+                "url": "http://169.254.169.254/latest/meta-data",
+            },
         },
     )
     cid = r.json()["id"]
@@ -226,6 +247,73 @@ def test_connector_github_items(monkeypatch):
     assert seen["auth"] == "Bearer ghp_x"
     assert body["items"][0]["title"] == "Issue one"
     assert body["items"][0]["author"] == "alice"
+
+
+def test_connector_create_rejects_private_url():
+    """생성 시점 SSRF 가드 — 사설/링크로컬/비http URL은 422 url_not_allowed."""
+    client, store, _s, _l = _env()
+    for bad in (
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1:8080/internal",
+        "http://192.168.1.1/",
+        "http://10.0.0.5/",
+        "http://[::1]/x",
+        "http://localhost/x",
+        "ftp://example.com/x",
+    ):
+        r = client.post(
+            "/api/v1/connectors",
+            json={"type": "json", "name": "c", "config": {"url": bad}},
+        )
+        assert r.status_code == 422, bad
+        assert r.json()["error"]["code"] == "url_not_allowed", bad
+    assert client.get("/api/v1/connectors").json()["items"] == []
+
+
+def test_connector_url_guard_dns_and_fetch_time(monkeypatch):
+    """DNS 사설 해석 차단 + 생성 검증 우회 행의 fetch 시점 방어 심층."""
+    import socket
+
+    client, store, _s, _l = _env()
+    webutil._dns_cache.clear()
+
+    # 사설 IP로 해석되는 호스트 → 생성 422
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 443))],
+    )
+    r = client.post(
+        "/api/v1/connectors",
+        json={"type": "json", "name": "d", "config": {"url": "https://internal.corp.example/x"}},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "url_not_allowed"
+
+    # 공인 IP로 해석되는 호스트는 생성 허용 (fetch_json은 이 테스트에서 미호출)
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+    webutil._dns_cache.clear()
+    ok = client.post(
+        "/api/v1/connectors",
+        json={"type": "json", "name": "ok", "config": {"url": "https://ok.corp.example/x"}},
+    )
+    assert ok.status_code == 201
+
+    # 생성 검증을 우회한 행(DB 직접 삽입)도 fetch 시점에 차단 — fetch_json 미호출
+    conn = store.create_connector(
+        "json", "direct", {"url": "http://169.254.169.254/latest"}, True, False
+    )
+    called = []
+    monkeypatch.setattr(webutil, "fetch_json", lambda *a, **k: called.append(a) or [])
+    r = client.get(f"/api/v1/connectors/{conn['id']}/items")
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "url_not_allowed"
+    assert called == []
+    assert "url_not_allowed" in store.get_connector(conn["id"])["last_error"]
 
 
 # ---------------- custom workflows ----------------

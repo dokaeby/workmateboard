@@ -214,6 +214,99 @@ def test_mailer_smtp_takes_priority_over_gmail(monkeypatch):
     assert called == []
 
 
+def test_delete_expired_verifications():
+    """만료·사용 완료 토큰 정리 — 유효 미사용 행은 유지."""
+    db = str(Path(tempfile.mkdtemp()) / "t.db")
+    store = Store(db)
+
+    def _count() -> int:
+        return store._conn.execute("SELECT COUNT(*) AS c FROM email_verifications").fetchone()["c"]
+
+    # 만료 행 생성
+    tok_exp = store.create_email_verification("exp@b.com", ttl_hours=24)
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    with store.tx() as c:
+        c.execute(
+            "UPDATE email_verifications SET expires_at=? WHERE token_hash=?",
+            (past, hash_token(tok_exp)),
+        )
+    # 사용 완료 행 생성
+    tok_used = store.create_email_verification("used@b.com")
+    store.mark_verification_used(hash_token(tok_used))
+    # 유효 행 생성 — 생성 시점 opportunistic 삭제로 exp/used 행이 이미 지워진다
+    store.create_email_verification("ok@b.com")
+    assert _count() == 1
+
+    # 명시 호출 — 유효 행만 남아 삭제 0
+    assert store.delete_expired_verifications() == 0
+    assert _count() == 1
+
+    # now 파라미터로 미래 기준 삭제도 가능
+    future = datetime.now(UTC) + timedelta(hours=48)
+    assert store.delete_expired_verifications(now=future) == 1
+    assert _count() == 0
+
+
+def test_create_verification_opportunistic_cleanup():
+    """create_email_verification 호출 시 만료/사용 행이 함께 삭제된다."""
+    db = str(Path(tempfile.mkdtemp()) / "t.db")
+    store = Store(db)
+    tok = store.create_email_verification("old@b.com")
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    with store.tx() as c:
+        c.execute(
+            "UPDATE email_verifications SET expires_at=? WHERE token_hash=?",
+            (past, hash_token(tok)),
+        )
+    store.create_email_verification("new@b.com")
+    rows = store._conn.execute("SELECT email FROM email_verifications").fetchall()
+    assert [r["email"] for r in rows] == ["new@b.com"]
+
+
+def test_signup_ip_throttle(monkeypatch, sent_mails):
+    """같은 IP에서 10분에 5회까지만 가입 가능 — 6회째 429."""
+    client, store = _client(monkeypatch)
+    for i in range(5):
+        r = _signup(client, email=f"u{i}@b.com")
+        assert r.status_code == 201, i
+    r = _signup(client, email="u5@b.com")
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "too_many_attempts"
+    actions = [a["action"] for a in store.list_audit()]
+    assert "auth_signup" in actions
+    assert "auth_signup_throttled" in actions
+
+
+def test_auth_audit_events(monkeypatch, sent_mails):
+    """verify 성공/실패·resend·signup이 감사 로그에 기록되고 토큰 원문은 없다."""
+    client, store = _client(monkeypatch)
+    _signup(client, email="aud@b.com")
+    token = parse_qs(urlparse(sent_mails[0][1]).query)["token"][0]
+
+    # 실패 토큰 → auth_email_verify_failed
+    client.get("/api/v1/auth/verify?token=bogus-token")
+    # 성공 토큰 → auth_email_verified
+    client.get(f"/api/v1/auth/verify?token={token}")
+
+    # 미인증 사용자 resend — 직후라 throttle, 감사 기록 확인
+    _signup(client, email="aud2@b.com")
+    client.post("/api/v1/auth/verify/resend", json={"email": "aud2@b.com"})
+
+    actions = {a["action"] for a in store.list_audit()}
+    assert {
+        "auth_signup",
+        "auth_email_verified",
+        "auth_email_verify_failed",
+        "auth_verify_resend_throttled",
+    } <= actions
+    # 토큰 원문·비밀번호가 감사 detail에 기록되지 않는다
+    import json as _json
+
+    for a in store.list_audit():
+        blob = _json.dumps(a["detail"])
+        assert token not in blob and _PW not in blob
+
+
 def test_local_dev_mode_skips_verification():
     """인증 비활성 로컬 모드(키·허용목록·VERCEL 없음)에서는 인증 없이 로그인."""
     client, _ = _client(require_verify=False)

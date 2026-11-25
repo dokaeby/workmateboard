@@ -461,6 +461,10 @@ def _fetch_connector_items(connector: dict[str, Any], limit: int) -> list[dict[s
     url = str(cfg.get("url") or "").strip()
     if not url:
         raise ValueError(f"{ctype or 'connector'} requires config.url")
+    # SSRF 가드(방어 심층) — 생성 시점 검증을 우회한 행(DB 직접 삽입,
+    # config 변경 등)도 여기서 차단한다. fetch_json 내부 assert와 이중 확인.
+    if not webutil.is_safe_fetch_url(url):
+        raise ValueError("url_not_allowed")
     for k, v in (cfg.get("headers") or {}).items():
         if isinstance(k, str) and isinstance(v, str):
             headers[k] = v
@@ -2955,6 +2959,20 @@ def create_app(
         else:
             _login_fails.setdefault(key, []).append(time.time())
 
+    # signup은 login과 카운터를 공유하지 않는 별도 IP 기반 throttle
+    _signup_attempts: dict[str, list[float]] = {}
+    _SIGNUP_WINDOW = 600.0
+    _SIGNUP_MAX_ATTEMPTS = 5
+
+    def _signup_throttled(ip: str) -> bool:
+        now = time.time()
+        attempts = [t for t in _signup_attempts.get(ip, []) if now - t < _SIGNUP_WINDOW]
+        _signup_attempts[ip] = attempts
+        return len(attempts) >= _SIGNUP_MAX_ATTEMPTS
+
+    def _signup_record(ip: str) -> None:
+        _signup_attempts.setdefault(ip, []).append(time.time())
+
     # ---- 이메일 인증 (비밀번호 가입) ----
     _VERIFY_RESEND_MIN_INTERVAL = 600.0  # 같은 이메일 재발송 10분에 1회
 
@@ -3008,6 +3026,19 @@ padding:32px;max-width:360px;text-align:center">
             if not api_key() or not authorized(request):
                 logger.warning("signup rejected: administrator API key required")
                 return err(403, "signup_restricted", "관리자 API 키가 필요합니다", request)
+        # IP 기준 가입 시도 throttle — 계정 대량 생성/메일 발송 폭주 방지.
+        # 성공 여부와 무관하게 시도 자체를 센다(login 실패 카운터와 별개).
+        ip = request.client.host if request.client else "-"
+        if _signup_throttled(ip):
+            store.audit("", "-", "auth_signup_throttled", "", {})
+            logger.warning("signup throttled: ip=%s", ip)
+            return err(
+                429,
+                "too_many_attempts",
+                "가입 시도 횟수 초과 — 잠시 후 다시 시도하세요",
+                request,
+            )
+        _signup_record(ip)
         email = str(body.get("email", "")).strip().lower()
         password = str(body.get("password", ""))
         name = str(body.get("display_name", "")).strip()[:80]
@@ -3096,6 +3127,7 @@ padding:32px;max-width:360px;text-align:center">
         if last is not None and (datetime.now(UTC) - last).total_seconds() < (
             _VERIFY_RESEND_MIN_INTERVAL
         ):
+            store.audit("", email, "auth_verify_resend_throttled", user["id"], {})
             logger.info("verification resend throttled: user=%s", user["id"])
             return err(
                 429,
@@ -3114,11 +3146,14 @@ padding:32px;max-width:360px;text-align:center">
         token_hash = hash_token(token) if token else ""
         email = store.get_valid_verification(token_hash) if token_hash else None
         if email is None:
+            # 토큰 원문은 기록하지 않는다 — 실패 시도만 감사 로그에 남긴다
+            store.audit("", "-", "auth_email_verify_failed", "", {"reason": "invalid_or_expired"})
             logger.info("email verify failed: invalid_or_expired token")
             return HTMLResponse(_VERIFY_FAIL_HTML, status_code=400)
         user = store.get_user_by_email(email)
         if user is None:
             store.mark_verification_used(token_hash)
+            store.audit("", email, "auth_email_verify_failed", "", {"reason": "user_missing"})
             return HTMLResponse(_VERIFY_FAIL_HTML, status_code=400)
         store.set_user_email_verified(user["id"])
         store.mark_verification_used(token_hash)
@@ -3421,6 +3456,18 @@ padding:32px;max-width:360px;text-align:center">
         name = body.name.strip()
         if not name:
             return err(422, "validation", "name must not be blank", request)
+        # SSRF 가드 — generic 타입은 config.url을 서버가 대신 fetch하므로
+        # 생성 시점에 공인 URL만 허용한다. github는 fetch 시 api.github.com으로
+        # 고정되므로 config.url이 있어도 무시되며 검증하지 않는다.
+        if ctype != "github":
+            cfg_url = body.config.get("url")
+            if (
+                isinstance(cfg_url, str)
+                and cfg_url.strip()
+                and not webutil.is_safe_fetch_url(cfg_url.strip())
+            ):
+                logger.warning("connector create rejected: unsafe config.url type=%s", ctype)
+                return err(422, "url_not_allowed", "config.url is not allowed", request)
         enc_config = _encrypt_config_secrets(body.config)
         has_token = _config_has_secret(body.config)
         item = store.create_connector(ctype, name, enc_config, body.enabled, has_token)
@@ -3471,6 +3518,9 @@ padding:32px;max-width:360px;text-align:center">
                 conn.get("type"),
                 str(e)[:200],
             )
+            if str(e) == "url_not_allowed":
+                # SSRF 가드 차단 — 생성 시 422로 막지만 DB 직접 삽입 등 우회 경로 대비
+                return err(422, "url_not_allowed", "connector url is not allowed", request)
             return err(502, "fetch_failed", str(e)[:200], request)
         store.mark_connector_fetch(connector_id)
         _CONNECTOR_CACHE[connector_id] = (time.time(), items)

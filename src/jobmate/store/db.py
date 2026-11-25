@@ -2153,6 +2153,8 @@ class Store:
         token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         now = _now()
+        # opportunistic 정리 — used/expired 행이 누적되지 않도록 발급 시 함께 삭제
+        self.delete_expired_verifications(now)
         with self.tx() as c:
             c.execute(
                 "INSERT INTO email_verifications(id,email,token_hash,expires_at,created_at)"
@@ -2187,6 +2189,20 @@ class Store:
                 "UPDATE email_verifications SET used_at=? WHERE token_hash=? AND used_at IS NULL",
                 (_iso(_now()), token_hash),
             )
+
+    def delete_expired_verifications(self, now: datetime | None = None) -> int:
+        """만료되었거나 이미 사용된 인증 토큰 행 삭제 — 누적 방지용.
+
+        used 행도 함께 지운다(재사용은 어차피 불가). 최신 발급 시각 기반
+        재발송 rate limit은 삭제 전에 평가되므로 영향 없음.
+        반환값: 삭제된 행 수."""
+        cutoff = _iso(now or _now())
+        with self.tx() as c:
+            cur = c.execute(
+                "DELETE FROM email_verifications WHERE expires_at < ? OR used_at IS NOT NULL",
+                (cutoff,),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0)
 
     def latest_verification_at(self, email: str) -> datetime | None:
         """해당 이메일의 가장 최근 인증 토큰 발급 시각 — 재발송 rate limit용."""
