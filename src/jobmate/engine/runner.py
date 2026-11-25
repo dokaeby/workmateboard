@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("jobmate.engine")
 
+# 사람 승인 없이 항상 자동 approve하는 워크플로 — 어떤 경로로 run이
+# 생성돼도(ctx 유무와 무관) 승인 대기에 멈추지 않는다.
+_AUTO_APPROVE_WORKFLOWS = frozenset({"skill_radar"})
+
 ESCALATE_NEEDS_HUMAN = "needs_human"
 ESCALATE_BUDGET = "budget_exhausted"
 ESCALATE_FAILED = "failed"
@@ -330,8 +334,10 @@ class WorkflowRunner:
             stage_run_id = self.store.start_stage(
                 run_id, stage.key, attempt, {"summary": summary[:500]}
             ).id
-        if state.get("auto_approve"):
-            # cron 등 무인 수집 경로 — 승인 단계 없이 자동 approve하여 publish까지 진행
+        if state.get("auto_approve") or state.get("workflow_key") in _AUTO_APPROVE_WORKFLOWS:
+            # cron 등 무인 수집 경로 — 승인 단계 없이 자동 approve하여 publish까지 진행.
+            # skill_radar는 어떤 생성 경로(POST /runs, 스케줄, 트리거, 플레이북)로
+            # 만들어져도 사람 승인이 필요 없으므로 workflow 단위로 강제한다.
             decision = {"decision": "approve", "comment": "auto_approve"}
         else:
             decision = interrupt({"run_id": run_id, "stage": stage.key, "summary": summary})

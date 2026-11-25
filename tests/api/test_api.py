@@ -400,7 +400,7 @@ def test_cron_tick_vercel_requires_secret(monkeypatch):
 
 
 def test_radar_refresh_serverless_runs_via_background_tasks(monkeypatch):
-    """VERCEL 환경: refresh가 BackgroundTasks로 run을 끝까지 실행해 waiting_approval 도달."""
+    """VERCEL 환경: refresh가 BackgroundTasks로 run을 끝까지 실행해 completed 도달."""
     monkeypatch.setenv("VERCEL", "1")
     monkeypatch.setenv("JOBMATE_API_KEY", "serverless-test-key")
     from jobmate.adapters.fakes import FakeGitHub
@@ -450,7 +450,8 @@ def test_radar_refresh_serverless_runs_via_background_tasks(monkeypatch):
     run_id = r.json()["run_ids"][0]
     # TestClient는 BackgroundTasks 완료까지 응답을 기다린다
     d = client.get(f"/api/v1/runs/{run_id}").json()
-    assert d["status"] == "waiting_approval"
+    # skill_radar는 사람 승인 없이 자동 approve → publish까지 완료
+    assert d["status"] == "completed"
     assert [s["stage_key"] for s in d["stages"]] == [
         "collect",
         "dedupe",
@@ -458,4 +459,5 @@ def test_radar_refresh_serverless_runs_via_background_tasks(monkeypatch):
         "verify",
         "rank",
         "approve",
+        "publish",
     ]

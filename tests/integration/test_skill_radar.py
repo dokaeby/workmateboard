@@ -58,8 +58,8 @@ def test_radar_full_flow():
     run = store.create_run("skill_radar", "0.2.0", {"task": "radar"}, trace_id="t")
     runner = build_runner("skill_radar", store=store, llm=llm, settings=settings, adapters=adapters)
     runner.invoke(run.id, {"task": "radar"}, gmail_ctx={"platform": "claude", "force": True})
-    # approve human stage에서 interrupt — approve로 resume
-    runner.resume(run.id, {"decision": "approve", "comment": ""})
+    # skill_radar는 auto_approve ctx 없이도 workflow 단위로 자동 approve —
+    # 어떤 생성 경로든 waiting_approval에 멈추지 않는다 (resume 불필요).
 
     dates = store.radar_dates("claude")
     assert dates, "no snapshot written"
