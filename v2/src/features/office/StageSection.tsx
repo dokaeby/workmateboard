@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
 import type { RunDiff } from "../../shared/api/types";
-import { useI18n } from "../../shared/i18n";
 import { StageBoard } from "./board";
 import type { BoardRun, BoardDiff, BoardStageRun } from "./board";
 import { useOfficeDemo } from "./demoState";
@@ -28,11 +27,10 @@ function useOfficeRunDetail(id: string | null) {
 
 /** 3D 보드 모드 — run이 없으면 demo 토글에 따라 가상 run을 보여준다. */
 export function OfficeStageBoard({ runId }: { runId: string | null }) {
-  const { t } = useI18n();
   const qc = useQueryClient();
-  // 레거시 localStorage 'jobmate.officeDemo' — 스프라이트 모드와 공유 상태
-  const [demo, setDemo] = useOfficeDemo();
-  const toggleDemo = () => setDemo(!demo);
+  // 레거시 localStorage 'jobmate.officeDemo' — 스프라이트 모드와 공유 상태.
+  // 토글 버튼은 OfficePage 모드 토글 옆 공용 버튼 하나로 통합.
+  const [demo] = useOfficeDemo();
   const { data: run, isPending: runPending } = useOfficeRunDetail(runId);
   const waiting = run?.status === "waiting_approval";
 
@@ -74,20 +72,7 @@ export function OfficeStageBoard({ runId }: { runId: string | null }) {
 
   return (
     <div>
-      <div className="mb-2 flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={toggleDemo}
-          aria-pressed={demo}
-          className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
-            demo
-              ? "border-accent bg-accent-soft text-accent"
-              : "border-border bg-surface-hover text-muted hover:text-ink"
-          }`}
-        >
-          {t("office.demo", "데모")}
-        </button>
-      </div>
+      {/* 데모 토글은 OfficePage 모드 토글 옆 공용 버튼 하나로 통합 (보드/스프라이트 공용) */}
       <StageBoard
         run={run ?? live?.run ?? null}
         stageRuns={run?.stages ?? live?.stageRuns}
