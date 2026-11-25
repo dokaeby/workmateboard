@@ -1,12 +1,7 @@
 import type { Run, StageRun, AgentSession } from "../../shared/api/types";
 
-export interface RunListItem {
-  id: string;
-  workflow?: string;
-  status: string;
-  project?: string;
-  created_at?: string;
-}
+// 공유 API 타입 재수출 — office 모듈들은 "./types"에서 import
+export type { RunListItem, WorkflowInfo } from "../../shared/api/types";
 
 export interface AuditEvent {
   id?: string;
@@ -54,10 +49,6 @@ export interface Schedule {
   enabled?: boolean;
   next_run_at?: string | null;
   last_run_at?: string | null;
-}
-
-export interface WorkflowInfo {
-  key?: string;
 }
 
 export interface SessionStatsTool {

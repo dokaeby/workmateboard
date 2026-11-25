@@ -69,22 +69,11 @@ export interface MeUser {
   role?: Role | string;
 }
 
-export interface HealthMachine {
-  machine?: string;
-  last_push_at?: string;
-  sessions?: number;
-}
-
-export interface HealthDetail {
-  api?: { uptime_s?: number };
-  db?: Record<string, unknown>;
-  bridge?: { last_push_at?: string; machines?: HealthMachine[] };
-  cron?: { last_tick_at?: string; [k: string]: unknown };
-  version?: string;
-}
-
 export interface SidebarMenuItem {
   view: ViewKey;
   label: string;
   minRole?: "lead" | "admin";
 }
+
+// 공유 API 타입 재수출 — settings 컴포넌트는 "../types"에서 import
+export type { HealthDetail, HealthMachine } from "../../shared/api/types";

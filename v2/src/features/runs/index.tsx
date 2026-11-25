@@ -2,8 +2,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
-import type { Run, StageRun, RunStats, RunDiff, AuditEvent } from "../../shared/api/types";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import type { Run, StageRun, RunStats, RunDiff, AuditEvent, RunListItem } from "../../shared/api/types";
+import { useI18n, registerI18n, type TFn } from "../../shared/i18n";
 import { STR } from "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
@@ -11,9 +11,6 @@ import { useAppStore } from "../../shared/store/appStore";
 
 registerI18n(STR);
 
-interface RunListItem {
-  id: string; workflow?: string; status: string; project?: string; created_at?: string;
-}
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "err" | "accent" | "muted"> = {
   succeeded: "ok", completed: "ok", running: "accent", queued: "muted",
@@ -32,7 +29,6 @@ export function useRunsList() {
   });
 }
 
-type TFn = (key: string, fallback?: string) => string;
 
 function fmtSecs(sec: number | null | undefined, t: TFn): string {
   const s = Number(sec);

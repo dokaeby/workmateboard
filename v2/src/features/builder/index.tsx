@@ -2,17 +2,16 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import type { CustomWorkflow } from "../../shared/api/types";
+import { useI18n, registerI18n, type TFn } from "../../shared/i18n";
 import { STR } from "./i18n";
 import { useAppStore } from "../../shared/store/appStore";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button } from "../../shared/ui";
 
 registerI18n(STR);
 
-interface CustomWorkflow { name: string; spec?: unknown; created_at?: string }
 interface CustomListResponse { items?: CustomWorkflow[] }
 
-type TFn = (key: string, fallback?: string) => string;
 
 /** 레거시 WF_TEMPLATE과 동일한 예시 스펙. */
 function wfTemplate(t: TFn) {

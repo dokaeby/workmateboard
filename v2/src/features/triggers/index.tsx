@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import type { Playbook, WorkflowInfo } from "../../shared/api/types";
+import { useI18n, registerI18n, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs } from "../../shared/lib/format";
 import { STR } from "./i18n";
@@ -19,8 +20,6 @@ interface Trigger {
   created_at?: string;
 }
 interface TriggersResponse { items?: Trigger[] }
-interface Playbook { id: string; name?: string }
-interface WorkflowInfo { key: string }
 
 const TOOLS = ["", "devin", "codex", "claude", "gemini"];
 const STATES = ["", "working", "decision", "rest"];
@@ -52,7 +51,6 @@ function useWorkflowKeys() {
   });
 }
 
-type TFn = (key: string, fallback?: string) => string;
 
 function matchText(t: TFn, m?: Trigger["match"]): string {
   const p: string[] = [];

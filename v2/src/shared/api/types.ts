@@ -130,3 +130,50 @@ export interface Prefs {
   notify_rules?: unknown[];
   [k: string]: unknown;
 }
+
+/** /runs 목록 아이템 — office/types.ts·runs 뷰 공용. */
+export interface RunListItem {
+  id: string;
+  workflow?: string;
+  status: string;
+  project?: string;
+  created_at?: string;
+}
+
+/** /workflows 응답 — office/triggers/playbooks 공용 (필드는 뷰마다 부분집합 사용). */
+export interface WorkflowInfo {
+  key?: string;
+  description?: string;
+}
+
+/** /playbooks 응답 — triggers는 {id,name} 부분집합만 사용. */
+export interface Playbook {
+  id: string;
+  name?: string;
+  workflow?: string;
+  input?: Record<string, unknown>;
+  created_by?: string;
+  created_at?: string;
+}
+export interface PlaybooksResponse { items?: Playbook[] }
+
+/** /workflows/custom 항목 — builder는 created_at까지 사용. */
+export interface CustomWorkflow {
+  name: string;
+  spec?: unknown;
+  created_at?: string;
+}
+
+/** /health/detail — settings/system 공용 (머신 필드는 동일 구조). */
+export interface HealthMachine {
+  machine?: string;
+  last_push_at?: string;
+  sessions?: number;
+}
+export interface HealthDetail {
+  api?: { uptime_s?: number };
+  db?: { type?: string; path?: string | null; size_bytes?: number | null; [k: string]: unknown };
+  bridge?: { last_push_at?: string; machines?: HealthMachine[] };
+  cron?: { last_tick_at?: string; reaper?: Record<string, unknown>; [k: string]: unknown };
+  version?: string;
+}

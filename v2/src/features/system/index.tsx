@@ -1,31 +1,16 @@
 /** 시스템 상태 — /health/detail: API 가동시간/DB/브리지 머신/cron 틱 (admin 전용). */
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
+import type { HealthDetail } from "../../shared/api/types";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n, registerI18n, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
 import { STR } from "./i18n";
 
 registerI18n(STR);
 
-interface BridgeMachine {
-  machine?: string;
-  last_push_at?: string;
-  sessions?: number;
-}
-
-interface HealthDetail {
-  api?: { uptime_s?: number };
-  db?: { type?: string; path?: string | null; size_bytes?: number | null };
-  bridge?: { last_push_at?: string; machines?: BridgeMachine[] };
-  cron?: { last_tick_at?: string; reaper?: Record<string, unknown> };
-  version?: string;
-}
-
-type TFunc = (key: string, fallback?: string) => string;
-
-function fmtSecs(sec: number | null | undefined, t: TFunc): string {
+function fmtSecs(sec: number | null | undefined, t: TFn): string {
   const s = Number(sec);
   if (!isFinite(s) || s < 0) return "-";
   if (s < 60) return `${Math.floor(s)}${t("sys.unit.s", "초")}`;
