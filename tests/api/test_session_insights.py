@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from jobmate.api.app import _check_waiting_approvals, create_app
+from jobmate.api.app import create_app
+from jobmate.api.jobs import _check_waiting_approvals
 from jobmate.config import Settings
 from jobmate.models import RunStatus
 from jobmate.store.db import Store
