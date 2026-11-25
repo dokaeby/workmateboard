@@ -8,10 +8,12 @@
 
 import * as I18N from "./office-i18n";
 import {
-  OFFICE_CHATS, OFFICE_COLORS, OFFICE_DESKS, OFFICE_HOMES, OFFICE_MAP_NODES, OFFICE_MEETING,
+  OFFICE_CHATS, OFFICE_DESKS, OFFICE_HOMES, OFFICE_MAP_NODES, OFFICE_MEETING,
   OFFICE_OVERFLOW, OFFICE_SPOTS,
 } from "./office-world";
 import { blocked, dist, nearest, onFloor, officeMotion, route } from "./office-path";
+import { chime, setSoundMuted, soundMuted, wakeAudio } from "./life-audio";
+import { colorOf, line, pick, rnd, shuffle, speciesOf } from "./life-utils";
 import type {
   ActStep, Chat, Desk, LifeEvent, LifeState, Mini, Person, PersonInput, Pt, Spot, SubInput,
 } from "./types";
@@ -19,57 +21,10 @@ import type {
 const SPEED = 36, MINI_SPEED = 78;        // 걷는 속도(그림 픽셀/초) — 어른은 고른 걸음, 서브에이전트는 종종걸음
 export const SIT_DESK = 18, SIT_SOFA = 16; // 의자 등받이·방석 점 → 앉은 그림의 발끝까지
 
-const rnd = (a: number, b: number) => a + Math.random() * (b - a);
-const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
-const line = (name: string) => pick(I18N.lines(name));            // 지금 언어의 대사 하나
+export { colorOf, speciesOf } from "./life-utils";
+export { setSoundMuted, soundMuted, wakeAudio } from "./life-audio";
 
-function hash(s: string): number {                       // FNV-1a — 이름이 같으면 색·종이 늘 같다
-  let h = 2166136261;
-  for (const ch of s) h = Math.imul(h ^ ch.codePointAt(0)!, 16777619);
-  return h >>> 0;
-}
-
-export const colorOf = (name: string): string => OFFICE_COLORS[hash(name) % OFFICE_COLORS.length];
-export const speciesOf = (name: string): string => (hash("종:" + name) % 2 ? "capy" : "frog");
 const cut = I18N.cut;
-const shuffle = <T,>(arr: T[]): T[] => arr.map((v) => [Math.random(), v] as [number, T]).sort((a, b) => a[0] - b[0]).map((v) => v[1]);
-
-// ---------- 알림 소리 — 승인·질문이 새로 생기면 짧은 차임(WebAudio 진동자, 파일 없음) ----------
-const MUTE_KEY = "jobmate.officeMute";
-let muted = (() => { try { return localStorage.getItem(MUTE_KEY) === "1"; } catch { return false; } })();
-let actx: AudioContext | null = null;
-function audio(): AudioContext | null {
-  if (!actx) {
-    try {
-      const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      actx = AC ? new AC() : null;
-    } catch { actx = null; }
-  }
-  if (actx && actx.state === "suspended") actx.resume().catch(() => {});
-  return actx;
-}
-function chime() {
-  if (muted) return;
-  const ctx = audio();
-  if (!ctx) return;
-  const t0 = ctx.currentTime + 0.01;
-  for (const [f, d, v] of [[880, 0, 0.12], [1318.5, 0.1, 0.1]] as [number, number, number][]) {
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = "sine"; o.frequency.value = f;
-    g.gain.setValueAtTime(0.0001, t0 + d);
-    g.gain.exponentialRampToValueAtTime(v, t0 + d + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.3);
-    o.connect(g); g.connect(ctx.destination);
-    o.start(t0 + d); o.stop(t0 + d + 0.32);
-  }
-}
-// 첫 클릭 뒤 AudioContext 재개 — 브라우저 자동재생 정책 대비
-export function wakeAudio() { audio(); }
-export const soundMuted = () => muted;
-export function setSoundMuted(v: boolean) {
-  muted = !!v;
-  try { localStorage.setItem(MUTE_KEY, muted ? "1" : "0"); } catch { /* 저장 못 해도 지금은 적용된다 */ }
-}
 
 /** 하루 시뮬레이션 — 보드 인스턴스마다 하나씩 만든다(레거시는 전역 싱글턴) */
 export function createLife() {
