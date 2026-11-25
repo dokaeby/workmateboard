@@ -43,26 +43,45 @@ export function guessProject(d: PersonInput): string {
 
 /** 실제 에이전트 세션 → people — 레거시 jmLiveSessionPeople + office-view.js norm/guessProject 이식.
  * health=stale(5분+ 이벤트 없음)은 브릿지 다운 가능성 — working을 rest로 강등.
- * decision은 사용자 응답 대기 상태라 유지한다. */
-export function sessionsToPeople(list: AgentSession[]): PersonInput[] {
+ * decision은 사용자 응답 대기 상태라 유지한다.
+ * includeEnded=true(종료 탭)이면 ended 세션도 rest로 매핑 — 레거시 jmSessionProvider의
+ * ended 분기(doing="종료: 요약")와 동일. */
+export function sessionsToPeople(list: AgentSession[], opts?: { includeEnded?: boolean }): PersonInput[] {
+  const includeEnded = !!opts?.includeEnded;
   const people = (Array.isArray(list) ? list : [])
-    .filter((s) => s && s.status !== "ended")
+    .filter((s) => s && (includeEnded || s.status !== "ended"))
     .map((s) => {
       const ext = s as AgentSession & {
         health?: string; machine?: string; tokens_in?: number; tokens_out?: number;
         est_cost_usd?: number; subs?: SubInput[]; kid?: boolean; home?: string | null;
-        commits?: number | null; log?: PersonInput["log"];
+        commits?: number | null; log?: PersonInput["log"]; ended_summary?: string;
+        artifacts?: string | unknown[];
       };
+      const ended = s.status === "ended";
       const id = `${s.tool}:${s.session_key}`;
       const name = `${(s.tool ? SESSION_TOOL_LABEL[s.tool] || s.tool : "agent")}` +
         ` · ${s.title || s.project || String(s.session_key || "").split(":").pop()!.slice(0, 12)}`;
+      let doing = s.doing || "";
+      let ask = s.ask || "";
+      if (ended) {
+        let summ = ext.ended_summary || "";
+        if (!summ && ext.artifacts) {
+          let a: unknown = ext.artifacts;
+          if (typeof a === "string") { try { a = JSON.parse(a); } catch { a = []; } }
+          if (Array.isArray(a)) summ = a.filter((x): x is string => typeof x === "string").join(", ");
+        }
+        if (!summ) summ = s.title || "";
+        doing = summ ? `종료: ${summ}` : "종료됨";
+        ask = "";
+      }
       const p: PersonInput = {
         id,
         name,
-        status: s.status === "working" ? (ext.health === "stale" ? "rest" : "working")
+        status: ended ? "rest"
+              : s.status === "working" ? (ext.health === "stale" ? "rest" : "working")
               : s.status === "decision" ? "decision" : "rest",
-        ask: s.ask || "",
-        doing: s.doing || "",
+        ask,
+        doing,
         subs: Array.isArray(ext.subs) ? ext.subs : [],
         subCount: ext.subs?.length || 0,
         kid: !!ext.kid, home: ext.home ?? null, commits: ext.commits ?? null,
@@ -78,5 +97,13 @@ export function sessionsToPeople(list: AgentSession[]): PersonInput[] {
       p.project = p.project || guessProject(p);
       return p;
     });
+  // 동명 세션 구분 — 같은 이름(프로젝트/제목)이면 짧은 세션 키를 붙인다 (레거시 jmSessionProvider)
+  const nameCount: Record<string, number> = {};
+  for (const p of people) nameCount[p.name] = (nameCount[p.name] || 0) + 1;
+  for (const p of people) {
+    if (nameCount[p.name] > 1 && p.session_key) {
+      p.name += ` · ${String(p.session_key).split(":").pop()!.slice(0, 12)}`;
+    }
+  }
   return people;
 }

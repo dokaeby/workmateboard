@@ -41,6 +41,8 @@ export interface PersonInput {
   sessions?: number;
   pending?: number;
   source?: string;
+  /** 세션 고정 핀 — jobmate.officePins 에 등록된 tool:session_key */
+  pinned?: boolean;
   [k: string]: unknown;
 }
 

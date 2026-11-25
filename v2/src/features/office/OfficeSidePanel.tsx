@@ -36,9 +36,11 @@ export interface OfficeSidePanelProps {
   onPick?: (id: string | null, keep?: boolean) => void;
   /** SpriteBoard 가 흘려보낸 화면 사건 배치들 */
   events?: LifeEvent[];
+  /** 세션 고정 핀 토글 — 레거시 .sd-pin (jobmate.officePins) */
+  onTogglePin?: (id: string) => void;
 }
 
-export function OfficeSidePanel({ people, selectedId, onPick, events }: OfficeSidePanelProps) {
+export function OfficeSidePanel({ people, selectedId, onPick, events, onTogglePin }: OfficeSidePanelProps) {
   const { t, lang } = useI18n();
   const [items, setItems] = useState<LogRow[]>([]);
   const queueRef = useRef<LogRow[]>([]);
@@ -202,6 +204,18 @@ export function OfficeSidePanel({ people, selectedId, onPick, events }: OfficeSi
         )}
         {open && det && (
           <div className="jmo-more">
+            {typeof d.session_key === "string" && !!d.session_key && onTogglePin && (
+              <p style={{ margin: "0 0 4px" }}>
+                <button
+                  type="button"
+                  className="jmo-mute"
+                  style={{ padding: "2px 8px", fontSize: 11 }}
+                  onClick={(e) => { e.stopPropagation(); onTogglePin(d.id); }}
+                >
+                  {d.pinned ? "📌 해제" : "📌 고정"}
+                </button>
+              </p>
+            )}
             {d.path && (
               <p className="jmo-path"><span className="jmo-k">{I18N.t("d.path")}</span><code>{d.path}</code></p>
             )}

@@ -7,6 +7,7 @@ import type { RunDiff } from "../../shared/api/types";
 import { useI18n } from "../../shared/i18n";
 import { StageBoard } from "./board";
 import type { BoardRun, BoardDiff, BoardStageRun } from "./board";
+import { useOfficeDemo } from "./demoState";
 import { liveSessionsState, type LiveSession } from "./liveSessions";
 
 interface OfficeRunDetail extends BoardRun {
@@ -29,15 +30,9 @@ function useOfficeRunDetail(id: string | null) {
 export function OfficeStageBoard({ runId }: { runId: string | null }) {
   const { t } = useI18n();
   const qc = useQueryClient();
-  // 레거시 localStorage 'jobmate.officeDemo' 와 동일 키로 영속화
-  const [demo, setDemo] = useState(
-    () => localStorage.getItem("jobmate.officeDemo") !== "0",
-  );
-  const toggleDemo = () =>
-    setDemo((d) => {
-      localStorage.setItem("jobmate.officeDemo", d ? "0" : "1");
-      return !d;
-    });
+  // 레거시 localStorage 'jobmate.officeDemo' — 스프라이트 모드와 공유 상태
+  const [demo, setDemo] = useOfficeDemo();
+  const toggleDemo = () => setDemo(!demo);
   const { data: run, isPending: runPending } = useOfficeRunDetail(runId);
   const waiting = run?.status === "waiting_approval";
 
