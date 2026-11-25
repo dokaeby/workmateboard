@@ -537,8 +537,8 @@
   #jmo-notice p { margin: 0; }
   #jmo-notice p + p { margin-top: 2px; }
   #jmo-side {
-    /* 고정 340px → 컨테이너 폭에 비례(최소 240 / 최대 360). 좁으면 canvas가 넓어진다 */
-    width: clamp(240px, 26%, 360px); flex-shrink: 0;
+    /* 진행상황 가독성 확보 — 컨테이너 폭에 비례해 커지고 작아진다(최소 280 / 최대 560) */
+    width: clamp(280px, 34%, 560px); flex-shrink: 0;
     display: flex; flex-direction: column; gap: 6px;
     min-height: 0; padding: 10px; background: var(--surface);
     border-left: 1px solid var(--border); overflow: hidden;
