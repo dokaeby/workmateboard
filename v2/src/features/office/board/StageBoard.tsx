@@ -1,4 +1,4 @@
-/** Agent-Office 3D 보드 — 레거시 index.html의 officeRender* 계열을 React로 이식.
+/** Agent Office 3D 보드 — 레거시 index.html의 officeRender* 계열을 React로 이식.
  * 노드 상태색·엣지 live/done/fail/dim·진행률·attempt ×N 배지·ORCH 노드·
  * 승인 대기 펄스·이벤트 로그를 레거시와 동일한 규칙으로 재현한다.
  * 데이터는 props로 받는다(부모가 office 데이터를 연결). */

@@ -1,4 +1,4 @@
-/** Agent-Office 3D 보드 섹션 — run 상세를 StageBoard에 연결.
+/** Agent Office 3D 보드 섹션 — run 상세를 StageBoard에 연결.
  * 레거시 index.html의 office-stage 보드 + 승인/거절 + diff 미리보기에 해당. */
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";

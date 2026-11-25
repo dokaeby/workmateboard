@@ -1,4 +1,4 @@
-/** Agent-Office 3D 보드 — 데이터 타입.
+/** Agent Office 3D 보드 — 데이터 타입.
  * 레거시 index.html의 officeState/run/stage_run/audit 구조를 그대로 표현.
  * shared/api/types.ts의 Run/StageRun과 구조적으로 호환되도록 모든 필드를
  * optional로 두고, 보드 전용 확장 필드(tokens/model/stages/audit)를 추가한다. */

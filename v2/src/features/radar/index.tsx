@@ -423,7 +423,7 @@ export default function RadarPage() {
                         {state === "busy" && <span className="text-muted">{t("radar.running", "실행 중…")}</span>}
                         {state === "ok" && (
                           <button onClick={() => setView("office")} className="text-accent hover:underline">
-                            {t("radar.runOk", "실행됨 — Agent-Office")}
+                            {t("radar.runOk", "실행됨 — Agent Office")}
                           </button>
                         )}
                         {state && state !== "busy" && state !== "ok" && (
@@ -504,7 +504,7 @@ function RepoDetail({ item, lang, onBack, onTopic, onRun, runState, setView, t }
       {runState === "ok" && (
         <div className="mt-2 text-xs">
           <button onClick={() => setView("office")} className="text-accent hover:underline">
-            {t("radar.runOk", "실행됨 — Agent-Office")}
+            {t("radar.runOk", "실행됨 — Agent Office")}
           </button>
         </div>
       )}

@@ -357,7 +357,7 @@ export default function SettingsPage() {
 
       {/* ══ 사이드바 메뉴 ══ */}
       <Card title={t("settings.sec.sidebar", "사이드바 메뉴")} className="mb-4">
-        <p className="mb-3 text-sm text-muted">{t("settings.sec.sidebar.desc", "메뉴 표시 여부를 설정합니다. Agent-Office·Skill Radar는 항상 표시되며, 역할 제한 메뉴는 해당 권한이 있어야 보입니다.")}</p>
+        <p className="mb-3 text-sm text-muted">{t("settings.sec.sidebar.desc", "메뉴 표시 여부를 설정합니다. Agent Office·Skill Radar는 항상 표시되며, 역할 제한 메뉴는 해당 권한이 있어야 보입니다.")}</p>
         <div className="flex flex-col">
           {SIDEBAR_ITEMS.map((it) => {
             const on = d.menu[it.view] === true;

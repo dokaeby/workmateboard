@@ -1,4 +1,4 @@
-/** Agent-Office — dev_review run 파이프라인 + 활성 에이전트 세션 + 활동 피드 + 스프라이트 사무실.
+/** Agent Office — dev_review run 파이프라인 + 활성 에이전트 세션 + 활동 피드 + 스프라이트 사무실.
  * 레거시 index.html의 loadOffice/officeState 기능을 React Query 기반으로 이행.
  * 상단 스프라이트 보드는 레거시 office/(office-view/life/world/path/atlas + jobmate-bridge)
  * 의 2D 캔버스 사무실을 sprites/ 모듈로 이식한 것. */
@@ -22,7 +22,7 @@ import "./office.css";
 
 registerI18n({
   ko: {
-    "office.title": "Agent-Office",
+    "office.title": "Agent Office",
     "office.desc": "dev_review 워크플로 진행 상황과 활성 에이전트 세션 — 자동 갱신",
     "office.pipeline": "단계 진행",
     "office.runDetail": "실행 상세",
@@ -70,7 +70,7 @@ registerI18n({
     "office.demo": "데모",
   },
   en: {
-    "office.title": "Agent-Office",
+    "office.title": "Agent Office",
     "office.desc": "dev_review workflow progress and active agent sessions — auto-refresh",
     "office.pipeline": "Pipeline",
     "office.runDetail": "Run detail",
@@ -1059,7 +1059,7 @@ export default function OfficePage() {
 
   return (
     <div className="w-full space-y-4 p-4">
-      <PageHead title={t("office.title", "Agent-Office")} desc={t("office.desc", "dev_review 워크플로 진행 상황과 활성 에이전트 세션 — 자동 갱신")} />
+      <PageHead title={t("office.title", "Agent Office")} desc={t("office.desc", "dev_review 워크플로 진행 상황과 활성 에이전트 세션 — 자동 갱신")} />
 
       {/* 관제 모드 토글 — 레거시 #office-view-toggle (3D 보드 / 스프라이트 사무실) */}
       <div className="flex items-center justify-end gap-2">

@@ -1,4 +1,4 @@
-/* Agent-Office 3D 보드 — 레거시 index.html의 .office-* 스타일 이식.
+/* Agent Office 3D 보드 — 레거시 index.html의 .office-* 스타일 이식.
  * Tailwind가 커버 못 하는 SVG/3D 입체감 효과는 원본 CSS를 그대로 유지하고,
  * 색상 변수는 .office-board 스코프에서 v2 테마 토큰(--color-*)에 별칭 연결한다. */
 
