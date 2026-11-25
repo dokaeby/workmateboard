@@ -6,6 +6,7 @@ import { useAppStore, roleAllows } from "../shared/store/appStore";
 import { useI18n, setLang, getLang, type Lang } from "../shared/i18n";
 import { NAV_ITEMS, visibleNavItems } from "./nav";
 import { ViewLoader } from "./views";
+import { useSseInvalidation } from "../shared/stream";
 
 async function fetchMe(): Promise<Me | null> {
   try {
@@ -229,6 +230,10 @@ export default function App() {
     const item = NAV_ITEMS.find((n) => n.view === view);
     if (item?.minRole && !roleAllows(item.minRole, role)) setView("office");
   }, [role, view, setView]);
+
+  // SSE 실시간 스트림 — run/stage/session 이벤트 시 관련 쿼리 무효화.
+  // 미인증/로그아웃 상태에서는 연결하지 않는다 (401 재시도 루프 방지).
+  useSseInvalidation(!unauth && me.data != null);
 
   // 401 이벤트 → role 초기화 + 로그인 화면 유도
   useEffect(() => {

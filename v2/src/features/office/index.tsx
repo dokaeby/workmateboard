@@ -1,7 +1,8 @@
-/** Agent-Office — dev_review run 파이프라인 + 활성 에이전트 세션 + 활동 피드.
+/** Agent-Office — dev_review run 파이프라인 + 활성 에이전트 세션 + 활동 피드 + 스프라이트 사무실.
  * 레거시 index.html의 loadOffice/officeState 기능을 React Query 기반으로 이행.
- * (픽셀 스프라이트/3D 캔버스는 범위 밖 — 정보 패널 중심 레이아웃) */
-import { useEffect, useMemo, useState } from "react";
+ * 상단 스프라이트 보드는 레거시 office/(office-view/life/world/path/atlas + jobmate-bridge)
+ * 의 2D 캔버스 사무실을 sprites/ 모듈로 이식한 것. */
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { Run, StageRun, AgentSession } from "../../shared/api/types";
@@ -9,6 +10,14 @@ import { useI18n, registerI18n } from "../../shared/i18n";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, fmtAge, fmtElapsed, jsonSummary } from "../../shared/lib/format";
+import SpriteBoard from "./SpriteBoard";
+import { OfficeSidePanel } from "./OfficeSidePanel";
+import { OfficeStageBoard } from "./StageSection";
+import { modeOf, sessionsToPeople } from "./sprites/bridge";
+import { demoPeople } from "./sprites/demo-people";
+import * as I18N from "./sprites/office-i18n";
+import type { LifeEvent } from "./sprites/types";
+import "./office.css";
 
 registerI18n({
   ko: {
@@ -55,6 +64,9 @@ registerI18n({
     "office.statsEnded": "ended",
     "office.statsLastEnded": "최근 종료",
     "office.statsNoData": "세션 통계가 없습니다",
+    "office.mode.board": "3D 보드",
+    "office.mode.sprites": "스프라이트 사무실",
+    "office.demo": "데모",
   },
   en: {
     "office.title": "Agent-Office",
@@ -100,6 +112,9 @@ registerI18n({
     "office.statsEnded": "ended",
     "office.statsLastEnded": "last ended",
     "office.statsNoData": "No session stats",
+    "office.mode.board": "3D Board",
+    "office.mode.sprites": "Sprite Office",
+    "office.demo": "Demo",
   },
 });
 
@@ -799,6 +814,88 @@ function ScheduleCard() {
   );
 }
 
+// ── 스프라이트 사무실 (레거시 #jmo-wrap — 2D 캔버스 + 사람들 패널 + 활동 로그) ──
+// paused: 보드 모드일 때 시뮬레이션만 멈추고 마운트는 유지 — 토글해도 상태가 보존된다(레거시와 동일)
+function OfficeSpriteSection({ paused = false }: { paused?: boolean }) {
+  const { lang } = useI18n();
+  const [selId, setSelId] = useState<string | null>(null);
+  const [lifeEvents, setLifeEvents] = useState<LifeEvent[]>([]);
+  const [imgFailed, setImgFailed] = useState(false);
+  // 데모 캐스트 전이용 틱 — 레거시 office-view.js provider 폴링(POLL_MS=3s)에 해당
+  const [demoTick, setDemoTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setDemoTick((n) => n + 1), 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  // SessionsPanel 과 같은 queryKey — React Query 캐시를 공유해 요청이 하나로 합쳐진다
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["office-sessions"],
+    queryFn: () => apiGet<SessionView[]>("/agent-sessions?limit=50&include_ended=false"),
+    refetchInterval: 10000,
+  });
+  // 데모 토글은 localStorage 'jobmate.officeDemo'(StageSection 과 같은 키).
+  // 같은 탭 쓰기라 storage 이벤트가 안 오므로 렌더마다 최신값을 읽는다.
+  const demo = localStorage.getItem("jobmate.officeDemo") !== "0";
+  const people = useMemo(() => {
+    const real = sessionsToPeople((data || []).filter((s) => s.status !== "ended"));
+    // 레거시 jmSessionProvider: officeDemo ON이면 가상 캐스트를 뒤에 붙인다
+    return demo ? [...real, ...demoPeople(demoTick)] : real;
+  }, [data, demo, demoTick]);
+
+  const onEvents = useCallback((evs: LifeEvent[]) => {
+    setLifeEvents((prev) => [...prev, ...evs].slice(-300));
+  }, []);
+
+  // 패널 클릭 — keep=true 면 강제 선택(로그 줄), 아니면 같은 id 재클릭 시 해제(레거시 select 와 동일)
+  const pick = useCallback((id: string | null, keep?: boolean) => {
+    setSelId((prev) => (id && (keep || id !== prev) ? id : null));
+  }, []);
+
+  const summary = useMemo(() => {
+    const c = (m: string) => people.filter((p) => modeOf(p) === m).length;
+    const w = c("working"), d = c("decision"), r = c("rest");
+    const subs = people.reduce((n, p) => n + (p.subCount || 0), 0);
+    return I18N.t("sum", { w, d, r }) + (subs ? I18N.t("sum.subs", { n: subs }) : "");
+    // lang 은 useI18n 구독용 — 언어가 바뀌면 I18N.t 가 새 언어로 다시 만든다
+  }, [people, lang]);
+
+  // 레거시 bar(): 그림 로드 실패 → 연결 실패 → 로딩 순으로 안내 줄을 채운다
+  const notice = [
+    imgFailed ? I18N.t("note.img") : "",
+    error ? I18N.t("note.net") : (!data && isLoading ? I18N.t("note.loading") : ""),
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <section className="jmo-office rounded-xl border border-border bg-surface p-3 shadow-sm">
+      <div className="jmo-notice mb-2 flex flex-wrap items-baseline gap-x-3">
+        <span>{summary}</span>
+        {demo && <span className="jmo-demo">{I18N.t("demo")}</span>}
+        {notice && <span className="text-warn">{notice}</span>}
+      </div>
+      <div className="jmo-main">
+        <div className="jmo-stage">
+          <SpriteBoard
+            className="jmo-box"
+            people={people}
+            selectedId={selId}
+            onSelect={setSelId}
+            onEvents={onEvents}
+            onReady={(info) => setImgFailed(info.failedImage)}
+            paused={paused}
+          />
+        </div>
+        <OfficeSidePanel
+          people={people}
+          selectedId={selId}
+          onPick={pick}
+          events={lifeEvents}
+        />
+      </div>
+    </section>
+  );
+}
+
 function useRunDetail(id: string | null) {
   return useQuery({
     queryKey: ["office-run", id],
@@ -814,6 +911,7 @@ function useRunDetail(id: string | null) {
 export default function OfficePage() {
   const { t } = useI18n();
   const [selRunId, setSelRunId] = useState<string | null>(null);
+  const [officeMode, setOfficeMode] = useState<"board" | "sprites">("board");
 
   const { data: runs, isLoading, error, refetch } = useQuery({
     queryKey: ["office-runs"],
@@ -833,6 +931,33 @@ export default function OfficePage() {
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
       <PageHead title={t("office.title", "Agent-Office")} desc={t("office.desc", "dev_review 워크플로 진행 상황과 활성 에이전트 세션 — 자동 갱신")} />
+
+      {/* 관제 모드 토글 — 레거시 #office-view-toggle (3D 보드 / 스프라이트 사무실) */}
+      <div className="flex items-center justify-end gap-2">
+        <div className="flex rounded-lg border border-border bg-surface p-0.5" role="group" aria-label={t("office.modeLabel", "관제 모드")}>
+          {(["board", "sprites"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={officeMode === m}
+              onClick={() => setOfficeMode(m)}
+              className={`rounded-md px-3 py-1 text-xs transition-colors ${
+                officeMode === m ? "bg-accent-soft font-semibold text-accent" : "text-muted hover:text-ink"
+              }`}
+            >
+              {m === "board" ? t("office.mode.board", "3D 보드") : t("office.mode.sprites", "스프라이트 사무실")}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 두 모드 모두 마운트 유지 — 토글 시 스프라이트 시뮬레이션/보드 상태가 보존된다 (레거시와 동일) */}
+      <div hidden={officeMode !== "board"}>
+        <OfficeStageBoard runId={activeRunId} />
+      </div>
+      <div hidden={officeMode !== "sprites"}>
+        <OfficeSpriteSection paused={officeMode !== "sprites"} />
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
         {/* 실행 목록 */}

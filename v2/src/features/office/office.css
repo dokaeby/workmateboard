@@ -1,0 +1,122 @@
+/* jobMate 2D 사무실 패널 — 레거시 office/office.css 이식.
+   jmo- 프리픽스·o- 클래스를 .jmo- 클래스로 옮기고, 캔버스 레이아웃은 Tailwind(index.tsx)가 담당.
+   전역 규칙·변수는 .jmo-office 스코프에 가둔다. */
+
+.jmo-office {
+  --panel: #FFFFFF; --ink: #1E2622; --ink2: #33403A; --ink3: #56615B;
+  --line: rgba(20, 30, 25, .12); --soft: #F3F6F4;
+  --ask: #B4192F; --ask-bg: #FDE7EA; --work: #17733A; --work-bg: #E3F4E9;
+  --sub: #3B4CC0; --sub-bg: #EEF0FF; --ev: #6B3FA0; --live: #15803D;
+  --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--sans);
+  color: var(--ink);
+}
+
+/* 데모 표시·요약 — 원본 #demo/#summary 대응 */
+.jmo-demo { padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;
+  color: #7A4A00; background: #FFF1D6; border: 1px solid #F0D9A8; }
+
+.jmo-notice { font-size: 12px; color: var(--ink3); }
+
+/* ---------- 보드+패널 배치 — 데스크톱은 가로, 모바일은 세로 ---------- */
+.jmo-main { display: flex; gap: 12px; align-items: stretch; min-height: 420px; height: 540px; }
+.jmo-stage { flex: 1; min-width: 0; position: relative; min-height: 0; }
+.jmo-box { position: absolute; inset: 0; }
+.jmo-side { width: clamp(240px, 26%, 340px); flex-shrink: 0; display: flex; flex-direction: column;
+  border-left: 1px solid var(--line); padding-left: 12px; min-height: 0; }
+
+.jmo-side-head { display: flex; align-items: center; }
+.jmo-side-head h2 { font-size: 14px; font-weight: 700; }
+.jmo-side-head h2 small { font-weight: 500; color: var(--ink3); }
+.jmo-mute { margin-left: auto; align-self: center; padding: 0 4px; font-size: 13px; line-height: 1;
+  background: none; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; color: var(--ink3); }
+.jmo-mute:hover { background: var(--soft); }
+.jmo-hint { margin: -4px 2px 4px; font-size: 12px; color: var(--ink3); }
+.jmo-live { color: var(--live) !important; font-weight: 700 !important; animation: jmo-pulse 1.6s ease-in-out infinite; }
+@keyframes jmo-pulse { 50% { opacity: .45; } }
+.jmo-people { flex: 1; min-height: 0; overflow-y: auto; border-bottom: 1px solid #E8ECEA; padding-bottom: 6px; }
+.jmo-empty { padding: 8px; font-size: 12px; color: var(--ink3); }
+
+.jmo-person { padding: 2px 0 6px; border-radius: 6px; border: 1px solid transparent; list-style: none; }
+.jmo-person:hover { background: var(--soft); border-color: rgba(20, 30, 25, .08); }
+.jmo-person.open { background: var(--soft); border-color: rgba(20, 30, 25, .16); }
+.jmo-person.jmo-flash { animation: jmo-flash 1.2s ease-out; }
+@keyframes jmo-flash { 0%, 30% { background: #FFF6C9; border-color: #E5C64A; } }
+.jmo-head { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 4px 8px;
+  text-align: left; font-size: 14px; background: none; border: 0; cursor: pointer; color: inherit; }
+.jmo-head:hover { background: none; }
+.jmo-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.jmo-head:focus-visible { outline: 2px solid var(--sub); outline-offset: -2px; }
+.jmo-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.jmo-chip { flex-shrink: 0; padding: 0 6px; border-radius: 4px; font-size: 12px;
+  background: #EEF1EF; color: #44504A; }
+.jmo-chip.work { background: var(--work-bg); color: var(--work); }
+.jmo-chip.ask { background: var(--ask-bg); color: var(--ask); }
+.jmo-chip.sub { background: var(--sub-bg); color: var(--sub); }
+.jmo-chip.health.stale { background: #FFF3D6; color: #8A5A00; }
+.jmo-chip.health.long_idle { background: #EEF1EF; color: var(--ink3); }
+
+/* 프로젝트 그룹 머리줄 — 항목이 아니라 묶음 표시 */
+.jmo-group { display: flex; align-items: baseline; gap: 6px; padding: 8px 8px 2px;
+  font-size: 12px; font-weight: 700; color: var(--ink3); border-top: 1px solid var(--line); }
+.jmo-group:first-child { border-top: 0; padding-top: 2px; }
+.jmo-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jmo-group-n { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
+.jmo-group-items { list-style: none; margin: 0; padding: 0; }
+.jmo-doing, .jmo-sub { margin: 0 8px 0 23px; font-size: 13px; color: var(--ink2); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.jmo-doing.ask { color: var(--ask); font-weight: 600; }
+.jmo-sub { margin-left: 29px; color: var(--ink3); }
+.jmo-person.open .jmo-doing { white-space: normal; }
+
+/* 펼친 항목 — 경로·세션·커밋·서브에이전트 */
+.jmo-more { margin: 6px 8px 0 23px; padding-top: 6px; border-top: 1px dashed rgba(20, 30, 25, .16); font-size: 13px; }
+.jmo-more p { margin: 0 0 4px; }
+.jmo-k { color: var(--ink3); margin-right: 6px; }
+.jmo-path code { font-family: var(--mono); font-size: 12px; color: var(--ink); word-break: break-all; }
+.jmo-facts { color: var(--ink2); }
+.jmo-subhead { margin-top: 6px !important; font-weight: 600; display: block; }
+.jmo-subs { list-style: none; margin: 0; padding: 0; }
+.jmo-subs li { padding: 3px 0 3px 8px; border-left: 2px solid var(--sub-bg); margin-bottom: 3px; }
+.jmo-subname { display: block; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jmo-subdoing { display: block; color: var(--ink3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jmo-submore { color: var(--ink3); border-left-color: transparent !important; }
+
+/* 활동 로그 */
+.jmo-log-title { font-size: 14px; font-weight: 700; margin-top: 10px; }
+.jmo-log { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 0; }
+.jmo-logrow { display: grid; grid-template-columns: auto auto minmax(64px, max-content) minmax(0, 1fr);
+  align-items: baseline; gap: 0 6px; padding: 5px 2px; font-size: 12px;
+  border-bottom: 1px solid #F0F2F1; cursor: pointer; }
+.jmo-logrow:hover { background: var(--soft); }
+.jmo-logrow time { font-family: var(--mono); font-size: 12px; color: var(--ink3); font-variant-numeric: tabular-nums; }
+.jmo-logrow b { font-weight: 600; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jmo-logrow > span { color: var(--ink2); overflow-wrap: anywhere; }
+.jmo-logrow .jmo-ev { color: var(--ev); font-weight: 600; }
+.jmo-logrow.fresh { animation: jmo-log-in .6s ease-out; }
+@keyframes jmo-log-in { from { opacity: 0; transform: translateY(-6px); background: #E6F6EC; } to { opacity: 1; transform: none; } }
+
+/* 좁은 화면 — 패널을 캔버스 아래로 내린다(숨기지 않는다). 페이지가 세로로 스크롤된다. */
+@media (max-width: 899px) {
+  .jmo-main { flex-direction: column; min-height: 0; height: auto; }
+  .jmo-stage { height: auto; aspect-ratio: 1496 / 994; min-height: 300px; max-height: 560px; }
+  .jmo-box { position: relative; inset: auto; width: 100%; height: 100%; }
+  .jmo-side { width: auto; border-left: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
+  .jmo-people { max-height: 50vh; flex: none; }
+  .jmo-log { max-height: 60vh; flex: none; }
+}
+
+/* 아주 좁은 화면(폰) — 캔버스 높이 확보, 목록은 작게, 글씨는 읽히는 선에서 줄인다 */
+@media (max-width: 820px) {
+  .jmo-main { min-height: 0; }
+  .jmo-stage { aspect-ratio: auto; height: 58vh; min-height: 300px; max-height: 560px; }
+  .jmo-side-head h2 { flex-wrap: wrap; row-gap: 2px; }
+  .jmo-people { max-height: 42vh; }
+  .jmo-log { max-height: 48vh; }
+  .jmo-head { font-size: 13px; }
+  .jmo-doing, .jmo-sub, .jmo-more { font-size: 12px; }
+  .jmo-logrow { font-size: 11px; grid-template-columns: auto auto 1fr; }
+  .jmo-logrow b { display: none; }
+  .jmo-group { font-size: 11px; padding-top: 6px; }
+}
