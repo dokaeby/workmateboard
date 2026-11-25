@@ -65,7 +65,7 @@ export default function MonitorPage() {
   return (
     <div className="space-y-4 p-4">
       <PageHead
-        title={t("monitor.title", "LLM 모니터")}
+        title={t("monitor.title", "Agent Insights")}
         desc={t("monitor.desc", "LangSmith 트레이스 + 실행 지표 — 지연시간·토큰·모델·실패율·승인 백로그")}
       >
         <select

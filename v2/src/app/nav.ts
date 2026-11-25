@@ -10,7 +10,7 @@ export interface NavItem {
 /** 사이드바/모바일바 공용 내비게이션 — index.html nav-item과 동일 구성. */
 export const NAV_ITEMS: NavItem[] = [
   { view: "office", label: "Agent-Office", icon: "⬡" },
-  { view: "monitor", label: "LLM 모니터", icon: "📡" },
+  { view: "monitor", label: "Agent Insights", icon: "📡" },
   { view: "radar", label: "Skill Radar", icon: "◈" },
   { view: "gmail", label: "Gmail Checker", icon: "✉" },
   { view: "calendar", label: "Calendar", icon: "▣" },
