@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from jobmate.adapters.fakes import FakeNotifier
-from jobmate.api.app import _process_due_notification_jobs
+from jobmate.api.jobs import _process_due_notification_jobs
 from jobmate.store.db import Store
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jobmate.api import app as app_module
+from jobmate.api import support as app_module
 from jobmate.api.app import create_app
 from jobmate.config import Settings
 from jobmate.models import RunStatus, StageStatus

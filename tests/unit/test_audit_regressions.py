@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-import jobmate.api.app as app_mod
+import jobmate.api.jobs as app_mod
 from jobmate.api.app import create_app
 from jobmate.config import Settings
 from jobmate.models import RunStatus

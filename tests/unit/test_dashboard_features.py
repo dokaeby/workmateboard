@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from jobmate import webutil
-from jobmate.api import app as appmod
+from jobmate.api import support as appmod
 from jobmate.api.app import create_app
 from jobmate.config import Settings
 from jobmate.security import decrypt_str, hash_password

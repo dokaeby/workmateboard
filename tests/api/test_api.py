@@ -367,7 +367,7 @@ def test_token_path_for_env_json(monkeypatch, tmp_path):
     """JOBMATE_*_TOKEN_JSON env → 임시 토큰 파일 materialize."""
     import json as _json
 
-    from jobmate.api.app import _token_path_for
+    from jobmate.api.support import _token_path_for
 
     token = {"client_id": "c", "client_secret": "s", "refresh_token": "r"}
     monkeypatch.setenv("JOBMATE_GMAIL_TOKEN_JSON", _json.dumps(token))
