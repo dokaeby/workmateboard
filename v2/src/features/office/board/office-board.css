@@ -331,8 +331,25 @@
   .office-node {
     position: relative; transform: none; width: auto; flex: 1 1 40%;
     min-width: 0;
+    /* 인라인 left/top %(데스크톱 절대배치 좌표)가 relative 오프셋으로
+       적용돼 flex 위치를 밀어내는 것을 차단 — !important로 인라인 스타일 무효화 */
+    left: auto !important; top: auto !important;
   }
   .office-node-face { min-height: 0; }
+  /* 플렉스 줄바꿈 시 카드 내용이 좁은 폭에서 넘치지 않도록 아이콘 축소.
+     ORCH 전용 규칙(0,2,0 specificity)이 기본 규칙을 이기므로 별도 오버라이드 필요 */
+  .office-node-ico { width: 30px; height: 30px; }
+  .office-node-ico svg { width: 22px; height: 22px; }
+  .office-node-code { font-size: 14px; }
+  .office-node-orch .office-node-ico { width: 30px; height: 30px; }
+  .office-node-orch .office-node-ico svg { width: 24px; height: 24px; }
+  .office-node-orch .office-node-code { font-size: 14px; }
+  .office-node-orch .office-node-face { padding: 10px 14px; }
+  /* 긴 상태 텍스트(waiting_approval 등)가 이웃 카드로 넘치지 않도록 */
+  .office-node-status {
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 /* ── 승인 대기 / 오류 / diff ── */

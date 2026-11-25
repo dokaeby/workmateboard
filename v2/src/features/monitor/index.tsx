@@ -318,7 +318,7 @@ export default function MonitorPage() {
             {/* 모델 라우팅 — stage×model 비용/실패율 */}
             <Card title={t("monitor.modelRouting", "모델 라우팅 분석 (stage × model)")}>
               {data.stage_model_matrix.length === 0 ? <Empty>{t("monitor.noData", "데이터 없음")}</Empty> : (
-                <div className="max-h-80 overflow-y-auto">
+                <div className="max-h-80 overflow-auto">
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="text-left text-muted">
@@ -349,6 +349,7 @@ export default function MonitorPage() {
             <div className="space-y-4">
               <Card title={t("monitor.pvCompare", "프롬프트 버전 비교")}>
                 {data.prompt_version_stats.length === 0 ? <Empty>{t("monitor.noData", "데이터 없음")}</Empty> : (
+                  <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="text-left text-muted">
@@ -373,6 +374,7 @@ export default function MonitorPage() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 )}
               </Card>
 
@@ -398,6 +400,7 @@ export default function MonitorPage() {
             {/* 모델별 사용량 */}
             <Card title={t("monitor.models", "모델별 토큰")}>
               {data.models.length === 0 ? <Empty>{t("monitor.noData", "데이터 없음")}</Empty> : (
+                <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-left text-muted">
@@ -418,6 +421,7 @@ export default function MonitorPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </Card>
 
@@ -425,6 +429,7 @@ export default function MonitorPage() {
             <div className="space-y-4">
               <Card title={t("monitor.wfCost", "워크플로별 단가")}>
                 {data.by_workflow.length === 0 ? <Empty>{t("monitor.noData", "데이터 없음")}</Empty> : (
+                  <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="text-left text-muted">
@@ -447,6 +452,7 @@ export default function MonitorPage() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 )}
               </Card>
 

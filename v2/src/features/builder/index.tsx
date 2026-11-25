@@ -136,7 +136,7 @@ export default function BuilderPage() {
   return (
     <div className="mx-auto max-w-4xl p-4">
       <PageHead title={t("wf.title", "워크플로 빌더")} desc={t("wf.desc", "커스텀 워크플로 스펙(JSON)을 작성·저장·실행")} />
-      <div className="grid gap-3 lg:grid-cols-[320px_1fr]">
+      <div className="grid gap-3 lg:grid-cols-[320px_minmax(0,1fr)]">
         <Card title={t("wf.custom", "커스텀 워크플로")}>
           {isLoading && <Spinner />}
           {error && <ErrorBox message={error instanceof Error ? error.message : String(error)} onRetry={() => refetch()} />}
@@ -149,7 +149,7 @@ export default function BuilderPage() {
             </div>
           ))}
         </Card>
-        <div className="space-y-3">
+        <div className="min-w-0 space-y-3">
           <Card>
             <div className="mb-2 flex flex-wrap gap-2">
               <input

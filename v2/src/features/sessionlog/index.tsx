@@ -299,7 +299,7 @@ export default function SessionlogPage() {
                         >
                           <span className="shrink-0 text-xs text-muted">{fmtTs(tl.at)}</span>
                           {trans ? <b className="text-xs">{trans}</b> : null}
-                          {tl.text ? <span className="min-w-0 flex-1">{tl.text}</span> : null}
+                          {tl.text ? <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{tl.text}</span> : null}
                           {tl.duration_s != null ? (
                             <span className="text-xs text-muted">({fmtDurSec(tl.duration_s, t)})</span>
                           ) : null}
@@ -317,7 +317,7 @@ export default function SessionlogPage() {
                   <div className="mb-1 text-xs font-bold text-muted">{t("sl.files", "건드린 파일")}</div>
                   <div className="flex flex-wrap gap-1">
                     {files.slice(0, 40).map((f, i) => (
-                      <span key={i} className="rounded bg-surface-hover px-1.5 py-0.5 font-mono text-[11px] text-ink-2">
+                      <span key={i} className="rounded bg-surface-hover px-1.5 py-0.5 font-mono text-[11px] text-ink-2 [overflow-wrap:anywhere]">
                         {f}
                       </span>
                     ))}

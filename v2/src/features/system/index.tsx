@@ -67,7 +67,7 @@ function SystemBody() {
               </div>
               <div className="flex justify-between gap-2 border-b border-border py-1">
                 <dt className="text-muted">{t("sys.version", "버전")}</dt>
-                <dd className="font-mono text-xs">{data.version || "-"}</dd>
+                <dd className="min-w-0 truncate font-mono text-xs">{data.version || "-"}</dd>
               </div>
               <div className="flex justify-between gap-2 border-b border-border py-1 sm:col-span-2">
                 <dt className="text-muted">DB</dt>
@@ -80,7 +80,7 @@ function SystemBody() {
               {reaper && Object.keys(reaper).length > 0 && (
                 <div className="flex justify-between gap-2 border-b border-border py-1">
                   <dt className="text-muted">{t("sys.reaper", "리퍼")}</dt>
-                  <dd className="font-mono text-xs">{jsonSummary(reaper, 120)}</dd>
+                  <dd className="min-w-0 [overflow-wrap:anywhere] text-right font-mono text-xs">{jsonSummary(reaper, 120)}</dd>
                 </div>
               )}
             </dl>
@@ -108,7 +108,7 @@ function SystemBody() {
                 return (
                   <Card key={m.machine || i}>
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="font-mono text-sm font-semibold">{m.machine || "-"}</span>
+                      <span className="min-w-0 truncate font-mono text-sm font-semibold">{m.machine || "-"}</span>
                       {isStale
                         ? <Badge tone="warn">{t("sys.stale", "10분+ 지연")}</Badge>
                         : <Badge tone="ok">{t("sys.ok", "정상")}</Badge>}
