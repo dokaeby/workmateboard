@@ -3,12 +3,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
 import { useAppStore } from "../../shared/store/appStore";
-import { useI18n, registerI18n, tx, type TFn } from "../../shared/i18n";
+import { useI18n, tx, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtAge, fmtTs } from "../../shared/lib/format";
-import { STR } from "./i18n";
+import "./i18n";
 
-registerI18n(STR);
 
 interface RiskI18n {
   title_key?: string;

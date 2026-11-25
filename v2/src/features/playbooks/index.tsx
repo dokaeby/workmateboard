@@ -3,13 +3,12 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { Playbook, PlaybooksResponse, WorkflowInfo, CustomWorkflow } from "../../shared/api/types";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n } from "../../shared/i18n";
 import { useAppStore } from "../../shared/store/appStore";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs } from "../../shared/lib/format";
-import { STR } from "./i18n";
+import "./i18n";
 
-registerI18n(STR);
 
 
 /** 내장 + 커스텀 워크플로 키 목록 (레거시 _allWorkflowKeys와 동일). */

@@ -1,5 +1,7 @@
 /** automation 뷰 i18n 사전 — 자동화 허브(스케줄/알림 규칙/시스템 상태) 문자열. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "auto.title": "자동화",
@@ -58,3 +60,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "auto.adminOnly": "This view is for admins only.",
   },
 };
+
+registerI18n(STR);

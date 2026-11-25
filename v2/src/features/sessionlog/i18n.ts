@@ -1,5 +1,7 @@
 /** sessionlog 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "sl.title": "세션 기록",
@@ -58,3 +60,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "sl.durS": "s",
   },
 };
+
+registerI18n(STR);

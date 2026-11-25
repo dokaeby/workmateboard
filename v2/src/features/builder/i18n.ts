@@ -1,5 +1,7 @@
 /** builder 뷰 i18n 사전 — 워크플로 빌더(커스텀 스펙 작성·저장·실행) 문자열. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "wf.title": "워크플로 빌더",
@@ -84,3 +86,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.delete": "Delete",
   },
 };
+
+registerI18n(STR);

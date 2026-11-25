@@ -1,5 +1,7 @@
 /** developer 뷰 i18n 사전 — /developer/status 연동/인증 구성 상태 문자열. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "dev.title": "개발자",
@@ -42,3 +44,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "dev.adminOnly": "This view is for admins only.",
   },
 };
+
+registerI18n(STR);

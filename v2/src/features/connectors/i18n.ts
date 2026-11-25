@@ -1,5 +1,7 @@
 /** connectors 뷰 i18n 사전 — 커넥터 목록/추가/토글/삭제/항목 조회 문자열. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "conn.title": "커넥터",
@@ -92,3 +94,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.loading": "Loading…",
   },
 };
+
+registerI18n(STR);

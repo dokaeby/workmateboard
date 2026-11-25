@@ -3,13 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
 import type { ApprovalsResponse, ApprovalItem } from "../../shared/api/types";
 import { useAppStore } from "../../shared/store/appStore";
-import { useI18n, registerI18n, tx } from "../../shared/i18n";
+import { useI18n, tx } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtAge, fmtTs } from "../../shared/lib/format";
 import { useState } from "react";
-import { STR } from "./i18n";
+import "./i18n";
 
-registerI18n(STR);
 
 function kindLabel(kind: string, t: (k: string, f?: string) => string): string {
   const k = kind.toLowerCase();

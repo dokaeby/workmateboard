@@ -3,12 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n, registerI18n } from "../../shared/i18n";
-import { STR } from "./i18n";
+import { useI18n } from "../../shared/i18n";
+import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
 
-registerI18n(STR);
 
 const PLATFORMS = ["claude", "chatgpt", "gemini"];
 const TAXONOMIES = ["all", "agents", "mcp", "skills", "plugins", "devtools", "automation", "data", "other"];

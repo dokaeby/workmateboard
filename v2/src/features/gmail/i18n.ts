@@ -1,5 +1,7 @@
 /** gmail 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "gmail.title": "Gmail Checker",
@@ -38,3 +40,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "gmail.empty": "No messages",
   },
 };
+
+registerI18n(STR);

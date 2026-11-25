@@ -2,12 +2,11 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
-import { useI18n, registerI18n } from "../../shared/i18n";
-import { STR } from "./i18n";
+import { useI18n } from "../../shared/i18n";
+import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, safeUrl } from "../../shared/lib/format";
 
-registerI18n(STR);
 
 interface Connector {
   id: string;

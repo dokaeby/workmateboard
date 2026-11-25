@@ -6,12 +6,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { InboxItem, ViewKey } from "../../shared/api/types";
 import { useAppStore } from "../../shared/store/appStore";
-import { useI18n, registerI18n, tx, type TFn } from "../../shared/i18n";
+import { useI18n, tx, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
-import { STR } from "./i18n";
+import "./i18n";
 
-registerI18n(STR);
 
 // 레거시 INBOX_KIND_LABEL/CSS 톤 대응
 const KIND_TONE: Record<string, "muted" | "ok" | "warn" | "err" | "accent"> = {

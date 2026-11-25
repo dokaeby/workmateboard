@@ -3,13 +3,12 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { Me } from "../../shared/api/types";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, usd } from "../../shared/lib/format";
 import { roleAllows, useAppStore } from "../../shared/store/appStore";
-import { STR } from "./i18n";
+import "./i18n";
 
-registerI18n(STR);
 
 interface ProjectOverviewItem {
   id: string;

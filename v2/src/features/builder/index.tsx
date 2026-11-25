@@ -3,12 +3,11 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { CustomWorkflow } from "../../shared/api/types";
-import { useI18n, registerI18n, type TFn } from "../../shared/i18n";
-import { STR } from "./i18n";
+import { useI18n, type TFn } from "../../shared/i18n";
+import "./i18n";
 import { useAppStore } from "../../shared/store/appStore";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button } from "../../shared/ui";
 
-registerI18n(STR);
 
 interface CustomListResponse { items?: CustomWorkflow[] }
 

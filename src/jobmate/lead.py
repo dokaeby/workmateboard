@@ -5,7 +5,8 @@ app.py의 create_app() 안에서 지연 import되어 순환 참조를 피한다.
 
 구현은 형제 모듈로 분리되어 있고 이 모듈은 기존 공개 API를 그대로
 re-export한다 (lead_common/lead_projects/lead_sessions/lead_risks/
-lead_approvals/lead_perf).
+lead_approvals/lead_perf). `_risk` 등 private 헬퍼는 의도적으로
+재수출하지 않는다 — 필요하면 해당 lead_* 모듈을 직접 import할 것.
 """
 
 from .lead_approvals import approval_queue

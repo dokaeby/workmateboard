@@ -1,5 +1,7 @@
 /** runs (실행 이력) 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "common.reload": "새로고침",
@@ -94,3 +96,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "runs.hour": "{h}h {m}m",
   },
 };
+
+registerI18n(STR);

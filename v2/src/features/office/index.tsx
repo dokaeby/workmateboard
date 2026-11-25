@@ -5,12 +5,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox } from "../../shared/ui";
 import { fmtTs } from "../../shared/lib/format";
 import { OfficeStageBoard } from "./StageSection";
 import { useOfficeDemo } from "./demoState";
-import { STR } from "./i18n";
+import "./i18n";
 import { pickRun, StatusBadge } from "./bits";
 import { PipelineCard, RunDetailPanel, AuditFeed } from "./RunPanels";
 import { OfficeBottomGrid } from "./BottomGrid";
@@ -18,7 +18,6 @@ import { OfficeSpriteSection } from "./SpriteSection";
 import type { RunListItem } from "./types";
 import "./office.css";
 
-registerI18n(STR);
 
 export default function OfficePage() {
   const { t } = useI18n();

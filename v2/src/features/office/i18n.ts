@@ -1,5 +1,7 @@
 /** office 뷰 i18n 사전 — index.tsx의 registerI18n 사전을 그대로 추출. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "office.title": "Agent Office",
@@ -136,3 +138,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "office.timesUnit": " times",
   },
 };
+
+registerI18n(STR);

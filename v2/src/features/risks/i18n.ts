@@ -1,5 +1,7 @@
 /** risks 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "risks.title": "리스크",
@@ -33,3 +35,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "risk.budget.detail": "This month's est. cost ${mtd} > budget ${budget}.",
   },
 };
+
+registerI18n(STR);

@@ -11,6 +11,10 @@ type Dict = Record<string, string>;
 
 const STORE = "jobmate_lang";
 const dicts: Record<Lang, Dict> = { ko: {}, en: {} };
+/** core 등록(app 셸·shared/ui)이 소유한 키 — feature dict는 덮어쓸 수 없다.
+ *  lazy chunk 로드 순서에 따라 전역 키가 바뀌는 것을 막는다. */
+const reserved = new Set<string>();
+const warned = new Set<string>();
 let lang: Lang = detect();
 const listeners = new Set<() => void>();
 
@@ -22,9 +26,25 @@ function detect(): Lang {
   return (navigator.language || "ko").toLowerCase().startsWith("ko") ? "ko" : "en";
 }
 
-export function registerI18n(d: { ko?: Dict; en?: Dict }) {
-  Object.assign(dicts.ko, d.ko || {});
-  Object.assign(dicts.en, d.en || {});
+export function registerI18n(d: { ko?: Dict; en?: Dict }, opts?: { core?: boolean }) {
+  for (const l of ["ko", "en"] as const) {
+    for (const [k, v] of Object.entries(d[l] || {})) {
+      if (!opts?.core && reserved.has(k)) {
+        if (!warned.has(k)) {
+          warned.add(k);
+          console.warn(`[i18n] "${k}"는 core 사전 소유 — feature dict 등록을 무시합니다`);
+        }
+        continue;
+      }
+      const prev = dicts[l][k];
+      if (prev !== undefined && prev !== v && !warned.has(`${l}:${k}`)) {
+        warned.add(`${l}:${k}`);
+        console.warn(`[i18n] "${k}" 덮어씀 (${l}): "${prev}" → "${v}"`);
+      }
+      dicts[l][k] = v;
+      if (opts?.core) reserved.add(k);
+    }
+  }
   emit();
 }
 

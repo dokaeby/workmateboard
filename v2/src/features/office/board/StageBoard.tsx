@@ -6,18 +6,17 @@
  *   ./format(시간/집계 헬퍼) ./nodes(노드·엣지 모델+아이콘) ./svgs(보드 SVG)
  *   ./details(상세/로그 패널) ./i18n(사전) */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { useI18n, registerI18n } from "../../../shared/i18n";
+import { useI18n } from "../../../shared/i18n";
 import { OFFICE_STAGES, OFFICE_NODES } from "./layout";
 import { demoRunState } from "./demo";
 import { fmtSecs, fmtElapsedRun, latestStageRuns, parseMs } from "./format";
 import { nodeInfo, OFFICE_ICONS } from "./nodes";
 import { GridSvg, FeedbackSvg, EdgesSvg } from "./svgs";
 import { OrchDetail, DiffPreview, StageDetail, EventLog } from "./details";
-import { STR } from "./i18n";
+import "./i18n";
 import type { BoardSelection, StageBoardProps } from "./types";
 import "./office-board.css";
 
-registerI18n(STR);
 
 // ── 메인 보드 ──
 

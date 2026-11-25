@@ -1,5 +1,7 @@
 /** calendar 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "cal.title": "Calendar",
@@ -38,3 +40,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "cal.notify": "notification",
   },
 };
+
+registerI18n(STR);

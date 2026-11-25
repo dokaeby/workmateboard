@@ -1,5 +1,7 @@
 /** team 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "team.title": "팀",
@@ -32,3 +34,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "team.leadOnly": "This page requires a lead role or higher.",
   },
 };
+
+registerI18n(STR);

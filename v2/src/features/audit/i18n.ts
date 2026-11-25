@@ -1,5 +1,7 @@
 /** audit 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "audit.title": "감사 로그",
@@ -24,3 +26,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "audit.adminOnly": "The audit log is for admins only.",
   },
 };
+
+registerI18n(STR);

@@ -3,11 +3,11 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost, apiHeaders, ApiError } from "../../shared/api/client";
 import type { ViewKey } from "../../shared/api/types";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
-import { STR } from "./i18n";
+import "./i18n";
 
 interface ArchiveItem {
   kind?: string;
@@ -19,7 +19,6 @@ interface ArchiveItem {
 }
 interface ArchiveResponse { items?: ArchiveItem[]; query?: string }
 
-registerI18n(STR);
 
 const KIND_LABEL_KEY: Record<string, string> = {
   report: "arch.kindReport", run: "arch.kindRun", session: "arch.kindSession",

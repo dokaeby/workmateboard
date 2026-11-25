@@ -2,12 +2,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n, registerI18n } from "../../shared/i18n";
-import { STR } from "./i18n";
+import { useI18n } from "../../shared/i18n";
+import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs } from "../../shared/lib/format";
 
-registerI18n(STR);
 
 interface Integration {
   name?: string;

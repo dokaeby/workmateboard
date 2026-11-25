@@ -9,7 +9,7 @@ import { STR as APP_I18N } from "./i18n";
 import { ViewLoader } from "./views";
 import { useSseInvalidation } from "../shared/stream";
 
-registerI18n(APP_I18N);
+registerI18n(APP_I18N, { core: true });
 
 async function fetchMe(): Promise<Me | null> {
   try {

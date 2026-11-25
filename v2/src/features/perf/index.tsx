@@ -2,12 +2,11 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
-import { useI18n, registerI18n } from "../../shared/i18n";
-import { STR } from "./i18n";
+import { useI18n } from "../../shared/i18n";
+import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button } from "../../shared/ui";
 import { usd } from "../../shared/lib/format";
 
-registerI18n(STR);
 
 type GroupBy = "model" | "agent" | "tool";
 

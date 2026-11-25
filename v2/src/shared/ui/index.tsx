@@ -24,7 +24,7 @@ registerI18n({
     "common.last90": "Last 90 days",
     "common.last365": "Last 365 days",
   },
-});
+}, { core: true });
 
 type BtnVariant = "primary" | "secondary" | "danger" | "ghost";
 const btnCls: Record<BtnVariant, string> = {

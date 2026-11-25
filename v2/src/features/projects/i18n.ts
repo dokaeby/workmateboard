@@ -1,5 +1,7 @@
 /** projects 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "proj.title": "프로젝트",
@@ -58,3 +60,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.refresh": "Refresh",
   },
 };
+
+registerI18n(STR);

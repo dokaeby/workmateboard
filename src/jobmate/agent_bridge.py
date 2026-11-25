@@ -23,6 +23,9 @@ from typing import Any
 
 # 스캐너/공통 헬퍼 재수출 — 기존 `from jobmate import agent_bridge as ab`
 # 사용처가 ab.scan_claude / ab.SessionState / ab._read_edges 등을 그대로 쓸 수 있도록.
+# 주의: `_devin_lock_warned`·`_DEVIN_MAX_TRANSCRIPT_BYTES`는 값 복사다 —
+# monkeypatch는 반드시 `jobmate.bridge_devin` 모듈을 대상으로 해야 한다
+# (`jobmate.agent_bridge._DEVIN_MAX_TRANSCRIPT_BYTES` 패치는 원본에 영향 없음).
 from .bridge_claude import (
     _claude_entries,
     _claude_slug_project,

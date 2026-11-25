@@ -1,5 +1,7 @@
 /** inbox 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "inbox.title": "알림",
@@ -112,3 +114,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "inbox.t.reportDone": "{kind} report generated",
   },
 };
+
+registerI18n(STR);

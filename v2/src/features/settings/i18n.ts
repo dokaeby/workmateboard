@@ -1,5 +1,7 @@
 /** settings 뷰 i18n 사전 — 레거시 settings.html의 STR을 그대로 이식. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "settings.subtitle": "설정",
@@ -224,3 +226,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "settings.me": "me",
   },
 };
+
+registerI18n(STR);

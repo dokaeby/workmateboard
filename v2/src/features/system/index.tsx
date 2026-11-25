@@ -3,12 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
 import type { HealthDetail } from "../../shared/api/types";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n, registerI18n, type TFn } from "../../shared/i18n";
+import { useI18n, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
-import { STR } from "./i18n";
+import "./i18n";
 
-registerI18n(STR);
 
 function fmtSecs(sec: number | null | undefined, t: TFn): string {
   const s = Number(sec);

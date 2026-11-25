@@ -1,5 +1,7 @@
 /** perf 뷰 i18n 사전 — /perf/compare 워크플로 성과 비교 문자열. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "perf.title": "성과",
@@ -62,3 +64,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "th.workflow": "Workflow",
   },
 };
+
+registerI18n(STR);

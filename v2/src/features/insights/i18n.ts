@@ -1,5 +1,7 @@
 /** insights 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "ins.title": "인사이트",
@@ -70,3 +72,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.refresh": "Refresh",
   },
 };
+
+registerI18n(STR);

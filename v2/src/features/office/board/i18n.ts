@@ -1,5 +1,7 @@
 /** StageBoard 3D 보드 i18n 사전 — StageBoard.tsx의 registerI18n 사전을 그대로 추출. */
 
+import { registerI18n } from "../../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "office.chip.elapsed": "실행시간",
@@ -102,3 +104,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "office.demoBadge": "DEMO",
   },
 };
+
+registerI18n(STR);

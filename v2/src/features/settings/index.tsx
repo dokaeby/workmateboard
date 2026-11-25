@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiGet, apiPost, ApiError } from "../../shared/api/client";
 import type { Role } from "../../shared/api/types";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { NAV_ITEMS } from "../../app/nav";
 import {
@@ -16,13 +16,12 @@ import type {
   MeUser, NotifyRule, SettingsResponse, SettingsSaveResponse,
   SidebarMenuItem, WidgetDraft,
 } from "./types";
-import { STR } from "./i18n";
+import "./i18n";
 import SystemHealth from "./components/SystemHealth";
 import UsersAdmin from "./components/UsersAdmin";
 import AccountSection from "./components/AccountSection";
 import PushSection from "./components/PushSection";
 
-registerI18n(STR);
 
 const SIDEBAR_ITEMS: SidebarMenuItem[] = NAV_ITEMS
   .filter((n) => n.view !== "office" && n.view !== "radar" && n.view !== "settings")

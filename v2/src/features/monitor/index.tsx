@@ -5,13 +5,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
-import { useI18n, registerI18n } from "../../shared/i18n";
-import { STR } from "./i18n";
+import { useI18n } from "../../shared/i18n";
+import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, fmtAge } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
 
-registerI18n(STR);
 
 interface StageAgg {
   stage_key: string; calls: number; failures: number;

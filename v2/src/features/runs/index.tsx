@@ -3,13 +3,12 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
 import type { Run, StageRun, RunStats, RunDiff, AuditEvent, RunListItem } from "../../shared/api/types";
-import { useI18n, registerI18n, type TFn } from "../../shared/i18n";
-import { STR } from "./i18n";
+import { useI18n, type TFn } from "../../shared/i18n";
+import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
 
-registerI18n(STR);
 
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "err" | "accent" | "muted"> = {

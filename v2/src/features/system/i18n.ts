@@ -1,5 +1,7 @@
 /** system 뷰 i18n 사전. */
 
+import { registerI18n } from "../../shared/i18n";
+
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "sys.title": "시스템",
@@ -42,3 +44,5 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "sys.unit.d": "d",
   },
 };
+
+registerI18n(STR);
