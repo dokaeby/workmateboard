@@ -2035,20 +2035,22 @@ def create_app(
         )
 
     # ---- agent-sessions: 로컬 에이전트 브릿지 push/pull ----
-    _attention_ts: dict[str, float] = {}
-
     def _push_attention(key: str, title: str, body: str) -> None:
-        """어텐션 웹 푸시 — 키(세션/런)당 10분 레이트리밋."""
+        """어텐션 웹 푸시 — 키(세션/런)당 10분 레이트리밋.
+        타임스탬프는 DB state에 저장 — 서버리스 인스턴스마다 인메모리가
+        초기화돼 레이트리밋이 무력화되는 것을 막는다."""
         now = time.time()
-        if now - _attention_ts.get(key, 0.0) < 600:
+        ts_map = store.get_state("attention_push_ts", {})
+        if not isinstance(ts_map, dict):
+            ts_map = {}
+        if now - float(ts_map.get(key) or 0.0) < 600:
             return
-        if len(_attention_ts) > 1000:
-            # 만료 항목 먼저 정리, 그래도 크면 전체 클리어(메모리 보호)
-            for k in [k for k, t in _attention_ts.items() if now - t >= 600]:
-                _attention_ts.pop(k, None)
-            if len(_attention_ts) > 1000:
-                _attention_ts.clear()
-        _attention_ts[key] = now
+        # 만료 항목 정리, 그래도 크면 전체 클리어(스토리지 보호)
+        ts_map = {k: v for k, v in ts_map.items() if now - float(v or 0.0) < 600}
+        if len(ts_map) > 1000:
+            ts_map.clear()
+        ts_map[key] = now
+        store.set_state("attention_push_ts", ts_map)
         from ..engine.functions import send_web_push_text
 
         send_web_push_text(adapters, title, body, "/?view=office")
@@ -3382,7 +3384,9 @@ def create_app(
                 )
             platforms = [str(p) for p in raw_platforms]
         force = bool(body.get("force", True))
-        auto_approve = bool(body.get("auto_approve", False))
+        # radar는 승인 단계 없이 자동 발행 — daily 수집이 사람 승인을 기다리면
+        # waiting_approval run이 쌓여 승인 대기 푸시가 반복된다.
+        auto_approve = bool(body.get("auto_approve", True))
         jobs: list = []
         ids = []
         for p in platforms:
@@ -4779,9 +4783,6 @@ padding:32px;max-width:360px;text-align:center">
 
 # ---------- automation worker ----------
 
-# run_id → waiting_approval 진입 시점의 updated_at 지문 (재전이 감지용)
-_WAITING_APPROVAL_FP: dict[str, str] = {}
-
 
 def _execute_run_job(
     store: Store,
@@ -4954,21 +4955,28 @@ def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
     """dev_review run이 waiting_approval에 '전이'할 때만 웹 푸시.
 
     updated_at 지문으로 동일 대기 상태의 반복 감지를 막고, 승인을 거쳐
-    다시 대기에 들어오면(지문 변경) 새로 알린다."""
+    다시 대기에 들어오면(지문 변경) 새로 알린다. 지문은 DB state에 저장 —
+    서버리스에서는 인메모리 dict가 매 호출마다 초기화돼 매분 푸시가 반복됐다."""
     from ..engine.functions import send_web_push_text
 
     waiting: dict[str, Any] = {}
     for run in store.list_runs(limit=100):
         if run.status == RunStatus.WAITING_APPROVAL:
             waiting[run.id] = run
-    for rid in list(_WAITING_APPROVAL_FP):
+    fp_map = store.get_state("approval_wait_fp", {})
+    if not isinstance(fp_map, dict):
+        fp_map = {}
+    changed = False
+    for rid in list(fp_map):
         if rid not in waiting:
-            _WAITING_APPROVAL_FP.pop(rid, None)
+            fp_map.pop(rid, None)
+            changed = True
     for run in waiting.values():
         fp = run.updated_at.isoformat() if run.updated_at else run.id
-        if _WAITING_APPROVAL_FP.get(run.id) == fp:
+        if fp_map.get(run.id) == fp:
             continue
-        _WAITING_APPROVAL_FP[run.id] = fp
+        fp_map[run.id] = fp
+        changed = True
         task = ""
         if isinstance(run.input, dict):
             task = str(run.input.get("task", ""))[:200]
@@ -4990,6 +4998,8 @@ def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
         except Exception:
             logger.debug("messenger notify failed", exc_info=True)
         logger.info("waiting_approval push sent run=%s", run.id)
+    if changed:
+        store.set_state("approval_wait_fp", fp_map)
 
 
 def _sync_cronjob(settings: Settings, store: Store, prefs: dict[str, Any]) -> dict[str, str]:

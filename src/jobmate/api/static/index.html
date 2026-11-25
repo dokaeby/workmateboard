@@ -54,6 +54,22 @@
     align-items: center; justify-content: center;
   }
   #push-toggle.on { color: var(--ok); }
+  /* ── 언어 전환 (segmented pill) ── */
+  .lang-toggle {
+    display: inline-flex; gap: 2px; padding: 2px;
+    border: 1px solid var(--border-strong); border-radius: 999px;
+    background: var(--surface-hover);
+  }
+  .lang-toggle button {
+    border: none; background: transparent; color: var(--muted);
+    font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    padding: 3px 10px; border-radius: 999px;
+  }
+  .lang-toggle button:hover { background: transparent; color: var(--ink-2); }
+  .lang-toggle button[aria-pressed="true"] {
+    background: var(--surface); color: var(--accent);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .10);
+  }
   button:disabled { opacity: .5; cursor: not-allowed; }
   /* ── 레이아웃: 사이드바 + 메인 ── */
   .app-body {
@@ -1114,13 +1130,21 @@
 <header class="app-header">
   <a class="brand" href="#">jobMate</a>
   <div class="header-actions">
-    <button class="secondary icon-btn" id="push-toggle" title="알림 켜기" aria-label="알림 켜기">
+    <div class="lang-toggle" id="jm-lang-toggle" role="group"
+         data-jm-i18n-aria="lang.label">
+      <button type="button" data-lang="ko" aria-pressed="true">KO</button>
+      <button type="button" data-lang="en" aria-pressed="false">EN</button>
+    </div>
+    <button class="secondary icon-btn" id="push-toggle" title="알림 켜기" aria-label="알림 켜기"
+            data-jm-i18n-title="hdr.push" data-jm-i18n-aria="hdr.push">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
     </button>
-    <button class="secondary icon-btn" id="logout-btn" title="로그아웃" aria-label="로그아웃">
+    <button class="secondary icon-btn" id="logout-btn" title="로그아웃" aria-label="로그아웃"
+            data-jm-i18n-title="hdr.logout" data-jm-i18n-aria="hdr.logout">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
     </button>
-    <button class="secondary icon-btn" id="settings-open" title="설정" aria-label="설정">
+    <button class="secondary icon-btn" id="settings-open" title="설정" aria-label="설정"
+            data-jm-i18n-title="hdr.settings" data-jm-i18n-aria="hdr.settings">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
   </div>
@@ -1138,33 +1162,33 @@
 <div class="app-body">
   <aside class="sidebar">
     <nav>
-      <button class="nav-item active" data-view="office"><span class="ico">⬡</span>Agent-Office</button>
-      <button class="nav-item" data-view="radar"><span class="ico">◈</span>Skill Radar</button>
-      <button class="nav-item" data-view="gmail"><span class="ico">✉</span>Gmail Checker</button>
-      <button class="nav-item" data-view="calendar"><span class="ico">▣</span>Calendar</button>
-      <button class="nav-item" data-view="runs"><span class="ico">▶</span>실행 이력</button>
-      <button class="nav-item" data-view="inbox"><span class="ico">🔔</span>알림<span class="nav-badge" id="nav-inbox-badge" hidden></span></button>
-      <button class="nav-item" data-view="projects" data-min-role="lead"><span class="ico">📁</span>프로젝트</button>
-      <button class="nav-item" data-view="sessionlog" data-min-role="lead"><span class="ico">🕘</span>세션 기록</button>
-      <button class="nav-item" data-view="risks" data-min-role="lead"><span class="ico">⚠</span>리스크</button>
-      <button class="nav-item" data-view="approvals" data-min-role="lead"><span class="ico">✅</span>승인</button>
-      <button class="nav-item" data-view="perf" data-min-role="lead"><span class="ico">📈</span>성과</button>
-      <button class="nav-item" data-view="insights" data-min-role="lead"><span class="ico">📊</span>인사이트</button>
-      <button class="nav-item" data-view="automation" data-min-role="admin"><span class="ico">⚙</span>자동화</button>
-      <button class="nav-item" data-view="system" data-min-role="admin"><span class="ico">🖥</span>시스템</button>
-      <button class="nav-item" data-view="archive" data-min-role="lead"><span class="ico">🗄</span>아카이브</button>
-      <button class="nav-item" data-view="cost" data-min-role="lead"><span class="ico">💰</span>비용</button>
-      <button class="nav-item" data-view="developer" data-min-role="admin"><span class="ico">🛠</span>개발자</button>
-      <button class="nav-item" data-view="playbooks" data-min-role="lead"><span class="ico">📒</span>플레이북</button>
-      <button class="nav-item" data-view="connectors" data-min-role="lead"><span class="ico">🔌</span>커넥터</button>
-      <button class="nav-item" data-view="triggers" data-min-role="lead"><span class="ico">⚡</span>트리거</button>
-      <button class="nav-item" data-view="builder" data-min-role="lead"><span class="ico">🧩</span>워크플로 빌더</button>
-      <button class="nav-item" data-view="team" data-min-role="lead"><span class="ico">👥</span>팀</button>
-      <button class="nav-item" id="nav-audit" data-view="audit" data-min-role="admin" hidden><span class="ico">🔍</span>감사 로그</button>
+      <button class="nav-item active" data-view="office"><span class="ico">⬡</span><span data-jm-i18n="nav.office">Agent-Office</span></button>
+      <button class="nav-item" data-view="radar"><span class="ico">◈</span><span data-jm-i18n="nav.radar">Skill Radar</span></button>
+      <button class="nav-item" data-view="gmail"><span class="ico">✉</span><span data-jm-i18n="nav.gmail">Gmail Checker</span></button>
+      <button class="nav-item" data-view="calendar"><span class="ico">▣</span><span data-jm-i18n="nav.calendar">Calendar</span></button>
+      <button class="nav-item" data-view="runs"><span class="ico">▶</span><span data-jm-i18n="nav.runs">실행 이력</span></button>
+      <button class="nav-item" data-view="inbox"><span class="ico">🔔</span><span data-jm-i18n="nav.inbox">알림</span><span class="nav-badge" id="nav-inbox-badge" hidden></span></button>
+      <button class="nav-item" data-view="projects" data-min-role="lead"><span class="ico">📁</span><span data-jm-i18n="nav.projects">프로젝트</span></button>
+      <button class="nav-item" data-view="sessionlog" data-min-role="lead"><span class="ico">🕘</span><span data-jm-i18n="nav.sessionlog">세션 기록</span></button>
+      <button class="nav-item" data-view="risks" data-min-role="lead"><span class="ico">⚠</span><span data-jm-i18n="nav.risks">리스크</span></button>
+      <button class="nav-item" data-view="approvals" data-min-role="lead"><span class="ico">✅</span><span data-jm-i18n="nav.approvals">승인</span></button>
+      <button class="nav-item" data-view="perf" data-min-role="lead"><span class="ico">📈</span><span data-jm-i18n="nav.perf">성과</span></button>
+      <button class="nav-item" data-view="insights" data-min-role="lead"><span class="ico">📊</span><span data-jm-i18n="nav.insights">인사이트</span></button>
+      <button class="nav-item" data-view="automation" data-min-role="admin"><span class="ico">⚙</span><span data-jm-i18n="nav.automation">자동화</span></button>
+      <button class="nav-item" data-view="system" data-min-role="admin"><span class="ico">🖥</span><span data-jm-i18n="nav.system">시스템</span></button>
+      <button class="nav-item" data-view="archive" data-min-role="lead"><span class="ico">🗄</span><span data-jm-i18n="nav.archive">아카이브</span></button>
+      <button class="nav-item" data-view="cost" data-min-role="lead"><span class="ico">💰</span><span data-jm-i18n="nav.cost">비용</span></button>
+      <button class="nav-item" data-view="developer" data-min-role="admin"><span class="ico">🛠</span><span data-jm-i18n="nav.developer">개발자</span></button>
+      <button class="nav-item" data-view="playbooks" data-min-role="lead"><span class="ico">📒</span><span data-jm-i18n="nav.playbooks">플레이북</span></button>
+      <button class="nav-item" data-view="connectors" data-min-role="lead"><span class="ico">🔌</span><span data-jm-i18n="nav.connectors">커넥터</span></button>
+      <button class="nav-item" data-view="triggers" data-min-role="lead"><span class="ico">⚡</span><span data-jm-i18n="nav.triggers">트리거</span></button>
+      <button class="nav-item" data-view="builder" data-min-role="lead"><span class="ico">🧩</span><span data-jm-i18n="nav.builder">워크플로 빌더</span></button>
+      <button class="nav-item" data-view="team" data-min-role="lead"><span class="ico">👥</span><span data-jm-i18n="nav.team">팀</span></button>
+      <button class="nav-item" id="nav-audit" data-view="audit" data-min-role="admin" hidden><span class="ico">🔍</span><span data-jm-i18n="nav.audit">감사 로그</span></button>
     </nav>
     <div class="sidebar-legal">
-      <a href="/static/privacy.html" target="_blank" rel="noopener">개인정보처리방침</a>
-      <a href="/static/terms.html" target="_blank" rel="noopener">이용약관</a>
+      <a href="/static/privacy.html" target="_blank" rel="noopener" data-jm-i18n="legal.privacy">개인정보처리방침</a>
+      <a href="/static/terms.html" target="_blank" rel="noopener" data-jm-i18n="legal.terms">이용약관</a>
     </div>
   </aside>
 
@@ -1172,11 +1196,11 @@
     <!-- Gmail Checker -->
     <section id="view-gmail" hidden>
       <div class="page-head">
-        <h1 class="page-title">Gmail Checker</h1>
-        <p class="page-desc">수신함 메시지 요약 및 일정 추출 상태</p>
+        <h1 class="page-title" data-jm-i18n="page.gmail.title">Gmail Checker</h1>
+        <p class="page-desc" data-jm-i18n="page.gmail.desc">수신함 메시지 요약 및 일정 추출 상태</p>
       </div>
       <div class="digest" id="gmail-digest" hidden>
-        <h3>오늘의 요약</h3>
+        <h3 data-jm-i18n="gmail.digestTitle">오늘의 요약</h3>
         <pre id="digest-body"></pre>
       </div>
       <div id="gmail-cards"><div class="empty">로딩…</div></div>
@@ -1185,64 +1209,81 @@
     <!-- Agent-Office -->
     <section id="view-office">
       <div class="page-head">
-        <h1 class="page-title">Agent Command</h1>
-        <p class="page-desc">dev_review 워크플로 실행 관제판</p>
+        <h1 class="page-title" data-jm-i18n="page.office.title">Agent Command</h1>
+        <p class="page-desc" data-jm-i18n="page.office.desc">dev_review 워크플로 실행 관제판</p>
         <div class="office-controls">
-          <div class="office-mode" role="group" aria-label="Agent-Office 탭">
-            <button class="office-mode-btn office-tab-btn" data-office-tab="workflow" aria-pressed="true">워크플로</button>
-            <button class="office-mode-btn office-tab-btn" data-office-tab="sessions" aria-pressed="false">세션</button>
+          <div class="office-mode" role="group" aria-label="Agent-Office 탭"
+               data-jm-i18n-aria="office.tabLabel">
+            <button class="office-mode-btn office-tab-btn" data-office-tab="workflow" aria-pressed="true"
+                    data-jm-i18n="office.tab.workflow">워크플로</button>
+            <button class="office-mode-btn office-tab-btn" data-office-tab="sessions" aria-pressed="false"
+                    data-jm-i18n="office.tab.sessions">세션</button>
             <span class="office-attn" id="office-attn" hidden
-                  title="승인 대기 중인 세션"><span class="office-attn-dot"></span>🔔<b id="office-attn-n">0</b></span>
+                  title="승인 대기 중인 세션" data-jm-i18n-title="office.attnTitle"><span class="office-attn-dot"></span>🔔<b id="office-attn-n">0</b></span>
           </div>
-          <div class="office-mode" id="office-tool-filter" role="group" aria-label="세션 도구 필터" hidden>
+          <div class="office-mode" id="office-tool-filter" role="group" aria-label="세션 도구 필터" hidden
+               data-jm-i18n-aria="office.toolFilter">
             <button class="office-mode-btn office-tool-btn" data-office-tool="codex" aria-pressed="false">Codex</button>
             <button class="office-mode-btn office-tool-btn" data-office-tool="claude" aria-pressed="false">Claude</button>
             <button class="office-mode-btn office-tool-btn" data-office-tool="gemini" aria-pressed="false">Gemini</button>
             <button class="office-mode-btn office-tool-btn" data-office-tool="devin" aria-pressed="false">Devin</button>
-            <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="true">전체</button>
+            <button class="office-mode-btn office-tool-btn" data-office-tool="all" aria-pressed="true"
+                    data-jm-i18n="common.all">전체</button>
           </div>
-          <div class="office-mode" id="office-session-filters" role="group" aria-label="세션 필터" hidden>
-            <button class="office-mode-btn office-ended-btn" data-office-ended="0" aria-pressed="true">활성</button>
-            <button class="office-mode-btn office-ended-btn" data-office-ended="1" aria-pressed="false">종료</button>
-            <select id="office-project-filter" aria-label="프로젝트 필터">
-              <option value="">전체 프로젝트</option>
+          <div class="office-mode" id="office-session-filters" role="group" aria-label="세션 필터" hidden
+               data-jm-i18n-aria="office.sessFilter">
+            <button class="office-mode-btn office-ended-btn" data-office-ended="0" aria-pressed="true"
+                    data-jm-i18n="office.active">활성</button>
+            <button class="office-mode-btn office-ended-btn" data-office-ended="1" aria-pressed="false"
+                    data-jm-i18n="office.ended">종료</button>
+            <select id="office-project-filter" aria-label="프로젝트 필터"
+                    data-jm-i18n-aria="office.projFilter">
+              <option value="" data-jm-i18n="office.allProjects">전체 프로젝트</option>
             </select>
             <input id="office-session-search" type="search"
-                   placeholder="세션 검색…" autocomplete="off" aria-label="세션 검색">
+                   placeholder="세션 검색…" autocomplete="off" aria-label="세션 검색"
+                   data-jm-i18n-placeholder="office.sessSearch" data-jm-i18n-aria="office.sessSearch">
             <span class="office-pins-chip" id="office-pins-chip" hidden></span>
           </div>
           <button class="office-mode-btn" id="office-hidden-hint" hidden
-                  title="필터에 숨겨진 활성 세션을 전체 보기로 전환"></button>
-          <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드">
-            <button class="office-mode-btn" data-office-mode="board" aria-pressed="true">3D 보드</button>
-            <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false">스프라이트 사무실</button>
+                  title="필터에 숨겨진 활성 세션을 전체 보기로 전환"
+                  data-jm-i18n-title="office.hiddenHint"></button>
+          <div class="office-mode" id="office-view-toggle" role="group" aria-label="관제 모드"
+               data-jm-i18n-aria="office.modeLabel">
+            <button class="office-mode-btn" data-office-mode="board" aria-pressed="true"
+                    data-jm-i18n="office.mode.board">3D 보드</button>
+            <button class="office-mode-btn" data-office-mode="sprites" aria-pressed="false"
+                    data-jm-i18n="office.mode.sprites">스프라이트 사무실</button>
           </div>
-          <button class="office-mode-btn" id="office-demo-btn" aria-pressed="true">데모</button>
+          <button class="office-mode-btn" id="office-demo-btn" aria-pressed="true"
+                  data-jm-i18n="office.demo">데모</button>
         </div>
       </div>
       <div class="office-status" id="office-chips">
-        <span class="office-chip">실행시간 <b id="office-elapsed">-</b></span>
-        <span class="office-chip">총 토큰 <b id="office-tokens">-</b></span>
-        <span class="office-chip">진행률 <b id="office-progress">-</b></span>
+        <span class="office-chip"><span data-jm-i18n="office.chip.elapsed">실행시간</span> <b id="office-elapsed">-</b></span>
+        <span class="office-chip"><span data-jm-i18n="office.chip.tokens">총 토큰</span> <b id="office-tokens">-</b></span>
+        <span class="office-chip"><span data-jm-i18n="office.chip.progress">진행률</span> <b id="office-progress">-</b></span>
       </div>
       <div id="office-net-banner" class="net-banner" hidden>
-        연결 끊김 — 재시도 중
+        <span data-jm-i18n="common.netDown">연결 끊김 — 재시도 중</span>
         <button class="secondary" id="office-net-retry"
-                style="padding:2px 10px;font-size:12px">지금 재시도</button>
+                style="padding:2px 10px;font-size:12px" data-jm-i18n="common.retryNow">지금 재시도</button>
       </div>
       <div id="office-waiting" class="office-waiting" hidden>
-        <span class="office-waiting-dot"></span>승인 대기
+        <span class="office-waiting-dot"></span><span data-jm-i18n="office.waiting">승인 대기</span>
         <b id="office-waiting-elapsed"></b>
       </div>
       <div class="office-newrun" id="office-newrun">
-        <select id="office-wf-select" aria-label="워크플로 선택"></select>
+        <select id="office-wf-select" aria-label="워크플로 선택"
+                data-jm-i18n-aria="office.wfSelect"></select>
         <span class="card-meta" id="office-wf-stages"></span>
-        <input id="office-task-input" placeholder="실행할 작업 (task)" autocomplete="off">
-        <button id="office-run-btn" class="secondary">실행</button>
+        <input id="office-task-input" placeholder="실행할 작업 (task)" autocomplete="off"
+               data-jm-i18n-placeholder="office.taskPh">
+        <button id="office-run-btn" class="secondary" data-jm-i18n="common.run">실행</button>
         <span class="status-line" id="office-run-msg" role="status"></span>
       </div>
       <div id="office-stage" class="office-stage">
-        <div class="empty">실행된 dev_review 워크플로가 없습니다</div>
+        <div class="empty" data-jm-i18n="office.emptyRuns">실행된 dev_review 워크플로가 없습니다</div>
       </div>
       <div id="jmo-wrap" hidden>
         <p id="jmo-summary" class="jmo-summary"></p>
@@ -1264,41 +1305,45 @@
         </div>
       </div>
       <div class="office-split" id="office-split">
-        <div id="office-detail" class="card"><span class="empty">선택 에이전트</span></div>
-        <div id="office-log" class="card"><span class="empty">이벤트 로그</span></div>
+        <div id="office-detail" class="card"><span class="empty" data-jm-i18n="office.selectAgent">선택 에이전트</span></div>
+        <div id="office-log" class="card"><span class="empty" data-jm-i18n="office.eventLog">이벤트 로그</span></div>
       </div>
       <div class="card" id="office-audit-card">
-        <h3 style="margin:0 0 8px;font-size:15px">실시간 감사 로그
-          <span class="card-meta">선택된 실행 · 최근 30건 · 3초 갱신</span></h3>
+        <h3 style="margin:0 0 8px;font-size:15px"><span data-jm-i18n="office.auditTitle">실시간 감사 로그</span>
+          <span class="card-meta" data-jm-i18n="office.auditMeta">선택된 실행 · 최근 30건 · 3초 갱신</span></h3>
         <div id="office-audit-list" style="max-height:240px;overflow-y:auto">
-          <span class="empty">표시할 실행이 없습니다</span></div>
+          <span class="empty" data-jm-i18n="office.auditEmpty">표시할 실행이 없습니다</span></div>
       </div>
       <details class="card" id="office-sched-card">
-        <summary style="cursor:pointer;font-weight:700;font-size:15px">스케줄 관리
-          <span class="card-meta">주기적으로 워크플로를 자동 실행</span></summary>
+        <summary style="cursor:pointer;font-weight:700;font-size:15px"><span data-jm-i18n="office.schedTitle">스케줄 관리</span>
+          <span class="card-meta" data-jm-i18n="office.schedMeta">주기적으로 워크플로를 자동 실행</span></summary>
         <div id="office-sched-list" style="margin-top:10px">
-          <span class="card-meta">불러오는 중…</span></div>
+          <span class="card-meta" data-jm-i18n="office.schedLoading">불러오는 중…</span></div>
         <form id="office-sched-form" class="grid-form" style="margin-top:12px">
-          <select id="sched-wf" aria-label="스케줄 워크플로"></select>
+          <select id="sched-wf" aria-label="스케줄 워크플로"
+                  data-jm-i18n-aria="office.schedWf"></select>
           <input id="sched-interval" type="number" min="1" step="1" value="60"
-                 placeholder="간격(분)">
-          <input id="sched-task" placeholder="작업 내용 (선택)" autocomplete="off">
+                 placeholder="간격(분)" data-jm-i18n-placeholder="office.schedInterval">
+          <input id="sched-task" placeholder="작업 내용 (선택)" autocomplete="off"
+                 data-jm-i18n-placeholder="office.schedTask">
           <div>
-            <button type="submit" class="secondary">스케줄 추가</button>
+            <button type="submit" class="secondary" data-jm-i18n="office.schedAdd">스케줄 추가</button>
             <span class="status-line" id="sched-status" role="status"></span>
           </div>
         </form>
       </details>
       <div id="office-sessions-empty" class="empty" hidden>
-        활성 에이전트 세션이 없습니다 — 로컬에서 <code>jobmate agent-bridge</code>를 실행하세요
+        <span data-jm-i18n="office.sessEmpty1">활성 에이전트 세션이 없습니다 — 로컬에서</span>
+        <code>jobmate agent-bridge</code>
+        <span data-jm-i18n="office.sessEmpty2">를 실행하세요</span>
       </div>
     </section>
 
     <!-- Calendar -->
     <section id="view-calendar" hidden>
       <div class="page-head">
-        <h1 class="page-title">Calendar</h1>
-        <p class="page-desc">추출·등록된 일정과 알림 예약</p>
+        <h1 class="page-title" data-jm-i18n="page.calendar.title">Calendar</h1>
+        <p class="page-desc" data-jm-i18n="page.calendar.desc">추출·등록된 일정과 알림 예약</p>
       </div>
       <div id="calendar-review"></div>
       <div id="calendar-cards"><div class="empty">로딩…</div></div>
@@ -1426,17 +1471,17 @@
     <!-- Runs -->
     <section id="view-runs" hidden>
       <div class="page-head">
-        <h1 class="page-title">실행</h1>
-        <p class="page-desc">워크플로 실행 및 상태 조회</p>
+        <h1 class="page-title" data-jm-i18n="page.runs.title">실행</h1>
+        <p class="page-desc" data-jm-i18n="page.runs.desc">워크플로 실행 및 상태 조회</p>
       </div>
       <div id="runs-net-banner" class="net-banner" hidden>
-        연결 끊김 — 재시도 중
+        <span data-jm-i18n="common.netDown">연결 끊김 — 재시도 중</span>
         <button class="secondary" id="runs-net-retry"
-                style="padding:2px 10px;font-size:12px">지금 재시도</button>
+                style="padding:2px 10px;font-size:12px" data-jm-i18n="common.retryNow">지금 재시도</button>
       </div>
       <div class="card">
-        <h3 style="margin:0 0 12px;font-size:15px">LLM 사용량
-          <span class="card-meta">최근 7일</span></h3>
+        <h3 style="margin:0 0 12px;font-size:15px"><span data-jm-i18n="runs.llmUsage">LLM 사용량</span>
+          <span class="card-meta" data-jm-i18n="common.last7">최근 7일</span></h3>
         <div id="llm-usage-body"><span class="empty">로딩…</span></div>
       </div>
       <div class="card">
@@ -1447,43 +1492,45 @@
             <option value="skill_radar">skill_radar</option>
           </select>
           <textarea id="task" name="task" rows="4" required
-            placeholder="예: 로그인 실패 시 재시도 로직 추가"></textarea>
+            placeholder="예: 로그인 실패 시 재시도 로직 추가"
+            data-jm-i18n-placeholder="runs.taskPh"></textarea>
           <div>
-            <button type="submit">실행</button>
+            <button type="submit" data-jm-i18n="common.run">실행</button>
             <span class="status-line" id="form-status" role="status"></span>
           </div>
         </form>
       </div>
       <details class="card" id="runs-stats-card">
-        <summary style="cursor:pointer;font-weight:700;font-size:15px">실행 통계
-          <span class="card-meta">최근 30일 · 열면 로드</span></summary>
+        <summary style="cursor:pointer;font-weight:700;font-size:15px"><span data-jm-i18n="runs.stats">실행 통계</span>
+          <span class="card-meta" data-jm-i18n="runs.statsMeta">최근 30일 · 열면 로드</span></summary>
         <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <select id="stats-wf" aria-label="통계 워크플로 필터"></select>
           <button class="secondary" id="stats-reload"
                   style="padding:4px 10px;font-size:12px">새로고침</button>
         </div>
         <div id="runs-stats-body" style="margin-top:10px">
-          <span class="empty">통계를 보려면 새로고침을 누르세요</span></div>
+          <span class="empty" data-jm-i18n="runs.statsEmpty">통계를 보려면 새로고침을 누르세요</span></div>
       </details>
       <div class="card">
-        <h3 style="margin:0 0 12px;font-size:15px">실행 이력
+        <h3 style="margin:0 0 12px;font-size:15px"><span data-jm-i18n="runs.history">실행 이력</span>
           <button id="runs-compare-btn" class="secondary"
-                  style="margin-left:8px;padding:4px 10px;font-size:12px">비교</button>
-          <span class="card-meta">체크박스로 최대 5개 선택</span></h3>
+                  style="margin-left:8px;padding:4px 10px;font-size:12px"
+                  data-jm-i18n="common.compare">비교</button>
+          <span class="card-meta" data-jm-i18n="runs.cmpHint">체크박스로 최대 5개 선택</span></h3>
         <div class="table-scroll"><table>
           <thead><tr><th style="width:30px"><input type="checkbox" id="runs-cmp-all"
-            title="전체 선택"></th><th>ID</th><th>워크플로</th><th>상태</th><th>생성</th><th></th></tr></thead>
+            title="전체 선택" data-jm-i18n-title="common.selectAll"></th><th>ID</th><th data-jm-i18n="th.workflow">워크플로</th><th data-jm-i18n="th.status">상태</th><th data-jm-i18n="th.created">생성</th><th></th></tr></thead>
           <tbody id="runs-body"><tr><td colspan="6" class="empty">로딩…</td></tr></tbody>
         </table></div>
       </div>
-      <div id="detail-body" class="card"><span class="empty">실행을 선택하세요.</span></div>
+      <div id="detail-body" class="card"><span class="empty" data-jm-i18n="runs.pickRun">실행을 선택하세요.</span></div>
     </section>
 
     <!-- 알림 센터 + 쿼리 + 비용 + 리포트 -->
     <section id="view-inbox" hidden>
       <div class="page-head">
-        <h1 class="page-title">알림</h1>
-        <p class="page-desc">받은 알림 · 자연어 쿼리 · 비용 요약 · 리포트</p>
+        <h1 class="page-title" data-jm-i18n="page.inbox.title">알림</h1>
+        <p class="page-desc" data-jm-i18n="page.inbox.desc">받은 알림 · 자연어 쿼리 · 비용 요약 · 리포트</p>
       </div>
       <div class="card" data-widget="ask">
         <div style="font-size:13px;font-weight:600;margin-bottom:6px">자연어 쿼리
@@ -1553,8 +1600,8 @@
     <!-- 인사이트 -->
     <section id="view-insights" hidden>
       <div class="page-head">
-        <h1 class="page-title">인사이트</h1>
-        <p class="page-desc">세션 · 실행 · 비용 통계</p>
+        <h1 class="page-title" data-jm-i18n="page.insights.title">인사이트</h1>
+        <p class="page-desc" data-jm-i18n="page.insights.desc">세션 · 실행 · 비용 통계</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
           <select id="ins-days" aria-label="통계 기간">
             <option value="7">최근 7일</option>
@@ -1571,8 +1618,8 @@
     <!-- 자동화 (읽기 전용) -->
     <section id="view-automation" hidden>
       <div class="page-head">
-        <h1 class="page-title">자동화</h1>
-        <p class="page-desc">스케줄 · 알림 규칙 · 리포트 상태 — 관리는 Agent-Office/설정에서</p>
+        <h1 class="page-title" data-jm-i18n="page.automation.title">자동화</h1>
+        <p class="page-desc" data-jm-i18n="page.automation.desc">스케줄 · 알림 규칙 · 리포트 상태 — 관리는 Agent-Office/설정에서</p>
       </div>
       <div id="auto-body"><div class="empty">로딩…</div></div>
     </section>
@@ -1580,8 +1627,8 @@
     <!-- 시스템 -->
     <section id="view-system" hidden>
       <div class="page-head">
-        <h1 class="page-title">시스템</h1>
-        <p class="page-desc">서버 · DB · 에이전트 브리지 상태</p>
+        <h1 class="page-title" data-jm-i18n="page.system.title">시스템</h1>
+        <p class="page-desc" data-jm-i18n="page.system.desc">서버 · DB · 에이전트 브리지 상태</p>
         <button class="secondary" id="sys-reload"
                 style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
       </div>
@@ -1591,8 +1638,8 @@
     <!-- 아카이브 -->
     <section id="view-archive" hidden>
       <div class="page-head">
-        <h1 class="page-title">아카이브</h1>
-        <p class="page-desc">리포트 · 실행 · 세션 기록 검색</p>
+        <h1 class="page-title" data-jm-i18n="page.archive.title">아카이브</h1>
+        <p class="page-desc" data-jm-i18n="page.archive.desc">리포트 · 실행 · 세션 기록 검색</p>
       </div>
       <div class="card">
         <form id="arch-form" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -1636,8 +1683,8 @@
     <!-- 비용 -->
     <section id="view-cost" hidden>
       <div class="page-head">
-        <h1 class="page-title">비용</h1>
-        <p class="page-desc">LLM/세션 비용 상세 — 월 예산은 설정에서 관리</p>
+        <h1 class="page-title" data-jm-i18n="page.cost.title">비용</h1>
+        <p class="page-desc" data-jm-i18n="page.cost.desc">LLM/세션 비용 상세 — 월 예산은 설정에서 관리</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
           <select id="cost-days" aria-label="비용 기간">
             <option value="7">최근 7일</option>
@@ -1656,8 +1703,8 @@
     <!-- 개발자 (읽기 전용) -->
     <section id="view-developer" hidden>
       <div class="page-head">
-        <h1 class="page-title">개발자</h1>
-        <p class="page-desc">연동 · 인증 설정 상태</p>
+        <h1 class="page-title" data-jm-i18n="page.developer.title">개발자</h1>
+        <p class="page-desc" data-jm-i18n="page.developer.desc">연동 · 인증 설정 상태</p>
       </div>
       <div id="dev-body"><div class="empty">로딩…</div></div>
     </section>
@@ -1665,8 +1712,8 @@
     <!-- 플레이북 -->
     <section id="view-playbooks" hidden>
       <div class="page-head">
-        <h1 class="page-title">플레이북</h1>
-        <p class="page-desc">자주 쓰는 워크플로 실행 템플릿</p>
+        <h1 class="page-title" data-jm-i18n="page.playbooks.title">플레이북</h1>
+        <p class="page-desc" data-jm-i18n="page.playbooks.desc">자주 쓰는 워크플로 실행 템플릿</p>
       </div>
       <div class="card">
         <h3 style="margin:0 0 10px;font-size:15px">새 플레이북</h3>
@@ -1690,8 +1737,8 @@
     <!-- 커넥터 -->
     <section id="view-connectors" hidden>
       <div class="page-head">
-        <h1 class="page-title">커넥터</h1>
-        <p class="page-desc">외부 서비스 연동 — 토큰은 서버에 암호화되어 저장됩니다</p>
+        <h1 class="page-title" data-jm-i18n="page.connectors.title">커넥터</h1>
+        <p class="page-desc" data-jm-i18n="page.connectors.desc">외부 서비스 연동 — 토큰은 서버에 암호화되어 저장됩니다</p>
       </div>
       <div class="card">
         <h3 style="margin:0 0 10px;font-size:15px">커넥터 추가</h3>
@@ -1720,8 +1767,8 @@
     <!-- 트리거 -->
     <section id="view-triggers" hidden>
       <div class="page-head">
-        <h1 class="page-title">트리거</h1>
-        <p class="page-desc">세션 상태가 조건에 맞으면 워크플로/플레이북/리포트를 자동 실행</p>
+        <h1 class="page-title" data-jm-i18n="page.triggers.title">트리거</h1>
+        <p class="page-desc" data-jm-i18n="page.triggers.desc">세션 상태가 조건에 맞으면 워크플로/플레이북/리포트를 자동 실행</p>
       </div>
       <div class="card">
         <h3 style="margin:0 0 10px;font-size:15px">트리거 추가</h3>
@@ -1769,8 +1816,8 @@
     <!-- 워크플로 빌더 -->
     <section id="view-builder" hidden>
       <div class="page-head">
-        <h1 class="page-title">워크플로 빌더</h1>
-        <p class="page-desc">커스텀 워크플로 스펙(JSON)을 작성·저장·실행</p>
+        <h1 class="page-title" data-jm-i18n="page.builder.title">워크플로 빌더</h1>
+        <p class="page-desc" data-jm-i18n="page.builder.desc">커스텀 워크플로 스펙(JSON)을 작성·저장·실행</p>
       </div>
       <div class="wf-grid">
         <div class="card" style="margin-bottom:0">
@@ -1816,8 +1863,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
     <!-- 팀 -->
     <section id="view-team" hidden>
       <div class="page-head">
-        <h1 class="page-title">팀</h1>
-        <p class="page-desc">멤버 목록과 활동 요약</p>
+        <h1 class="page-title" data-jm-i18n="page.team.title">팀</h1>
+        <p class="page-desc" data-jm-i18n="page.team.desc">멤버 목록과 활동 요약</p>
       </div>
       <div class="card">
         <div class="table-scroll"><table>
@@ -1830,8 +1877,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
     <!-- 감사 로그 (admin only) -->
     <section id="view-audit" hidden>
       <div class="page-head">
-        <h1 class="page-title">감사 로그</h1>
-        <p class="page-desc">관리자 전용 — 최근 200건 · 최신순</p>
+        <h1 class="page-title" data-jm-i18n="page.audit.title">감사 로그</h1>
+        <p class="page-desc" data-jm-i18n="page.audit.desc">관리자 전용 — 최근 200건 · 최신순</p>
       </div>
       <div class="card">
         <div class="table-scroll"><table>
@@ -1844,8 +1891,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
     <!-- 프로젝트 (lead+) -->
     <section id="view-projects" hidden>
       <div class="page-head">
-        <h1 class="page-title">프로젝트</h1>
-        <p class="page-desc">세션·실행을 프로젝트별로 묶어 보기 — 프로젝트가 없는 세션은 '(기타)'로 표시됩니다</p>
+        <h1 class="page-title" data-jm-i18n="page.projects.title">프로젝트</h1>
+        <p class="page-desc" data-jm-i18n="page.projects.desc">세션·실행을 프로젝트별로 묶어 보기 — 프로젝트가 없는 세션은 '(기타)'로 표시됩니다</p>
       </div>
       <div class="card">
         <h3 style="margin:0 0 10px;font-size:15px">프로젝트 추가</h3>
@@ -1868,8 +1915,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
     <!-- 세션 기록 (lead+) -->
     <section id="view-sessionlog" hidden>
       <div class="page-head">
-        <h1 class="page-title">세션 기록</h1>
-        <p class="page-desc">에이전트 세션의 상태 전이 타임라인·통계·프로젝트 태그</p>
+        <h1 class="page-title" data-jm-i18n="page.sessionlog.title">세션 기록</h1>
+        <p class="page-desc" data-jm-i18n="page.sessionlog.desc">에이전트 세션의 상태 전이 타임라인·통계·프로젝트 태그</p>
       </div>
       <div class="card">
         <input id="sl-q" type="search" placeholder="세션 검색 (도구/프로젝트/제목/키)…"
@@ -1881,8 +1928,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
     <!-- 리스크 (lead+) -->
     <section id="view-risks" hidden>
       <div class="page-head">
-        <h1 class="page-title">리스크</h1>
-        <p class="page-desc">실패·지연·오류 징후를 심각도 순으로 표시</p>
+        <h1 class="page-title" data-jm-i18n="page.risks.title">리스크</h1>
+        <p class="page-desc" data-jm-i18n="page.risks.desc">실패·지연·오류 징후를 심각도 순으로 표시</p>
         <button class="secondary" id="risk-reload"
                 style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
       </div>
@@ -1892,10 +1939,13 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
     <!-- 승인 대기 (lead+) -->
     <section id="view-approvals" hidden>
       <div class="page-head">
-        <h1 class="page-title">승인 대기</h1>
-        <p class="page-desc">실행·세션·트리거 승인을 오래된 순으로 — 30초마다 자동 갱신</p>
-        <button class="secondary" id="appr-reload"
-                style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
+        <h1 class="page-title" data-jm-i18n="page.approvals.title">승인 대기</h1>
+        <p class="page-desc" data-jm-i18n="page.approvals.desc">실행·세션·트리거 승인을 오래된 순으로 — 30초마다 자동 갱신</p>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="appr-approve-all" style="padding:4px 10px;font-size:12px">전체 승인</button>
+          <button class="secondary" id="appr-reload"
+                  style="padding:4px 10px;font-size:12px">새로고침</button>
+        </div>
       </div>
       <div id="appr-body"><div class="empty">로딩…</div></div>
     </section>
@@ -1903,8 +1953,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
     <!-- 성과 (lead+) -->
     <section id="view-perf" hidden>
       <div class="page-head">
-        <h1 class="page-title">성과</h1>
-        <p class="page-desc">워크플로 실행을 모델/에이전트/도구별로 비교</p>
+        <h1 class="page-title" data-jm-i18n="page.perf.title">성과</h1>
+        <p class="page-desc" data-jm-i18n="page.perf.desc">워크플로 실행을 모델/에이전트/도구별로 비교</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
           <select id="perf-wf" aria-label="워크플로"></select>
           <select id="perf-group" aria-label="그룹 기준">
@@ -2049,7 +2099,7 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
 
 <!-- 모바일 요약 바 (≤820px에서만 표시) -->
 <nav id="mob-bar" aria-label="모바일 요약">
-  <button type="button" data-mob="office"><b id="mob-approval">–</b><span>승인 대기</span></button>
+  <button type="button" data-mob="approvals"><b id="mob-approval">–</b><span>승인 대기</span></button>
   <button type="button" data-mob="runs"><b id="mob-runs">–</b><span>오늘 실행</span></button>
   <button type="button" data-mob="office-sessions"><b id="mob-sessions">–</b><span>활성 세션</span></button>
   <button type="button" data-mob="cost"><b id="mob-cost">–</b><span>월 비용</span></button>
@@ -4757,7 +4807,7 @@ $("#sr-refresh").addEventListener("click", async () => {
     const r = await api("/radar/refresh", {method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({platforms: ["claude", "chatgpt", "gemini"], force: true})});
-    st.textContent = `run ${r.run_ids.join(",")} — 실행 이력에서 승인 후 발행됩니다`;
+    st.textContent = `run ${r.run_ids.join(",")} — 자동 승인 후 발행됩니다`;
   } catch (e) { st.textContent = e.message; }
 });
 // loadRadar는 VIEWS에서 호출되도록 전역에 노출
@@ -7017,21 +7067,84 @@ async function loadApprovals() {
         : kind.includes("session") ? "세션"
         : kind.includes("trigger") ? "트리거"
         : (a.kind || "승인");
+      // run + waiting_approval만 API 승인 가능 — waiting_review/세션/트리거는 상세 화면에서 처리
+      const canDecide = kind === "run" && a.status === "waiting_approval";
+      const actions = canDecide
+        ? `<button class="appr-ok" data-id="${esc(a.id || "")}">승인</button>` +
+          `<button class="secondary appr-no" data-id="${esc(a.id || "")}">거절</button>` +
+          `<button class="secondary appr-go" data-kind="${esc(a.kind || "")}" data-id="${esc(a.id || "")}">상세</button>`
+        : `<button class="secondary appr-go" data-kind="${esc(a.kind || "")}" data-id="${esc(a.id || "")}">처리하러 가기</button>`;
       return `<div class="list-row">
         <span class="inbox-kind ${kind.includes("run") ? "k-approval" : kind.includes("session") ? "k-session_attention" : "k-schedule"}">${esc(kindLabel)}</span>
         <div class="grow"><b>${esc(a.title || a.id || "-")}</b>
           ${a.project ? `<span class="proj-chip" style="margin-left:6px">${esc(a.project)}</span>` : ""}
           <div class="card-meta">대기 ${jmFmtAge(a.age_seconds)} · ${esc(officeFmtTs(a.waiting_since))}</div></div>
-        <button class="secondary appr-go" data-kind="${esc(a.kind || "")}" data-id="${esc(a.id || "")}">처리하러 가기</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${actions}</div>
       </div>`;
     }).join("");
     el.querySelectorAll(".appr-go").forEach(b =>
       b.addEventListener("click", () => jmGoApproval(b.dataset.kind, b.dataset.id)));
+    el.querySelectorAll(".appr-ok").forEach(b =>
+      b.addEventListener("click", () => jmDecideApproval(b.dataset.id, "approve", b)));
+    el.querySelectorAll(".appr-no").forEach(b =>
+      b.addEventListener("click", () => jmDecideApproval(b.dataset.id, "reject", b)));
   } catch (e) {
     el.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
 $("#appr-reload")?.addEventListener("click", loadApprovals);
+
+// 개별 승인/거절 — 성공 시 목록 즉시 갱신, 실패 시 버튼 복구
+async function jmDecideApproval(runId, decision, btn) {
+  if (!runId || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    await api(`/runs/${encodeURIComponent(runId)}/approve`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({decision, comment: ""}),
+    });
+    loadApprovals();
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false;
+  }
+}
+
+// 전체 승인 — waiting_approval 상태의 run 항목을 순차 승인.
+// 각 승인이 run을 resume하므로(LLM 호출) 순차 처리로 부하를 제한한다.
+$("#appr-approve-all")?.addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  try {
+    const d = await api("/approvals");
+    const ids = (d.items || [])
+      .filter(a => String(a.kind || "") === "run" && a.status === "waiting_approval")
+      .map(a => a.id);
+    if (!ids.length) { alert("승인 가능한 실행이 없습니다"); return; }
+    if (!confirm(`${ids.length}개 실행을 모두 승인할까요?`)) return;
+    btn.textContent = `승인 중… 0/${ids.length}`;
+    let ok = 0, fail = 0;
+    for (let i = 0; i < ids.length; i++) {
+      btn.textContent = `승인 중… ${i + 1}/${ids.length}`;
+      try {
+        await api(`/runs/${encodeURIComponent(ids[i])}/approve`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({decision: "approve", comment: "approve-all"}),
+        });
+        ok++;
+      } catch (e) { fail++; }
+    }
+    alert(`승인 완료 ${ok}건${fail ? `, 실패 ${fail}건` : ""}`);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "전체 승인";
+    loadApprovals();
+  }
+});
 
 function jmGoApproval(kind, id) {
   const k = String(kind || "").toLowerCase();
@@ -7399,6 +7512,10 @@ document.querySelectorAll("#mob-bar [data-mob]").forEach(b =>
       document.querySelector('.nav-item[data-view="office"]')?.click();
       setTimeout(() =>
         document.querySelector('.office-tab-btn[data-office-tab="sessions"]')?.click(), 300);
+      return;
+    }
+    if (v === "approvals" && _jmRoleRank != null && !jmRoleAllows("lead")) {
+      alert("승인 대기열은 리드 이상 권한이 필요합니다");
       return;
     }
     document.querySelector(`.nav-item[data-view="${v}"]`)?.click();

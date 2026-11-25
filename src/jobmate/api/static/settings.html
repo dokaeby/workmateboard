@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jobMate 설정</title>
+<link rel="icon" href="/static/icon.png">
+<style>
+/* ── Astryx 토큰 (Neutral 계열) — 라이트/다크 ── */
+:root {
+  --bg: #F7F8F9;
+  --surface: #FFFFFF;
+  --surface-muted: #F2F4F6;
+  --surface-hover: #EEF1F4;
+  --text: #0A1317;
+  --text-2: #445564;
+  --text-disabled: #98A2AD;
+  --border: #E2E6EB;
+  --border-strong: #CBD2DA;
+  --accent: #2563EB;
+  --accent-hover: #1D4ED8;
+  --accent-soft: #EFF4FF;
+  --accent-border: #C7D7FE;
+  --success: #15803D;
+  --success-soft: #F0FDF4;
+  --success-border: #BBF7D0;
+  --error: #DC2626;
+  --error-soft: #FEF2F2;
+  --error-border: #FECACA;
+  --warning: #B45309;
+  --warning-soft: #FFFBEB;
+  --radius-element: 10px;
+  --radius-container: 12px;
+  --radius-full: 9999px;
+  --shadow-low: 0 2px 4px rgb(0 0 0 / .05), 0 4px 8px rgb(0 0 0 / .10);
+  --shadow-med: 0 2px 4px rgb(0 0 0 / .06), 0 8px 20px rgb(0 0 0 / .10);
+  --size-element: 36px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+          Arial, "Noto Sans", sans-serif;
+  --mono: "SF Mono", Monaco, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0A0D10;
+    --surface: #10141A;
+    --surface-muted: #171C23;
+    --surface-hover: #1D242D;
+    --text: #DFE2E5;
+    --text-2: #B0B5BB;
+    --text-disabled: #6B7280;
+    --border: #262C36;
+    --border-strong: #39414D;
+    --accent: #6E9BFF;
+    --accent-hover: #8AB0FF;
+    --accent-soft: #16233D;
+    --accent-border: #2B3F66;
+    --success: #4ADE80;
+    --success-soft: #0F2418;
+    --success-border: #1E4D33;
+    --error: #F87171;
+    --error-soft: #2B1416;
+    --error-border: #5C2426;
+    --warning: #FBBF24;
+    --warning-soft: #2B2110;
+    --shadow-low: 0 2px 4px rgb(0 0 0 / .30), 0 4px 8px rgb(0 0 0 / .25),
+                  inset 0 0 0 1px rgb(255 255 255 / .04);
+    --shadow-med: 0 4px 8px rgb(0 0 0 / .35), 0 12px 24px rgb(0 0 0 / .30),
+                  inset 0 0 0 1px rgb(255 255 255 / .05);
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); }
+a:hover { color: var(--accent-hover); }
+button {
+  font: inherit; cursor: pointer;
+  height: var(--size-element);
+  padding: 0 16px;
+  border-radius: var(--radius-element);
+  border: 1px solid transparent;
+  background: var(--accent); color: #fff;
+  font-weight: 600; font-size: 14px;
+  transition: background .12s ease, border-color .12s ease;
+}
+button:hover { background: var(--accent-hover); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.secondary {
+  background: transparent; color: var(--accent);
+  border-color: var(--border-strong); font-weight: 500;
+}
+button.secondary:hover { background: var(--accent-soft); border-color: var(--accent-border); }
+button.ghost {
+  background: transparent; color: var(--text-2);
+  border-color: transparent; height: 30px; padding: 0 10px; font-weight: 500;
+}
+button.ghost:hover { background: var(--surface-hover); color: var(--text); }
+button.danger {
+  background: transparent; color: var(--error);
+  border-color: var(--error-border); font-weight: 600;
+}
+button.danger:hover { background: var(--error-soft); }
+button.sm { height: 30px; padding: 0 12px; font-size: 13px; }
+input[type="text"], input[type="email"], input[type="password"],
+input[type="number"], select {
+  font: inherit; font-size: 14px;
+  height: var(--size-element);
+  padding: 0 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-element);
+  min-width: 0;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input::placeholder { color: var(--text-disabled); }
+label.f-label {
+  display: block; font-size: 13px; font-weight: 600;
+  color: var(--text); margin-bottom: 6px;
+}
+.hint { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.empty { color: var(--text-2); padding: 16px 0; font-size: 13px; }
+
+/* ── 헤더 ── */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  padding: 12px 24px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand-name { font-weight: 800; font-size: 16px; letter-spacing: -.01em; }
+.brand-name b { color: var(--accent); }
+.brand-sub { font-size: 13px; color: var(--text-2); font-weight: 500; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.back-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: var(--text-2);
+  text-decoration: none; padding: 6px 10px; border-radius: var(--radius-element);
+  border: 1px solid var(--border);
+}
+.back-link:hover { color: var(--text); background: var(--surface); border-color: var(--border-strong); }
+.lang-toggle {
+  display: inline-flex; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-element); overflow: hidden; background: var(--surface);
+}
+.lang-toggle button {
+  height: 32px; padding: 0 12px; border: none; border-radius: 0;
+  background: transparent; color: var(--text-2); font-weight: 500; font-size: 12.5px;
+}
+.lang-toggle button.on { background: var(--accent-soft); color: var(--accent); }
+
+/* ── 페이지 레이아웃 ── */
+.page {
+  max-width: 960px; margin: 0 auto;
+  padding: 28px 20px 120px;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-container);
+  box-shadow: var(--shadow-low);
+  padding: 22px 24px;
+  margin-bottom: 16px;
+}
+.card-title { font-size: 15px; font-weight: 700; margin: 0 0 4px; }
+.card-desc { font-size: 13px; color: var(--text-2); margin: 0 0 16px; }
+.card.danger {
+  border-color: var(--error-border);
+}
+.card.danger .card-title { color: var(--error); }
+.grid-form {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+}
+.grid-form .full { grid-column: 1 / -1; }
+@media (max-width: 640px) { .grid-form { grid-template-columns: 1fr; } }
+
+/* ── 동적 행 (규칙/위젯/메뉴) ── */
+.rule-list, .widget-list, .menu-list { display: flex; flex-direction: column; }
+.rule-row, .widget-row, .menu-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rule-row:last-child, .widget-row:last-child, .menu-row:last-child { border-bottom: none; }
+.rule-row .nr-st-boxes { display: inline-flex; gap: 12px; flex-wrap: wrap; }
+.rule-row label.chk, .widget-row label.chk {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12.5px; color: var(--text-2); font-weight: 500; white-space: nowrap;
+}
+.rule-row input[type="checkbox"], .widget-row input[type="checkbox"] {
+  width: 15px; height: 15px; accent-color: var(--accent); margin: 0;
+}
+.nr-project { flex: 1; min-width: 120px; }
+.row-del { flex: none; }
+.reorder-btns { display: inline-flex; gap: 4px; flex: none; }
+.reorder-btns button { width: 30px; padding: 0; }
+.menu-row .menu-name { flex: 1; font-size: 13.5px; }
+.menu-row .role-tag {
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  border: 1px solid var(--border); border-radius: var(--radius-full);
+  padding: 1px 8px; flex: none;
+}
+.menu-row .seg { display: inline-flex; gap: 4px; flex: none; }
+.menu-row .seg label {
+  font-size: 12px; color: var(--text-2); font-weight: 500;
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+}
+.add-row-btn { margin-top: 10px; }
+
+/* ── kv / 상태 표시 ── */
+.kv { display: flex; gap: 12px; padding: 7px 0; font-size: 13px; }
+.kv > span:first-child { color: var(--text-2); min-width: 130px; flex: none; }
+.kv > b { font-weight: 500; overflow-wrap: anywhere; }
+.health-warn { color: var(--warning); font-weight: 600; }
+
+/* ── 테이블 ── */
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  text-align: left; font-size: 12px; font-weight: 600; color: var(--text-2);
+  padding: 8px 10px; border-bottom: 1px solid var(--border-strong);
+}
+td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+select.role-sel { height: 30px; font-size: 12.5px; padding: 0 8px; }
+.badge {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--radius-full);
+  border: 1px solid var(--border); color: var(--text-2);
+}
+.badge.current { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
+.badge.role-admin { color: var(--error); border-color: var(--error-border); }
+.badge.role-lead { color: var(--accent); border-color: var(--accent-border); }
+
+/* ── 계정 카드 내부 ── */
+.acct-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 640px) { .acct-grid { grid-template-columns: 1fr; } }
+.field { margin-bottom: 14px; }
+.field:last-child { margin-bottom: 0; }
+.pw-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.pw-row input { flex: 1; min-width: 180px; }
+.sess-list { display: flex; flex-direction: column; }
+.sess-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.sess-row:last-child { border-bottom: none; }
+.sess-row .sess-meta { flex: 1; min-width: 0; color: var(--text-2); font-size: 12.5px; }
+
+/* ── 저장 바 ── */
+.savebar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--border);
+}
+.savebar-inner {
+  max-width: 960px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 20px;
+}
+.status { font-size: 13px; color: var(--text-2); min-height: 18px; }
+.status.ok { color: var(--success); }
+.status.err { color: var(--error); }
+
+/* ── 삭제 확인 다이얼로그 ── */
+dialog {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-container);
+  box-shadow: var(--shadow-med);
+  background: var(--surface); color: var(--text);
+  padding: 24px; width: min(440px, 92vw);
+}
+dialog::backdrop { background: rgb(0 0 0 / .45); }
+.dialog-title { font-size: 16px; font-weight: 700; color: var(--error); margin: 0 0 8px; }
+.dialog-body { font-size: 13.5px; color: var(--text-2); margin-bottom: 14px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* ── 푸터 ── */
+.footer {
+  max-width: 960px; margin: 0 auto; padding: 0 20px 40px;
+  display: flex; gap: 16px; font-size: 12.5px; color: var(--text-2);
+}
+.footer a { color: var(--text-2); text-decoration: none; }
+.footer a:hover { color: var(--accent); text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-name">job<b>Mate</b></span>
+    <span class="brand-sub" data-jm-i18n="settings.subtitle">설정</span>
+  </div>
+  <div class="topbar-actions">
+    <a class="back-link" href="/">← <span data-jm-i18n="settings.back">대시보드로</span></a>
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button type="button" data-lang="ko">한국어</button>
+      <button type="button" data-lang="en">English</button>
+    </div>
+  </div>
+</header>
+
+<main class="page">
+
+  <!-- ══ 일반 ══ -->
+  <section class="card">
+    <h2 class="card-title" data-jm-i18n="settings.sec.general">일반</h2>
+    <p class="card-desc" data-jm-i18n="settings.sec.general.desc">메일·스킬 레이더 수집 주기와 월 비용 예산을 설정합니다.</p>
+    <div class="grid-form">
+      <div class="field">
+        <label class="f-label" for="f-gmail" data-jm-i18n="settings.gmail">메일 체크 간격</label>
+        <select id="f-gmail">
+          <option value="30" data-jm-i18n="settings.gmail.30">30분</option>
+          <option value="60" data-jm-i18n="settings.gmail.60">1시간</option>
+        </select>
+        <div class="hint" data-jm-i18n="settings.gmail.hint">Gmail 수집 작업이 실행되는 주기입니다.</div>
+      </div>
+      <div class="field">
+        <label class="f-label" for="f-radar" data-jm-i18n="settings.radar">스킬 레이더 체크 간격</label>
+        <select id="f-radar">
+          <option value="daily" data-jm-i18n="settings.radar.daily">매일</option>
+          <option value="weekly" data-jm-i18n="settings.radar.weekly">매주</option>
+        </select>
+        <div class="hint" data-jm-i18n="settings.radar.hint">스킬·도구 레이더 스캔 주기입니다.</div>
+      </div>
+      <div class="field full">
+        <label class="f-label" for="f-budget" data-jm-i18n="settings.budget">월 예산 (USD)</label>
+        <input id="f-budget" type="number" min="0" step="0.01" placeholder="0.00"
+               style="max-width:220px">
+        <div class="hint" data-jm-i18n="settings.budget.hint">월간 LLM 비용이 이 값을 넘으면 알림이 표시됩니다. 비워두면 제한 없음.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 세션 알림 규칙 ══ -->
+  <section class="card">
+    <h2 class="card-title" data-jm-i18n="settings.sec.notify">세션 알림 규칙</h2>
+    <p class="card-desc" data-jm-i18n="settings.sec.notify.desc">규칙이 하나라도 있으면 조건에 맞는 세션만 알림을 보냅니다. 규칙이 없으면 전체 알림.</p>
+    <div class="rule-list" id="notify-rules-list"></div>
+    <button type="button" class="secondary sm add-row-btn" id="notify-rule-add">+ <span data-jm-i18n="settings.notify.add">규칙 추가</span></button>
+  </section>
+
+  <!-- ══ 대시보드 위젯 ══ -->
+  <section class="card">
+    <h2 class="card-title" data-jm-i18n="settings.sec.widgets">대시보드 위젯</h2>
+    <p class="card-desc" data-jm-i18n="settings.sec.widgets.desc">알림 화면에 표시할 카드와 순서를 정합니다.</p>
+    <div class="widget-list" id="widget-list"></div>
+  </section>
+
+  <!-- ══ 사이드바 메뉴 ══ -->
+  <section class="card">
+    <h2 class="card-title" data-jm-i18n="settings.sec.sidebar">사이드바 메뉴</h2>
+    <p class="card-desc" data-jm-i18n="settings.sec.sidebar.desc">메뉴 표시 여부를 설정합니다. Agent-Office·Skill Radar는 항상 표시되며, 역할 제한 메뉴는 해당 권한이 있어야 보입니다.</p>
+    <div class="menu-list" id="sidebar-menu-list"></div>
+  </section>
+
+  <!-- ══ 시스템 ══ -->
+  <section class="card" id="sec-system">
+    <h2 class="card-title" data-jm-i18n="settings.sec.system">시스템 상태</h2>
+    <p class="card-desc" data-jm-i18n="settings.sec.system.desc">서버·브리지·스케줄러 상태를 확인합니다.</p>
+    <div id="health-body"><span class="empty" data-jm-i18n="settings.system.loading">불러오는 중…</span></div>
+    <button type="button" class="secondary sm" id="health-reload" style="margin-top:10px">↻ <span data-jm-i18n="settings.system.refresh">새로고침</span></button>
+
+    <div id="users-section" hidden style="margin-top:22px;border-top:1px solid var(--border);padding-top:18px">
+      <h3 class="card-title" style="font-size:14px" data-jm-i18n="settings.sec.users">사용자 관리</h3>
+      <p class="card-desc" style="margin-bottom:10px" data-jm-i18n="settings.sec.users.desc">관리자만 볼 수 있습니다. 역할 변경은 즉시 적용됩니다.</p>
+      <div class="table-scroll"><table>
+        <thead><tr>
+          <th data-jm-i18n="settings.users.email">이메일</th>
+          <th data-jm-i18n="settings.users.name">이름</th>
+          <th data-jm-i18n="settings.users.role">역할</th>
+          <th data-jm-i18n="settings.users.created">생성일</th>
+        </tr></thead>
+        <tbody id="users-body"><tr><td colspan="4" class="empty">…</td></tr></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- ══ 계정 ══ -->
+  <section class="card">
+    <h2 class="card-title" data-jm-i18n="settings.sec.account">계정</h2>
+    <p class="card-desc" data-jm-i18n="settings.sec.account.desc">로그인 정보, 비밀번호, 활성 세션과 데이터 내보내기를 관리합니다.</p>
+
+    <div class="acct-grid">
+      <div class="field">
+        <label class="f-label" data-jm-i18n="settings.acct.email">이메일</label>
+        <div id="acct-email" class="mono" style="padding-top:8px">—</div>
+      </div>
+      <div class="field">
+        <label class="f-label" data-jm-i18n="settings.acct.role">역할</label>
+        <div id="acct-role" style="padding-top:8px">—</div>
+      </div>
+      <div class="field" id="acct-name-field">
+        <label class="f-label" data-jm-i18n="settings.acct.name">이름</label>
+        <div id="acct-name" style="padding-top:8px">—</div>
+      </div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);margin:18px 0;padding-top:18px">
+      <h3 style="font-size:14px;font-weight:700;margin:0 0 4px" data-jm-i18n="settings.pw.title">비밀번호 변경</h3>
+      <p class="card-desc" style="margin-bottom:12px" data-jm-i18n="settings.pw.desc">변경하면 모든 기기의 세션이 로그아웃됩니다.</p>
+      <div class="pw-row">
+        <input id="pw-current" type="password" autocomplete="current-password"
+               placeholder="현재 비밀번호" data-jm-i18n-placeholder="settings.pw.current">
+        <input id="pw-new" type="password" autocomplete="new-password"
+               placeholder="새 비밀번호 (8자 이상)" data-jm-i18n-placeholder="settings.pw.new">
+        <input id="pw-confirm" type="password" autocomplete="new-password"
+               placeholder="새 비밀번호 확인" data-jm-i18n-placeholder="settings.pw.confirm">
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:10px">
+        <button type="button" id="pw-submit" class="secondary" data-jm-i18n="settings.pw.btn">변경</button>
+        <span class="status" id="pw-status" role="status"></span>
+      </div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);margin:18px 0;padding-top:18px">
+      <h3 style="font-size:14px;font-weight:700;margin:0 0 4px" data-jm-i18n="settings.sess.title">활성 세션</h3>
+      <p class="card-desc" style="margin-bottom:10px" data-jm-i18n="settings.sess.desc">로그인된 기기 목록입니다. 개별 세션을 폐기할 수 있습니다.</p>
+      <div class="sess-list" id="sess-list"><span class="empty">…</span></div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);margin:18px 0;padding-top:18px">
+      <h3 style="font-size:14px;font-weight:700;margin:0 0 4px" data-jm-i18n="settings.export.title">데이터 내보내기</h3>
+      <p class="card-desc" style="margin-bottom:10px" data-jm-i18n="settings.export.desc">본인 계정에 귀속된 데이터를 JSON으로 다운로드합니다.</p>
+      <button type="button" class="secondary" id="export-btn">⭳ <span data-jm-i18n="settings.export.btn">내 데이터 다운로드 (JSON)</span></button>
+      <span class="status" id="export-status" role="status" style="margin-left:10px"></span>
+    </div>
+  </section>
+
+  <!-- ══ 위험 구역 ══ -->
+  <section class="card danger">
+    <h2 class="card-title" data-jm-i18n="settings.sec.danger">위험 구역</h2>
+    <p class="card-desc" data-jm-i18n="settings.sec.danger.desc">계정 삭제는 되돌릴 수 없습니다. 모든 데이터가 영구 삭제되며 로그아웃됩니다.</p>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <input id="del-confirm-input" type="text" autocomplete="off"
+             placeholder="비밀번호 또는 가입 이메일" data-jm-i18n-placeholder="settings.danger.input"
+             style="max-width:280px">
+      <button type="button" class="danger" id="del-open" data-jm-i18n="settings.danger.btn">계정 삭제</button>
+    </div>
+    <div class="hint" data-jm-i18n="settings.danger.hint">비밀번호 계정은 비밀번호를, Google 로그인 계정은 가입 이메일을 입력하세요.</div>
+    <span class="status" id="del-status" role="status"></span>
+  </section>
+
+</main>
+
+<div class="savebar">
+  <div class="savebar-inner">
+    <span class="status" id="save-status" role="status"></span>
+    <button type="button" id="save-btn" disabled data-jm-i18n="settings.save">변경사항 저장</button>
+  </div>
+</div>
+
+<footer class="footer">
+  <a href="/static/privacy.html" target="_blank" rel="noopener" data-jm-i18n="settings.footer.privacy">개인정보처리방침</a>
+  <a href="/static/terms.html" target="_blank" rel="noopener" data-jm-i18n="settings.footer.terms">이용약관</a>
+  <span style="margin-left:auto">jobMate</span>
+</footer>
+
+<dialog id="del-dialog">
+  <p class="dialog-title" data-jm-i18n="settings.danger.dialog.title">정말 계정을 삭제하시겠습니까?</p>
+  <p class="dialog-body" data-jm-i18n="settings.danger.dialog.body">계정과 모든 관련 데이터가 즉시 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.</p>
+  <div class="dialog-actions">
+    <button type="button" class="secondary" id="del-cancel" data-jm-i18n="settings.danger.cancel">취소</button>
+    <button type="button" class="danger" id="del-confirm" data-jm-i18n="settings.danger.confirm">삭제</button>
+  </div>
+</dialog>
+
+<script src="/static/i18n.js"></script>
+<script>
+"use strict";
+/* ══════════════════ i18n ══════════════════ */
+const STR = {
+ko: {
+  "settings.subtitle": "설정",
+  "settings.back": "대시보드로",
+  "settings.sec.general": "일반",
+  "settings.sec.general.desc": "메일·스킬 레이더 수집 주기와 월 비용 예산을 설정합니다.",
+  "settings.gmail": "메일 체크 간격",
+  "settings.gmail.30": "30분",
+  "settings.gmail.60": "1시간",
+  "settings.gmail.hint": "Gmail 수집 작업이 실행되는 주기입니다.",
+  "settings.radar": "스킬 레이더 체크 간격",
+  "settings.radar.daily": "매일",
+  "settings.radar.weekly": "매주",
+  "settings.radar.hint": "스킬·도구 레이더 스캔 주기입니다.",
+  "settings.budget": "월 예산 (USD)",
+  "settings.budget.hint": "월간 LLM 비용이 이 값을 넘으면 알림이 표시됩니다. 비워두면 제한 없음.",
+  "settings.sec.notify": "세션 알림 규칙",
+  "settings.sec.notify.desc": "규칙이 하나라도 있으면 조건에 맞는 세션만 알림을 보냅니다. 규칙이 없으면 전체 알림.",
+  "settings.notify.add": "규칙 추가",
+  "settings.notify.empty": "등록된 규칙 없음",
+  "settings.notify.tool": "툴",
+  "settings.notify.tool.all": "전체",
+  "settings.notify.project": "프로젝트 (비워두면 전체)",
+  "settings.notify.working": "작업",
+  "settings.notify.decision": "결정",
+  "settings.notify.rest": "휴식",
+  "settings.sec.widgets": "대시보드 위젯",
+  "settings.sec.widgets.desc": "알림 화면에 표시할 카드와 순서를 정합니다.",
+  "settings.sec.sidebar": "사이드바 메뉴",
+  "settings.sec.sidebar.desc": "메뉴 표시 여부를 설정합니다. Agent-Office·Skill Radar는 항상 표시되며, 역할 제한 메뉴는 해당 권한이 있어야 보입니다.",
+  "settings.sec.system": "시스템 상태",
+  "settings.sec.system.desc": "서버·브리지·스케줄러 상태를 확인합니다.",
+  "settings.system.loading": "불러오는 중…",
+  "settings.system.refresh": "새로고침",
+  "settings.system.api_uptime": "API 가동시간",
+  "settings.system.db": "DB",
+  "settings.system.bridge": "브리지 마지막 push",
+  "settings.system.machine": "머신",
+  "settings.system.cron": "크론 마지막 틱",
+  "settings.system.stale": "10분 이상 지연",
+  "settings.sec.users": "사용자 관리",
+  "settings.sec.users.desc": "관리자만 볼 수 있습니다. 역할 변경은 즉시 적용됩니다.",
+  "settings.users.email": "이메일",
+  "settings.users.name": "이름",
+  "settings.users.role": "역할",
+  "settings.users.created": "생성일",
+  "settings.sec.account": "계정",
+  "settings.sec.account.desc": "로그인 정보, 비밀번호, 활성 세션과 데이터 내보내기를 관리합니다.",
+  "settings.acct.email": "이메일",
+  "settings.acct.role": "역할",
+  "settings.acct.name": "이름",
+  "settings.pw.title": "비밀번호 변경",
+  "settings.pw.desc": "변경하면 모든 기기의 세션이 로그아웃됩니다.",
+  "settings.pw.current": "현재 비밀번호",
+  "settings.pw.new": "새 비밀번호 (8자 이상)",
+  "settings.pw.confirm": "새 비밀번호 확인",
+  "settings.pw.btn": "변경",
+  "settings.pw.need_fields": "모든 항목을 입력하세요",
+  "settings.pw.mismatch": "새 비밀번호가 서로 다릅니다",
+  "settings.pw.done": "변경되었습니다 — 다시 로그인하세요",
+  "settings.pw.working": "변경 중…",
+  "settings.sess.title": "활성 세션",
+  "settings.sess.desc": "로그인된 기기 목록입니다. 개별 세션을 폐기할 수 있습니다.",
+  "settings.sess.current": "현재 세션",
+  "settings.sess.revoke": "폐기",
+  "settings.sess.revoke_done": "세션을 폐기했습니다",
+  "settings.export.title": "데이터 내보내기",
+  "settings.export.desc": "본인 계정에 귀속된 데이터를 JSON으로 다운로드합니다.",
+  "settings.export.btn": "내 데이터 다운로드 (JSON)",
+  "settings.export.working": "준비 중…",
+  "settings.export.fail": "내보내기에 실패했습니다",
+  "settings.sec.danger": "위험 구역",
+  "settings.sec.danger.desc": "계정 삭제는 되돌릴 수 없습니다. 모든 데이터가 영구 삭제되며 로그아웃됩니다.",
+  "settings.danger.input": "비밀번호 또는 가입 이메일",
+  "settings.danger.btn": "계정 삭제",
+  "settings.danger.hint": "비밀번호 계정은 비밀번호를, Google 로그인 계정은 가입 이메일을 입력하세요.",
+  "settings.danger.need_input": "확인 정보를 입력하세요",
+  "settings.danger.dialog.title": "정말 계정을 삭제하시겠습니까?",
+  "settings.danger.dialog.body": "계정과 모든 관련 데이터가 즉시 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+  "settings.danger.cancel": "취소",
+  "settings.danger.confirm": "삭제",
+  "settings.danger.working": "삭제 중…",
+  "settings.danger.done": "계정이 삭제되었습니다 — 로그인 화면으로 이동합니다",
+  "settings.footer.privacy": "개인정보처리방침",
+  "settings.footer.terms": "이용약관",
+  "settings.widget.ask": "자연어 쿼리",
+  "settings.widget.inbox": "알림함",
+  "settings.widget.usage": "비용 요약",
+  "settings.widget.reports": "리포트",
+  "settings.widget.cards": "카드",
+  "settings.save": "변경사항 저장",
+  "settings.saving": "저장 중…",
+  "settings.saved": "저장했습니다",
+  "settings.saved_partial": "저장했습니다 (일부 항목은 권한 없음)",
+  "settings.unsaved": "저장되지 않은 변경사항이 있습니다",
+  "settings.load_fail": "설정을 불러오지 못했습니다",
+  "settings.net_err": "네트워크 연결을 확인하세요",
+},
+en: {
+  "settings.subtitle": "Settings",
+  "settings.back": "Back to dashboard",
+  "settings.sec.general": "General",
+  "settings.sec.general.desc": "Mail and skill-radar collection intervals and the monthly cost budget.",
+  "settings.gmail": "Mail check interval",
+  "settings.gmail.30": "30 minutes",
+  "settings.gmail.60": "1 hour",
+  "settings.gmail.hint": "How often the Gmail collector runs.",
+  "settings.radar": "Skill radar check interval",
+  "settings.radar.daily": "Daily",
+  "settings.radar.weekly": "Weekly",
+  "settings.radar.hint": "How often skills and tools are scanned.",
+  "settings.budget": "Monthly budget (USD)",
+  "settings.budget.hint": "A warning appears when monthly LLM cost exceeds this value. Leave empty for no limit.",
+  "settings.sec.notify": "Session notification rules",
+  "settings.sec.notify.desc": "When at least one rule exists, only matching sessions send notifications. No rules means notify everything.",
+  "settings.notify.add": "Add rule",
+  "settings.notify.empty": "No rules configured",
+  "settings.notify.tool": "Tool",
+  "settings.notify.tool.all": "All",
+  "settings.notify.project": "Project (empty = all)",
+  "settings.notify.working": "Working",
+  "settings.notify.decision": "Decision",
+  "settings.notify.rest": "Rest",
+  "settings.sec.widgets": "Dashboard widgets",
+  "settings.sec.widgets.desc": "Choose which cards appear on the notifications view and in which order.",
+  "settings.sec.sidebar": "Sidebar menu",
+  "settings.sec.sidebar.desc": "Show or hide menu items. Agent-Office and Skill Radar are always shown; role-restricted items require the matching role.",
+  "settings.sec.system": "System status",
+  "settings.sec.system.desc": "Server, bridge, and scheduler health.",
+  "settings.system.loading": "Loading…",
+  "settings.system.refresh": "Refresh",
+  "settings.system.api_uptime": "API uptime",
+  "settings.system.db": "DB",
+  "settings.system.bridge": "Bridge last push",
+  "settings.system.machine": "Machine",
+  "settings.system.cron": "Cron last tick",
+  "settings.system.stale": "stale for 10+ min",
+  "settings.sec.users": "User management",
+  "settings.sec.users.desc": "Admin only. Role changes apply immediately.",
+  "settings.users.email": "Email",
+  "settings.users.name": "Name",
+  "settings.users.role": "Role",
+  "settings.users.created": "Created",
+  "settings.sec.account": "Account",
+  "settings.sec.account.desc": "Login info, password, active sessions, and data export.",
+  "settings.acct.email": "Email",
+  "settings.acct.role": "Role",
+  "settings.acct.name": "Name",
+  "settings.pw.title": "Change password",
+  "settings.pw.desc": "Changing it signs out every device.",
+  "settings.pw.current": "Current password",
+  "settings.pw.new": "New password (8+ chars)",
+  "settings.pw.confirm": "Confirm new password",
+  "settings.pw.btn": "Change",
+  "settings.pw.need_fields": "Fill in every field",
+  "settings.pw.mismatch": "New passwords do not match",
+  "settings.pw.done": "Password changed — please sign in again",
+  "settings.pw.working": "Changing…",
+  "settings.sess.title": "Active sessions",
+  "settings.sess.desc": "Devices currently signed in. You can revoke individual sessions.",
+  "settings.sess.current": "This session",
+  "settings.sess.revoke": "Revoke",
+  "settings.sess.revoke_done": "Session revoked",
+  "settings.export.title": "Data export",
+  "settings.export.desc": "Download your account data as JSON.",
+  "settings.export.btn": "Download my data (JSON)",
+  "settings.export.working": "Preparing…",
+  "settings.export.fail": "Export failed",
+  "settings.sec.danger": "Danger zone",
+  "settings.sec.danger.desc": "Account deletion is irreversible. All data is permanently removed and you will be signed out.",
+  "settings.danger.input": "Password or signup email",
+  "settings.danger.btn": "Delete account",
+  "settings.danger.hint": "Password accounts: enter your password. Google sign-in accounts: enter your signup email.",
+  "settings.danger.need_input": "Enter the confirmation value",
+  "settings.danger.dialog.title": "Delete your account?",
+  "settings.danger.dialog.body": "Your account and all related data will be permanently deleted immediately. This cannot be undone.",
+  "settings.danger.cancel": "Cancel",
+  "settings.danger.confirm": "Delete",
+  "settings.danger.working": "Deleting…",
+  "settings.danger.done": "Account deleted — redirecting to sign-in",
+  "settings.footer.privacy": "Privacy Policy",
+  "settings.footer.terms": "Terms of Service",
+  "settings.widget.ask": "Ask (NL query)",
+  "settings.widget.inbox": "Inbox",
+  "settings.widget.usage": "Cost summary",
+  "settings.widget.reports": "Reports",
+  "settings.widget.cards": "Cards",
+  "settings.save": "Save changes",
+  "settings.saving": "Saving…",
+  "settings.saved": "Saved",
+  "settings.saved_partial": "Saved (some items not permitted)",
+  "settings.unsaved": "You have unsaved changes",
+  "settings.load_fail": "Failed to load settings",
+  "settings.net_err": "Check your network connection",
+},
+};
+
+const API = "/api/v1";
+// 서버가 index 라우트에서만 치환하는 플레이스홀더 — 치환 안 된 값은 미주입으로 간주
+const EMBEDDED_API_KEY = "__JOBMATE_API_KEY__";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* 언어 — JM_I18N 계약: register({ko,en}) + data-jm-i18n 속성.
+   i18n.js가 아직 없으면 STR 내장 사전으로 폴백한다. */
+const JM = window.JM_I18N || null;
+/* 언어 — JM_I18N 우선(없으면 localStorage > 기본 ko). i18n.js의 감지
+   규칙과 동일하게 맞춘다. */
+const LANG = (() => {
+  if (JM && typeof JM.lang === "function") {
+    const l = JM.lang();
+    if (l === "ko" || l === "en") return l;
+  }
+  const l = (localStorage.getItem("jobmate_lang") || "").toLowerCase();
+  return l === "en" ? "en" : "ko";
+})();
+document.documentElement.lang = LANG;
+if (JM && typeof JM.register === "function") {
+  try { JM.register({ko: STR.ko, en: STR.en}); } catch (e) { /* 계약 차이 무시 */ }
+}
+function t(key) {
+  if (JM && typeof JM.t === "function") {
+    try { const v = JM.t(key); if (v && v !== key) return v; } catch (e) {}
+  }
+  return (STR[LANG] && STR[LANG][key]) || STR.ko[key] || key;
+}
+function applyStaticI18n() {
+  // data-jm-i18n / data-jm-i18n-placeholder 속성을 현재 언어 문자열로 적용.
+  // JM_I18N이 같은 키를 관리하면 이후 apply/setLang이 덮어쓴다.
+  document.querySelectorAll("[data-jm-i18n]").forEach(el => {
+    const v = STR[LANG][el.dataset.jmI18n];
+    if (v != null) el.textContent = v;
+  });
+  document.querySelectorAll("[data-jm-i18n-placeholder]").forEach(el => {
+    const v = STR[LANG][el.dataset.jmI18nPlaceholder];
+    if (v != null) el.placeholder = v;
+  });
+}
+function setLang(lang) {
+  const l = lang === "en" ? "en" : "ko";
+  localStorage.setItem("jobmate_lang", l);
+  // 동적 렌더링 문자열도 다시 그리기 위해 항상 리로드.
+  // JM_I18N이 있으면 부팅 시 localStorage 값을 읽어 적용한다.
+  if (JM && typeof JM.setLang === "function") {
+    try { JM.setLang(l); } catch (e) { /* 무시 */ }
+  }
+  location.reload();
+}
+document.querySelectorAll(".lang-toggle [data-lang]").forEach(b =>
+  b.addEventListener("click", () => setLang(b.dataset.lang)));
+function syncLangToggle() {
+  document.querySelectorAll(".lang-toggle [data-lang]").forEach(b =>
+    b.classList.toggle("on", b.dataset.lang === LANG));
+}
+
+/* ══════════════════ API ══════════════════ */
+function apiHeaders() {
+  const headers = {};
+  const emb = EMBEDDED_API_KEY.startsWith("__") ? "" : EMBEDDED_API_KEY;
+  const key = emb || localStorage.getItem("jobmate_api_key") || "";
+  if (key) headers["X-API-Key"] = key;
+  return headers;
+}
+function _unauthorized() {
+  // 이 페이지는 로그인 UI가 없으므로 대시보드(로그인 포함)로 보낸다.
+  // jobmate_api_key는 유효할 수 있으므로 제거하지 않는다.
+  location.replace("/");
+}
+async function api(path, opts) {
+  opts = opts || {};
+  const headers = Object.assign({}, opts.headers, apiHeaders());
+  let r;
+  try {
+    r = await fetch(API + path, Object.assign({}, opts, {headers}));
+  } catch (e) {
+    const err = new Error(t("settings.net_err"));
+    err.cause = e;
+    throw err;
+  }
+  if (r.status === 401) { _unauthorized(); throw new Error("unauthorized"); }
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    const msg = j.error ? j.error.message : "";
+    const e2 = new Error(msg || r.statusText || `요청 실패 (${r.status})`);
+    if (j.error && j.error.code) e2.code = j.error.code;
+    if (r.status === 429) {
+      throw new Error((msg ? msg + " — " : "") +
+        (LANG === "ko" ? "요청이 너무 많습니다. 잠시 후 다시 시도해주세요" : "Too many requests — try again later"));
+    }
+    throw e2;
+  }
+  const text = await r.text();
+  if (!text) return {};
+  try { return JSON.parse(text); } catch (e) { return {}; }
+}
+async function apiMe() {
+  // 401 리다이렉트 없이 현재 사용자 조회 (페이지 게이팅용)
+  try {
+    const r = await fetch(API + "/auth/me", {headers: apiHeaders()});
+    if (!r.ok) return null;
+    const me = await r.json();
+    return (me && me.user) || me || null;
+  } catch (e) { return null; }
+}
+function setStatus(el, msg, cls) {
+  el.textContent = msg || "";
+  el.className = "status" + (cls ? " " + cls : "");
+}
+
+/* ══════════════════ 설정 로드/저장 ══════════════════ */
+let _base = null;      // 로드 시점 prefs 스냅샷 (dirty diff용)
+let _notifyRules = [];
+let _widgetDraft = [];
+let _menuDraft = {};
+
+const NOTIFY_TOOLS = ["", "codex", "claude", "gemini", "devin"];
+const NOTIFY_TOOL_LABEL = {"": "settings.notify.tool.all", codex: "Codex",
+                           claude: "Claude", gemini: "Gemini", devin: "Devin"};
+const NOTIFY_STATUSES = ["working", "decision", "rest"];
+const NOTIFY_STATUS_KEY = {working: "settings.notify.working",
+                           decision: "settings.notify.decision",
+                           rest: "settings.notify.rest"};
+
+const DASH_WIDGETS = [
+  {id: "ask",     key: "settings.widget.ask"},
+  {id: "inbox",   key: "settings.widget.inbox"},
+  {id: "usage",   key: "settings.widget.usage"},
+  {id: "reports", key: "settings.widget.reports"},
+  {id: "cards",   key: "settings.widget.cards"},
+];
+const WIDGET_FALLBACK = {ask: "자연어 쿼리", inbox: "알림함", usage: "비용 요약",
+                         reports: "리포트", cards: "카드"};
+
+/* 사이드바 메뉴 — index.html의 nav-item 목록과 동기화해야 함.
+   office·radar는 항상 표시라 제외. role은 최소 필요 역할 힌트. */
+const SIDEBAR_ITEMS = [
+  {view: "gmail",        ko: "Gmail Checker",  en: "Gmail Checker"},
+  {view: "calendar",     ko: "Calendar",       en: "Calendar"},
+  {view: "runs",         ko: "실행 이력",       en: "Run history"},
+  {view: "inbox",        ko: "알림",            en: "Notifications"},
+  {view: "projects",     ko: "프로젝트",        en: "Projects",        role: "lead"},
+  {view: "sessionlog",   ko: "세션 기록",       en: "Session log",     role: "lead"},
+  {view: "risks",        ko: "리스크",          en: "Risks",           role: "lead"},
+  {view: "approvals",    ko: "승인",            en: "Approvals",       role: "lead"},
+  {view: "perf",         ko: "성과",            en: "Performance",     role: "lead"},
+  {view: "insights",     ko: "인사이트",        en: "Insights",        role: "lead"},
+  {view: "automation",   ko: "자동화",          en: "Automation",      role: "admin"},
+  {view: "system",       ko: "시스템",          en: "System",          role: "admin"},
+  {view: "archive",      ko: "아카이브",        en: "Archive",         role: "lead"},
+  {view: "cost",         ko: "비용",            en: "Cost",            role: "lead"},
+  {view: "developer",    ko: "개발자",          en: "Developer",       role: "admin"},
+  {view: "playbooks",    ko: "플레이북",        en: "Playbooks",       role: "lead"},
+  {view: "connectors",   ko: "커넥터",          en: "Connectors",      role: "lead"},
+  {view: "triggers",     ko: "트리거",          en: "Triggers",        role: "lead"},
+  {view: "builder",      ko: "워크플로 빌더",   en: "Workflow builder", role: "lead"},
+  {view: "team",         ko: "팀",              en: "Team",            role: "lead"},
+  {view: "audit",        ko: "감사 로그",        en: "Audit log",       role: "admin"},
+];
+
+function widgetName(id) {
+  const w = DASH_WIDGETS.find(d => d.id === id);
+  if (!w) return id;
+  return STR[LANG][w.key] || WIDGET_FALLBACK[id] || id;
+}
+function sidebarLabel(it) { return LANG === "en" ? it.en : it.ko; }
+
+function _notifyRuleStatuses(r) {
+  if (Array.isArray(r.statuses)) return r.statuses;
+  if (typeof r.status === "string" && r.status) return [r.status];
+  return [];
+}
+
+function _renderNotifyRules() {
+  const box = $("#notify-rules-list");
+  if (!_notifyRules.length) {
+    box.innerHTML = `<p class="empty" style="padding:8px 0">${esc(t("settings.notify.empty"))}</p>`;
+    return;
+  }
+  box.innerHTML = _notifyRules.map((r, i) => {
+    const sts = _notifyRuleStatuses(r);
+    const toolOpts = NOTIFY_TOOLS.map(tv =>
+      `<option value="${tv}"${(r.tool || "") === tv ? " selected" : ""}>` +
+      `${esc(tv ? tv[0].toUpperCase() + tv.slice(1) : t("settings.notify.tool.all"))}</option>`).join("");
+    const stBoxes = NOTIFY_STATUSES.map(s =>
+      `<label class="chk"><input type="checkbox" class="nr-st" value="${s}"` +
+      `${sts.includes(s) ? " checked" : ""}>${esc(t(NOTIFY_STATUS_KEY[s]))}</label>`).join("");
+    return `<div class="rule-row" data-i="${i}">` +
+      `<select class="nr-tool" aria-label="${esc(t("settings.notify.tool"))}">${toolOpts}</select>` +
+      `<input type="text" class="nr-project" placeholder="${esc(t("settings.notify.project"))}" ` +
+      `value="${esc(r.project || "")}" autocomplete="off">` +
+      `<span class="nr-st-boxes">${stBoxes}</span>` +
+      `<button type="button" class="ghost row-del" title="✕">✕</button>` +
+      `</div>`;
+  }).join("");
+}
+function _collectNotifyRules() {
+  const out = [];
+  document.querySelectorAll("#notify-rules-list .rule-row").forEach(row => {
+    const statuses = [...row.querySelectorAll(".nr-st:checked")].map(c => c.value);
+    out.push({
+      tool: row.querySelector(".nr-tool")?.value || "",
+      project: row.querySelector(".nr-project")?.value || "",
+      statuses,
+    });
+  });
+  return out;
+}
+
+function _normalizeWidgets(prefs) {
+  const src = (prefs && Array.isArray(prefs.dashboard_widgets))
+    ? prefs.dashboard_widgets.filter(w => w && w.id) : [];
+  const byId = {};
+  src.forEach(w => { byId[w.id] = w; });
+  const known = DASH_WIDGETS.map(d => d.id);
+  const extra = src.map(w => w.id).filter(id => !known.includes(id));
+  const items = [...known, ...extra].map((id, i) => ({id, i, w: byId[id]}));
+  items.sort((a, b) => {
+    const oa = a.w && typeof a.w.order === "number" ? a.w.order : 900 + a.i;
+    const ob = b.w && typeof b.w.order === "number" ? b.w.order : 900 + b.i;
+    return oa - ob || a.i - b.i;
+  });
+  return items.map((it, i) => ({
+    id: it.id,
+    visible: it.w ? it.w.visible !== false : true,
+    order: i,
+  }));
+}
+function _renderWidgetList() {
+  const box = $("#widget-list");
+  box.innerHTML = _widgetDraft.map((w, i) =>
+    `<div class="widget-row" data-i="${i}">` +
+    `<label class="chk"><input type="checkbox" class="dw-vis"` +
+    `${w.visible ? " checked" : ""}></label>` +
+    `<span class="menu-name">${esc(widgetName(w.id))}</span>` +
+    `<span class="reorder-btns">` +
+    `<button type="button" class="secondary sm dw-up"${i === 0 ? " disabled" : ""}>↑</button>` +
+    `<button type="button" class="secondary sm dw-down"` +
+    `${i === _widgetDraft.length - 1 ? " disabled" : ""}>↓</button>` +
+    `</span></div>`).join("");
+}
+function _collectWidgetDraft() {
+  return _widgetDraft.map((w, i) => ({id: w.id, visible: w.visible !== false, order: i}));
+}
+
+function _renderSidebarMenu() {
+  const box = $("#sidebar-menu-list");
+  box.innerHTML = SIDEBAR_ITEMS.map(it => {
+    const on = _menuDraft[it.view] === true;
+    const roleTag = it.role ? `<span class="role-tag">${it.role}+</span>` : "";
+    return `<div class="menu-row">` +
+      `<span class="menu-name">${esc(sidebarLabel(it))}</span>${roleTag}` +
+      `<span class="seg">` +
+      `<label><input type="radio" name="sm-${it.view}" value="show"` +
+      `${on ? " checked" : ""}>${esc(LANG === "ko" ? "표시" : "Show")}</label>` +
+      `<label><input type="radio" name="sm-${it.view}" value="hide"` +
+      `${on ? "" : " checked"}>${esc(LANG === "ko" ? "숨김" : "Hide")}</label>` +
+      `</span></div>`;
+  }).join("");
+}
+function _collectSidebarMenu() {
+  const out = {};
+  SIDEBAR_ITEMS.forEach(it => {
+    const r = document.querySelector(`input[name="sm-${it.view}"]:checked`);
+    out[it.view] = r ? r.value === "show" : false;
+  });
+  return out;
+}
+
+function _collectPrefs() {
+  const mb = $("#f-budget").value.trim();
+  return {
+    gmail_check_minutes: Number($("#f-gmail").value),
+    radar_interval: $("#f-radar").value,
+    notify_rules: _collectNotifyRules(),
+    monthly_budget_usd: mb === "" ? null : Number(mb),
+    dashboard_widgets: _collectWidgetDraft(),
+    sidebar_menu: _collectSidebarMenu(),
+  };
+}
+function _diffPrefs(next) {
+  // 변경된 키만 전송 — _base가 없으면 전체 전송
+  if (!_base) return next;
+  const out = {};
+  for (const k of Object.keys(next)) {
+    if (JSON.stringify(next[k]) !== JSON.stringify(_base[k])) out[k] = next[k];
+  }
+  return out;
+}
+function _markDirty() {
+  const btn = $("#save-btn");
+  if (_base) {
+    const diff = _diffPrefs(_collectPrefs());
+    btn.disabled = Object.keys(diff).length === 0;
+    setStatus($("#save-status"), btn.disabled ? "" : t("settings.unsaved"));
+  } else {
+    btn.disabled = false;
+  }
+}
+
+async function loadSettings() {
+  const s = await api("/settings");
+  $("#f-gmail").value = String(s.gmail_check_minutes || 30);
+  $("#f-radar").value = s.radar_interval || "daily";
+  _notifyRules = Array.isArray(s.notify_rules)
+    ? s.notify_rules.map(r => ({
+        tool: r.tool || "", project: r.project || "",
+        statuses: _notifyRuleStatuses(r)}))
+    : [];
+  _renderNotifyRules();
+  $("#f-budget").value =
+    s.monthly_budget_usd != null ? String(s.monthly_budget_usd) : "";
+  _widgetDraft = _normalizeWidgets(s);
+  _renderWidgetList();
+  const menu = (s && s.sidebar_menu) || {};
+  _menuDraft = {};
+  SIDEBAR_ITEMS.forEach(it => { _menuDraft[it.view] = menu[it.view] === true; });
+  _renderSidebarMenu();
+  _base = {
+    gmail_check_minutes: Number($("#f-gmail").value),
+    radar_interval: $("#f-radar").value,
+    notify_rules: _collectNotifyRules(),
+    monthly_budget_usd: $("#f-budget").value.trim() === ""
+      ? null : Number($("#f-budget").value),
+    dashboard_widgets: _collectWidgetDraft(),
+    sidebar_menu: _collectSidebarMenu(),
+  };
+  $("#save-btn").disabled = true;
+  setStatus($("#save-status"), "");
+}
+
+/* 동적 목록 이벤트 위임 */
+$("#notify-rule-add").addEventListener("click", () => {
+  _notifyRules.push({tool: "", project: "", statuses: []});
+  _renderNotifyRules(); _markDirty();
+});
+$("#notify-rules-list").addEventListener("click", (e) => {
+  const row = e.target.closest(".rule-row");
+  if (row && e.target.closest(".row-del")) {
+    _notifyRules.splice(Number(row.dataset.i), 1);
+    _renderNotifyRules(); _markDirty();
+  }
+});
+$("#notify-rules-list").addEventListener("change", _markDirty);
+$("#notify-rules-list").addEventListener("input", _markDirty);
+$("#widget-list").addEventListener("click", (e) => {
+  const row = e.target.closest(".widget-row");
+  if (!row) return;
+  const i = Number(row.dataset.i);
+  const up = e.target.closest(".dw-up"), dn = e.target.closest(".dw-down");
+  if (up && i > 0) {
+    [_widgetDraft[i - 1], _widgetDraft[i]] = [_widgetDraft[i], _widgetDraft[i - 1]];
+    _renderWidgetList(); _markDirty();
+  } else if (dn && i < _widgetDraft.length - 1) {
+    [_widgetDraft[i], _widgetDraft[i + 1]] = [_widgetDraft[i + 1], _widgetDraft[i]];
+    _renderWidgetList(); _markDirty();
+  }
+});
+$("#widget-list").addEventListener("change", (e) => {
+  const row = e.target.closest(".widget-row");
+  if (!row || !e.target.classList.contains("dw-vis")) return;
+  _widgetDraft[Number(row.dataset.i)].visible = e.target.checked;
+  _markDirty();
+});
+$("#sidebar-menu-list").addEventListener("change", _markDirty);
+["#f-gmail", "#f-radar", "#f-budget"].forEach(sel =>
+  $(sel).addEventListener("input", _markDirty));
+
+$("#save-btn").addEventListener("click", async () => {
+  const st = $("#save-btn");
+  const statusEl = $("#save-status");
+  st.disabled = true;
+  setStatus(statusEl, t("settings.saving"));
+  const payload = _diffPrefs(_collectPrefs());
+  if (!Object.keys(payload).length) { st.disabled = false; return; }
+  try {
+    const res = await api("/settings", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)});
+    _base = _collectPrefs();
+    st.disabled = true;
+    setStatus(statusEl, t("settings.saved"), "ok");
+    // 서버가 정규화한 prefs를 기준 스냅샷에 반영
+    if (res && res.prefs) _base = res.prefs;
+  } catch (e) {
+    // 신규 키(monthly_budget_usd/dashboard_widgets/sidebar_menu)가 권한 부족으로
+    // 거부되면 기존 키만으로 재시도 — index.html과 동일한 폴백
+    if (/403|권한|forbidden|permission/i.test(String(e.message || ""))) {
+      const legacy = {};
+      ["gmail_check_minutes", "radar_interval", "notify_rules"]
+        .forEach(k => { if (k in payload) legacy[k] = payload[k]; });
+      if (Object.keys(legacy).length) {
+        try {
+          const res = await api("/settings", {method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(legacy)});
+          _base = _collectPrefs();
+          st.disabled = true;
+          setStatus(statusEl, t("settings.saved_partial"), "ok");
+          if (res && res.prefs) _base = res.prefs;
+          return;
+        } catch (e2) {
+          setStatus(statusEl, e2.message, "err"); st.disabled = false; return;
+        }
+      }
+    }
+    setStatus(statusEl, e.message, "err"); st.disabled = false;
+  }
+});
+
+/* ══════════════════ 시스템 상태 (lazy) ══════════════════ */
+function officeFmtSecsLocal(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return m + "m " + (r ? r + "s" : "");
+  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+}
+function officeFmtTsLocal(iso) {
+  return (iso || "").slice(0, 19).replace("T", " ") || "-";
+}
+const kv = (k, v) =>
+  `<div class="kv"><span>${esc(k)}</span><b>${esc(String(v ?? "-"))}</b></div>`;
+
+let _healthLoaded = false;
+async function loadHealthDetail() {
+  const el = $("#health-body");
+  el.innerHTML = `<span class="empty">${esc(t("settings.system.loading"))}</span>`;
+  try {
+    const h = await api("/health/detail");
+    const apiUptime = h.api && h.api.uptime_s != null
+      ? officeFmtSecsLocal(h.api.uptime_s) : "-";
+    const db = h.db || {};
+    const dbTxt = Object.keys(db).length
+      ? JSON.stringify(db).slice(0, 300) : "-";
+    const bridge = h.bridge || {};
+    const lastPush = bridge.last_push_at || "";
+    const pushAge = Date.parse(lastPush);
+    const stale = !isNaN(pushAge) && (Date.now() - pushAge) > 10 * 60 * 1000;
+    const machines = Array.isArray(bridge.machines) ? bridge.machines : [];
+    const mrows = machines.map(m =>
+      `<div class="kv"><span>${esc(m.machine || "-")}</span>` +
+      `<b>${esc(officeFmtTsLocal(m.last_push_at))} · ${LANG === "ko" ? "세션" : "sessions"} ${esc(m.sessions ?? 0)}</b></div>`).join("");
+    const cron = h.cron || {};
+    el.innerHTML =
+      kv(t("settings.system.api_uptime"), apiUptime) +
+      kv(t("settings.system.db"), dbTxt) +
+      `<div class="kv"><span>${esc(t("settings.system.bridge"))}</span>` +
+      `<b>${esc(officeFmtTsLocal(lastPush))}` +
+      (stale ? ` <span class="health-warn">${esc(t("settings.system.stale"))}</span>` : "") +
+      `</b></div>` +
+      (mrows || `<div class="kv"><span>${esc(t("settings.system.machine"))}</span><b>-</b></div>`) +
+      kv(t("settings.system.cron"), officeFmtTsLocal(cron.last_tick_at));
+    _healthLoaded = true;
+  } catch (e) {
+    el.innerHTML = `<span class="empty" style="color:var(--error)">${esc(e.message)}</span>`;
+  }
+}
+$("#health-reload").addEventListener("click", loadHealthDetail);
+// 섹션이 뷰포트에 들어오면 첫 로드 (lazy)
+if ("IntersectionObserver" in window) {
+  const io = new IntersectionObserver((entries) => {
+    if (entries.some(en => en.isIntersecting)) {
+      io.disconnect();
+      if (!_healthLoaded) loadHealthDetail();
+    }
+  }, {rootMargin: "120px"});
+  io.observe($("#sec-system"));
+} else {
+  loadHealthDetail();
+}
+
+/* ══════════════════ 사용자 관리 (admin) ══════════════════ */
+const JM_ROLE_RANK = {member: 0, lead: 1, admin: 2};
+function jmNormalizeRole(r) {
+  const k = String(r || "").toLowerCase();
+  return JM_ROLE_RANK[k] != null ? k : "member";
+}
+let _me = null;
+async function loadUsers() {
+  const tb = $("#users-body");
+  try {
+    const d = await api("/users");
+    const arr = Array.isArray(d) ? d : (d.users || []);
+    tb.innerHTML = arr.length ? arr.map(u => {
+      const uRole = jmNormalizeRole(u.role);
+      const isMe = _me && u.id === _me.id;
+      return `<tr${isMe ? ' class="me-row"' : ""}>` +
+        `<td class="mono">${esc(u.email || "-")}${isMe ? ` <span class="badge">${LANG === "ko" ? "나" : "me"}</span>` : ""}</td>` +
+        `<td>${esc(u.display_name || u.name || "-")}</td>` +
+        `<td><select class="role-sel" data-uid="${esc(u.id || "")}" aria-label="${esc(t("settings.users.role"))}">` +
+        ["member", "lead", "admin"].map(r =>
+          `<option value="${r}"${r === uRole ? " selected" : ""}>${r}</option>`).join("") +
+        `</select></td>` +
+        `<td class="mono" style="color:var(--text-2)">${esc((u.created_at || "").slice(0, 10))}</td></tr>`;
+    }).join("") : `<tr><td colspan="4" class="empty">—</td></tr>`;
+    tb.querySelectorAll(".role-sel").forEach(sel =>
+      sel.addEventListener("change", async () => {
+        const uid = sel.dataset.uid;
+        if (!uid) { sel.value = jmNormalizeRole(sel.value); return; }
+        try {
+          await api("/users/" + encodeURIComponent(uid) + "/role",
+            {method: "PATCH",
+             headers: {"Content-Type": "application/json"},
+             body: JSON.stringify({role: sel.value})});
+          if (_me && uid === _me.id) _me.role = sel.value;
+        } catch (e) {
+          alert(e.message);
+          loadUsers();
+        }
+      }));
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="4" class="empty" style="color:var(--error)">${esc(e.message)}</td></tr>`;
+  }
+}
+
+/* ══════════════════ 계정 섹션 ══════════════════ */
+async function loadAccount() {
+  _me = await apiMe();
+  if (!_me) return;
+  $("#acct-email").textContent = _me.email || "-";
+  $("#acct-name").textContent = _me.display_name || _me.name || "-";
+  const role = jmNormalizeRole(_me.role);
+  $("#acct-role").innerHTML =
+    `<span class="badge role-${role}">${role}</span>`;
+  // 관리자만 사용자 관리 섹션 표시
+  if (JM_ROLE_RANK[role] >= JM_ROLE_RANK.admin) {
+    $("#users-section").hidden = false;
+    loadUsers();
+  }
+}
+
+/* 비밀번호 변경 — 성공 시 서버가 모든 세션을 폐기하므로 재로그인 유도 */
+$("#pw-submit").addEventListener("click", async () => {
+  const cur = $("#pw-current").value;
+  const nw = $("#pw-new").value;
+  const cf = $("#pw-confirm").value;
+  const st = $("#pw-status");
+  if (!cur || !nw || !cf) { setStatus(st, t("settings.pw.need_fields"), "err"); return; }
+  if (nw !== cf) { setStatus(st, t("settings.pw.mismatch"), "err"); return; }
+  const btn = $("#pw-submit");
+  btn.disabled = true;
+  setStatus(st, t("settings.pw.working"));
+  try {
+    await api("/auth/password", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({current_password: cur, new_password: nw})});
+    setStatus(st, t("settings.pw.done"), "ok");
+    $("#pw-current").value = ""; $("#pw-new").value = ""; $("#pw-confirm").value = "";
+    setTimeout(() => location.replace("/"), 1500);
+  } catch (e) {
+    setStatus(st, e.message, "err");
+    btn.disabled = false;
+  }
+});
+
+/* 활성 세션 목록 */
+async function loadSessions() {
+  const el = $("#sess-list");
+  try {
+    const d = await api("/auth/sessions");
+    const arr = Array.isArray(d.sessions) ? d.sessions : [];
+    if (!arr.length) { el.innerHTML = `<span class="empty">—</span>`; return; }
+    el.innerHTML = arr.map(s => {
+      const cur = !!s.current;
+      return `<div class="sess-row">` +
+        `<span class="mono" style="flex:none">${esc(officeFmtTsLocal(s.created_at))}</span>` +
+        `<span class="sess-meta">${cur
+          ? `<span class="badge current">${esc(t("settings.sess.current"))}</span>`
+          : `${esc(LANG === "ko" ? "만료" : "expires")} ${esc(officeFmtTsLocal(s.expires_at))}`}</span>` +
+        (cur ? "" :
+          `<button type="button" class="secondary sm sess-revoke" data-id="${esc(s.id)}">${esc(t("settings.sess.revoke"))}</button>`)
+        + `</div>`;
+    }).join("");
+    el.querySelectorAll(".sess-revoke").forEach(b =>
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          await api("/auth/sessions/" + encodeURIComponent(b.dataset.id),
+            {method: "DELETE"});
+          loadSessions();
+        } catch (e) { alert(e.message); b.disabled = false; }
+      }));
+  } catch (e) {
+    el.innerHTML = `<span class="empty" style="color:var(--error)">${esc(e.message)}</span>`;
+  }
+}
+loadSessions();
+
+/* 데이터 내보내기 — fetch+blob (X-API-Key 헤더 지원) */
+$("#export-btn").addEventListener("click", async () => {
+  const st = $("#export-status");
+  const btn = $("#export-btn");
+  btn.disabled = true;
+  setStatus(st, t("settings.export.working"));
+  try {
+    const r = await fetch(API + "/auth/export", {headers: apiHeaders()});
+    if (r.status === 401) { _unauthorized(); return; }
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.error ? j.error.message : t("settings.export.fail"));
+    }
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "jobmate-data-export.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    setStatus(st, "");
+  } catch (e) {
+    setStatus(st, e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* 계정 삭제 — 비밀번호 계정은 {password}, Google-only는 {confirm_email}.
+   /auth/me에 비밀번호 여부가 없으므로 password 시도 → confirm_required 시
+   confirm_email로 자동 재시도한다. */
+const delDialog = $("#del-dialog");
+$("#del-open").addEventListener("click", () => {
+  const v = $("#del-confirm-input").value.trim();
+  if (!v) { setStatus($("#del-status"), t("settings.danger.need_input"), "err"); return; }
+  delDialog.showModal();
+});
+$("#del-cancel").addEventListener("click", () => delDialog.close());
+$("#del-confirm").addEventListener("click", async () => {
+  const v = $("#del-confirm-input").value.trim();
+  const btn = $("#del-confirm");
+  const st = $("#del-status");
+  btn.disabled = true;
+  setStatus(st, t("settings.danger.working"));
+  const post = (body) => api("/auth/account", {method: "DELETE",
+    headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  try {
+    try {
+      await post({password: v});
+    } catch (e1) {
+      // Google-only 계정 — 서버가 confirm_email을 요구하면 이메일로 재시도
+      if (e1.code === "confirm_required" || /confirm/i.test(String(e1.message || ""))) {
+        await post({confirm_email: v});
+      } else {
+        throw e1;
+      }
+    }
+    delDialog.close();
+    setStatus(st, t("settings.danger.done"), "ok");
+    try { await fetch(API + "/auth/logout", {method: "POST", headers: apiHeaders()}); } catch (e) {}
+    localStorage.removeItem("jobmate_api_key");
+    setTimeout(() => location.replace("/"), 1200);
+  } catch (e) {
+    setStatus(st, e.message, "err");
+    btn.disabled = false;
+  }
+});
+
+/* ══════════════════ 부팅 ══════════════════ */
+applyStaticI18n();
+syncLangToggle();
+(async () => {
+  try {
+    await loadSettings();
+  } catch (e) {
+    setStatus($("#save-status"), t("settings.load_fail") + ": " + e.message, "err");
+  }
+  loadAccount();
+})();
+</script>
+</body>
+</html>
