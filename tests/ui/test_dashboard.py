@@ -124,8 +124,11 @@ def base_url(ui_server: SimpleNamespace) -> str:
 def page(ui_server: SimpleNamespace) -> Iterator[Page]:
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        pg = browser.new_page()
-        pg.goto(ui_server.url)
+        # UI 기본 언어는 한국어 — 브라우저 로케일을 ko-KR로 고정해 i18n 기본값(en)이
+        # 기존 한국어 단언을 깨지 않게 한다.
+        pg = browser.new_page(locale="ko-KR")
+        # 레거시 UI 테스트 — /는 v2(/app/)로 리다이렉트되므로 /legacy를 직접 연다
+        pg.goto(ui_server.url + "/legacy")
         pg.wait_for_selector(".nav-item")
         yield pg
         browser.close()
@@ -181,22 +184,10 @@ def test_runs_view_table(page: Page) -> None:
     _wait_text(page, "#runs-body", "실행 없음")
 
 
-def test_settings_dialog_save(page: Page, base_url: str) -> None:
-    """설정 다이얼로그에서 값을 바꿔 저장하면 API에 반영된다."""
+def test_settings_button_navigates(page: Page) -> None:
+    """설정 버튼은 설정 다이얼로그가 아니라 /static/settings.html 로 이동한다."""
     page.click("#settings-open")
-    page.wait_for_function("document.querySelector('#settings-dialog').open")
-    page.wait_for_function("document.querySelector('#set-gmail-minutes').value !== ''")
-    page.select_option("#set-gmail-minutes", "60")
-    page.select_option("#set-radar-interval", "weekly")
-    page.click("#settings-save")
-    page.wait_for_function(
-        "document.querySelector('#settings-status').textContent.includes('저장했습니다')",
-        timeout=5000,
-    )
-    resp = page.request.get(base_url + "/api/v1/settings")
-    prefs = resp.json()
-    assert prefs["gmail_check_minutes"] == 60
-    assert prefs["radar_interval"] == "weekly"
+    page.wait_for_url("**/static/settings.html**", timeout=5000)
 
 
 def test_push_toggle_without_vapid(page: Page) -> None:

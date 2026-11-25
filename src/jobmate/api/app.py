@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     FileResponse,
@@ -44,6 +44,7 @@ from ..config import (
     database_dsn,
     get_settings,
 )
+from ..engine.trace import graph_config, job_traceable
 from ..llm import CompositeLLM, MeteredLLM
 from ..models import RunStatus, StageStatus, WorkflowSpec
 from ..pricing import cost_usd
@@ -816,6 +817,7 @@ def _fire_trigger_action(
         raise ValueError(f"unknown trigger action type {atype}")
 
 
+@job_traceable("jobmate.check_triggers")
 def _maybe_check_triggers(
     store: Store,
     settings: Settings,
@@ -960,6 +962,11 @@ def create_app(
         return response
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    # React 프론트엔드(v2) — 저장소 루트 v2/dist 빌드 산출물. 존재할 때만 마운트.
+    _v2_dist = STATIC_DIR.parents[3] / "v2" / "dist"
+    if _v2_dist.is_dir():
+        app.mount("/app", StaticFiles(directory=_v2_dist, html=True), name="app_v2")
 
     def err(status: int, code: str, message: str, request: Request) -> JSONResponse:
         # request_id는 access_log_middleware가 심은 값을 재사용 — 별도 uuid를
@@ -1226,8 +1233,7 @@ def create_app(
         _budget_cache["mtd"] = mtd
         return mtd
 
-    @app.get("/")
-    def index() -> HTMLResponse:
+    def _legacy_index_html() -> HTMLResponse:
         # 로그인제가 도입되어 API 키는 더 이상 페이지에 주입하지 않는다.
         # ?key= 파라미터나 localStorage 키는 관리자/머신용 폴백으로 유지.
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -1236,6 +1242,25 @@ def create_app(
             html.replace("__JOBMATE_API_KEY__", ""),
             headers={"Cache-Control": "no-cache"},
         )
+
+    @app.get("/")
+    def index(request: Request) -> Response:
+        # v2(React) 빌드가 있으면 기본 진입점으로 리다이렉트 — 없으면 레거시.
+        # 쿼리스트링 보존: 푸시 알림 딥링크(?view=..)·OAuth 에러(?auth_error=..)가
+        # 리다이렉트에서 유실되지 않게 한다.
+        if _v2_dist.is_dir():
+            qs = f"?{request.url.query}" if request.url.query else ""
+            return RedirectResponse(
+                f"/app/{qs}",
+                status_code=302,
+                headers={"Cache-Control": "no-cache"},
+            )
+        return _legacy_index_html()
+
+    @app.get("/legacy")
+    def legacy_index() -> HTMLResponse:
+        # v2 전환 기간 동안 레거시 대시보드 유지 경로.
+        return _legacy_index_html()
 
     @app.get("/sw.js")
     def service_worker() -> FileResponse:
@@ -1539,7 +1564,7 @@ def create_app(
 
                 runner._graph.invoke(  # noqa: SLF001 — resume()의 claim-우회 경로
                     Command(resume={"decision": decision, "comment": comment}),
-                    {"configurable": {"thread_id": run_id}},
+                    graph_config(run_id, workflow=run.workflow_key, run_id=run_id),
                 )
             except Exception as e:
                 logger.warning("run %s resume failed: %s", run_id, str(e)[:200])
@@ -3414,13 +3439,15 @@ def create_app(
         if not valid_push_subscription(endpoint, keys):
             return err(422, "invalid_subscription", "invalid push subscription", request)
         store.save_push_subscription(endpoint, keys)
+        _audit_api(request, "push_subscribe", _endpoint_fp(endpoint))
         logger.info("push subscribed: sub=%s", _endpoint_fp(endpoint))
         return {"status": "subscribed"}
 
     @app.post("/api/v1/push/unsubscribe")
-    def push_unsubscribe(body: dict[str, Any]) -> dict[str, str]:
+    def push_unsubscribe(body: dict[str, Any], request: Request) -> dict[str, str]:
         endpoint = body.get("endpoint", "")
         store.delete_push_subscription(endpoint)
+        _audit_api(request, "push_unsubscribe", _endpoint_fp(endpoint))
         if endpoint:
             logger.info("push unsubscribed: sub=%s", _endpoint_fp(endpoint))
         return {"status": "unsubscribed"}
@@ -4817,6 +4844,7 @@ def _execute_run_job(
     logger.info("run %s finished status=%s", run_id, getattr(run, "status", "?"))
 
 
+@job_traceable("jobmate.process_due_schedules")
 def _process_due_schedules(
     store: Store,
     settings: Settings,
@@ -4951,6 +4979,7 @@ def _parse_diff_files(diff_text: str) -> list[dict[str, Any]]:
     ]
 
 
+@job_traceable("jobmate.check_waiting_approvals")
 def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
     """dev_review run이 waiting_approval에 '전이'할 때만 웹 푸시.
 
@@ -5176,6 +5205,7 @@ def _process_pending_messages(
         ).start()
 
 
+@job_traceable("jobmate.process_message")
 def _process_message_job(
     store: Store,
     settings: Settings,
@@ -5275,6 +5305,7 @@ def _create_and_run(
     return run.id
 
 
+@job_traceable("jobmate.process_due_notification_jobs")
 def _process_due_notification_jobs(store: Store, adapters: dict[str, Any]) -> None:
     notifier = adapters.get("notifier")
     if notifier is None:
@@ -5310,6 +5341,7 @@ def _process_due_notification_jobs(store: Store, adapters: dict[str, Any]) -> No
             )
 
 
+@job_traceable("jobmate.poll_gmail")
 def _maybe_poll_gmail(store: Store, settings: Settings, adapters: dict[str, Any]) -> None:
     auto = store.get_automation()
     if not auto.get("enabled"):
@@ -5377,6 +5409,7 @@ def _poll_gmail(store: Store, settings: Settings, gmail: Any) -> int:
     return ingested
 
 
+@job_traceable("jobmate.daily_radar")
 def _maybe_daily_radar(
     store: Store,
     settings: Settings,
@@ -5449,6 +5482,7 @@ def _report_is_stale(store: Store, kind: str) -> bool:
     return datetime.now(UTC) - created > _REPORT_MAX_AGE[kind]
 
 
+@job_traceable("jobmate.generate_reports")
 def _maybe_generate_reports(store: Store, settings: Settings, adapters: dict[str, Any]) -> None:
     """daily/exec_daily 20시간·weekly/exec_weekly 7일 주기로 자동 생성.
     생성 시 reports 테이블 저장 + 인박스 kind='report' + 메신저 알림(best-effort)."""

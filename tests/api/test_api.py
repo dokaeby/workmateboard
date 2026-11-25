@@ -101,9 +101,16 @@ def test_notifications_and_links_empty():
 
 def test_index_page_served():
     client, _ = _client()
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "jobMate" in r.text
+    r = client.get("/", follow_redirects=False)
+    # v2/dist가 있으면 /app/으로 리다이렉트, 없으면 레거시 HTML 직접 서빙
+    if r.status_code == 302:
+        assert r.headers["location"].startswith("/app/")
+        leg = client.get("/legacy")
+        assert leg.status_code == 200
+        assert "jobMate" in leg.text
+    else:
+        assert r.status_code == 200
+        assert "jobMate" in r.text
 
 
 def test_email_check_and_summaries():

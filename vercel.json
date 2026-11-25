@@ -1,9 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm --prefix v2 ci && npm --prefix v2 run build",
   "crons": [],
   "functions": {
     "app.py": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "includeFiles": "v2/dist/**"
     }
   }
 }

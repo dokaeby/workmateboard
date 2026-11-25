@@ -372,5 +372,7 @@ def test_signup_terms_exempt_in_local_dev_mode():
 
 def test_index_and_service_worker_no_cache():
     client, _, _ = _client()
-    assert client.get("/").headers["cache-control"] == "no-cache"
+    # v2/dist 존재 시 /는 /app/으로 302 — 두 경로 모두 no-cache여야 한다
+    r = client.get("/", follow_redirects=False)
+    assert r.headers["cache-control"] == "no-cache"
     assert client.get("/sw.js").headers["cache-control"] == "no-cache"

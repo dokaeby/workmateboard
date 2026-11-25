@@ -236,6 +236,21 @@ const JMO_I18N = (() => {
   const time = ms => new Date(ms).toLocaleTimeString(lang === "ko" ? "ko-KR" : "en-GB",
     { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
+  // jobMate 메인 대시보드 언어(jobmate_lang)와 동기화 — 사용자가 헤더에서 고른 언어를 우선한다.
+  // ?lang= 쿼리가 있으면 그쪽이 우선. /static/i18n.js 가 dispatch 하는 jm-lang-change 도 받는다.
+  try {
+    const hasQ = new URLSearchParams(location.search).has("lang");
+    const mainLang = localStorage.getItem("jobmate_lang");
+    if (!hasQ && (mainLang === "ko" || mainLang === "en") && mainLang !== lang) {
+      lang = mainLang; fixed = true;
+      try { localStorage.setItem(STORE, lang); } catch { /* 무시 */ }
+    }
+  } catch { /* 저장소 접근 불가 시 기존 감지 순서 유지 */ }
+  window.addEventListener("jm-lang-change", e => {
+    const l = e && e.detail;
+    if ((l === "ko" || l === "en") && l !== lang) setLang(l);
+  });
+
   return {
     get lang() { return lang; },
     init, setLang, onChange: f => listeners.push(f),

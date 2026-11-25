@@ -1,0 +1,135 @@
+/** 리스크 — GET /risks 라이브 탐지 결과를 심각도순 카드로 표시 (lead 이상).
+ * 레거시 index.html의 loadRisks/jmGoRiskRef를 React Query로 이행. */
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "../../shared/api/client";
+import { useAppStore } from "../../shared/store/appStore";
+import { useI18n, registerI18n } from "../../shared/i18n";
+import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
+import { fmtAge, fmtTs } from "../../shared/lib/format";
+
+registerI18n({
+  ko: {
+    "risks.title": "리스크",
+    "risks.desc": "반복 실패·승인 지연·비용 급증 등 라이브 탐지 — 1분마다 갱신",
+    "risks.empty": "감지된 리스크 없음",
+    "risks.viewRef": "보기",
+    "sev.high": "높음",
+    "sev.medium": "중간",
+    "sev.low": "낮음",
+  },
+  en: {
+    "risks.title": "Risks",
+    "risks.desc": "Live detection: repeated failures, stale approvals, cost spikes — refreshes every minute",
+    "risks.empty": "No risks detected",
+    "risks.viewRef": "View",
+    "sev.high": "High",
+    "sev.medium": "Medium",
+    "sev.low": "Low",
+  },
+});
+
+interface RiskItem {
+  type?: string;
+  severity?: string;
+  title?: string;
+  detail?: string;
+  ref_kind?: string;
+  ref_id?: string;
+  at?: string;
+  age_seconds?: number | null;
+}
+interface RisksResponse { items?: RiskItem[] }
+
+// 레거시 RISK_SEV_RANK 대응 (critical도 최상위)
+const SEV_RANK: Record<string, number> = { high: 0, critical: 0, med: 1, medium: 1, low: 2 };
+
+function sevTone(sev: string): "err" | "warn" | "muted" {
+  const s = sev.toLowerCase();
+  if (s === "high" || s === "critical") return "err";
+  if (s === "med" || s === "medium") return "warn";
+  return "muted";
+}
+
+function sevLabel(sev: string, t: (k: string, f?: string) => string): string {
+  const s = sev.toLowerCase();
+  if (s === "high" || s === "critical") return t("sev.high", "높음");
+  if (s === "med" || s === "medium") return t("sev.medium", "중간");
+  return t("sev.low", "낮음");
+}
+
+// 레거시 jmGoRiskRef — ref_kind별 대상 뷰로 이동
+function goToRef(kind: string | undefined, setView: (v: "runs" | "sessionlog" | "triggers" | "inbox") => void) {
+  const k = String(kind || "").toLowerCase();
+  if (k.includes("run")) setView("runs");
+  else if (k.includes("session")) setView("sessionlog");
+  else if (k.includes("trigger")) setView("triggers");
+  else setView("inbox");
+}
+
+export default function RisksPage() {
+  const { t } = useI18n();
+  const setView = useAppStore((s) => s.setView);
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ["risks"],
+    queryFn: () => apiGet<RisksResponse>("/risks"),
+    refetchInterval: 60000,
+    retry: 1, // lead 권한 없으면 403 — 반복 재시도하지 않음
+  });
+
+  const items = (data?.items || [])
+    .slice()
+    .sort((a, b) => {
+      const ra = SEV_RANK[String(a.severity || "").toLowerCase()] ?? 3;
+      const rb = SEV_RANK[String(b.severity || "").toLowerCase()] ?? 3;
+      if (ra !== rb) return ra - rb;
+      return (a.age_seconds ?? 1e18) - (b.age_seconds ?? 1e18); // 최신 우선
+    });
+
+  return (
+    <div className="mx-auto max-w-4xl p-4">
+      <PageHead
+        title={t("risks.title", "리스크")}
+        desc={t("risks.desc", "반복 실패·승인 지연·비용 급증 등 라이브 탐지")}
+      >
+        <Button variant="secondary" onClick={() => refetch()} className="text-xs">
+          {t("common.refresh", "새로고침")}
+        </Button>
+      </PageHead>
+      {isLoading && <Spinner />}
+      {error && (
+        <ErrorBox message={error instanceof Error ? error.message : String(error)} onRetry={() => refetch()} />
+      )}
+      {data && !items.length && !error && <Empty>{t("risks.empty", "감지된 리스크 없음")}</Empty>}
+      <div className="space-y-3">
+        {items.map((r, i) => {
+          const sev = String(r.severity || "low");
+          return (
+            <Card key={`${r.type}:${r.ref_kind}:${r.ref_id}:${i}`} className="border-l-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={sevTone(sev)}>{sevLabel(sev, t)}</Badge>
+                <span className="text-sm font-semibold text-ink">{r.title || r.type || "리스크"}</span>
+                <span className="ml-auto text-xs text-muted">
+                  {r.type ? <span className="mr-1 rounded bg-surface-hover px-1">{r.type}</span> : null}
+                  {fmtAge(r.age_seconds)} · {fmtTs(r.at)}
+                </span>
+              </div>
+              {r.detail ? <div className="mt-2 text-sm text-ink-2">{r.detail}</div> : null}
+              {r.ref_kind && r.ref_id ? (
+                <div className="mt-2">
+                  <Button
+                    variant="secondary"
+                    className="px-2.5 py-1 text-xs"
+                    onClick={() => goToRef(r.ref_kind, setView)}
+                  >
+                    {r.ref_kind} {t("risks.viewRef", "보기")}
+                  </Button>
+                </div>
+              ) : null}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

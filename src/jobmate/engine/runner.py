@@ -32,6 +32,7 @@ from .functions import FUNCTIONS, FunctionContext
 from .guards import detect_injection, wrap_untrusted
 from .schemas import SCHEMAS
 from .state import HarnessState, initial_state
+from .trace import graph_config
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -656,7 +657,7 @@ class WorkflowRunner:
         state = initial_state(run_id, self.spec.key, gmail_ctx)
         self.store.update_run(run_id, status=RunStatus.RUNNING)
         logger.info("run %s invoke workflow=%s", run_id, self.spec.key)
-        config = {"configurable": {"thread_id": run_id}}
+        config = graph_config(run_id, workflow=self.spec.key, run_id=run_id)
         return self._graph.invoke(state, config)
 
     def resume(self, run_id: str, decision: dict[str, Any]) -> HarnessState:
@@ -674,7 +675,7 @@ class WorkflowRunner:
                 f"run {run_id} resume rejected: status={run.status.value} "
                 "(expected waiting_approval)"
             )
-        config = {"configurable": {"thread_id": run_id}}
+        config = graph_config(run_id, workflow=self.spec.key, run_id=run_id)
         return self._graph.invoke(Command(resume=decision), config)
 
 

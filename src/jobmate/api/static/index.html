@@ -1155,7 +1155,7 @@
     <span style="flex:1">홈 화면에 추가하면 앱처럼 사용할 수 있고 알림을 받을 수 있습니다.<br>
       <b>Safari 공유 버튼 → '홈 화면에 추가'</b> (iOS 16.4+)</span>
     <button class="secondary" id="ios-install-close"
-            style="padding:2px 10px;font-size:12px;flex:none">닫기</button>
+            style="padding:2px 10px;font-size:12px;flex:none" data-jm-i18n="common.close">닫기</button>
   </div>
 </div>
 
@@ -1203,7 +1203,7 @@
         <h3 data-jm-i18n="gmail.digestTitle">오늘의 요약</h3>
         <pre id="digest-body"></pre>
       </div>
-      <div id="gmail-cards"><div class="empty">로딩…</div></div>
+      <div id="gmail-cards"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- Agent-Office -->
@@ -1346,7 +1346,7 @@
         <p class="page-desc" data-jm-i18n="page.calendar.desc">추출·등록된 일정과 알림 예약</p>
       </div>
       <div id="calendar-review"></div>
-      <div id="calendar-cards"><div class="empty">로딩…</div></div>
+      <div id="calendar-cards"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- Skill Radar (skillRadar UI 포팅) -->
@@ -1482,7 +1482,7 @@
       <div class="card">
         <h3 style="margin:0 0 12px;font-size:15px"><span data-jm-i18n="runs.llmUsage">LLM 사용량</span>
           <span class="card-meta" data-jm-i18n="common.last7">최근 7일</span></h3>
-        <div id="llm-usage-body"><span class="empty">로딩…</span></div>
+        <div id="llm-usage-body"><span class="empty" data-jm-i18n="common.loading">로딩…</span></div>
       </div>
       <div class="card">
         <form id="run-form" class="grid-form">
@@ -1506,7 +1506,7 @@
         <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <select id="stats-wf" aria-label="통계 워크플로 필터"></select>
           <button class="secondary" id="stats-reload"
-                  style="padding:4px 10px;font-size:12px">새로고침</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
         </div>
         <div id="runs-stats-body" style="margin-top:10px">
           <span class="empty" data-jm-i18n="runs.statsEmpty">통계를 보려면 새로고침을 누르세요</span></div>
@@ -1520,7 +1520,7 @@
         <div class="table-scroll"><table>
           <thead><tr><th style="width:30px"><input type="checkbox" id="runs-cmp-all"
             title="전체 선택" data-jm-i18n-title="common.selectAll"></th><th>ID</th><th data-jm-i18n="th.workflow">워크플로</th><th data-jm-i18n="th.status">상태</th><th data-jm-i18n="th.created">생성</th><th></th></tr></thead>
-          <tbody id="runs-body"><tr><td colspan="6" class="empty">로딩…</td></tr></tbody>
+          <tbody id="runs-body"><tr><td colspan="6" class="empty" data-jm-i18n="common.loading">로딩…</td></tr></tbody>
         </table></div>
       </div>
       <div id="detail-body" class="card"><span class="empty" data-jm-i18n="runs.pickRun">실행을 선택하세요.</span></div>
@@ -1533,67 +1533,70 @@
         <p class="page-desc" data-jm-i18n="page.inbox.desc">받은 알림 · 자연어 쿼리 · 비용 요약 · 리포트</p>
       </div>
       <div class="card" data-widget="ask">
-        <div style="font-size:13px;font-weight:600;margin-bottom:6px">자연어 쿼리
-          <span class="card-meta">예: 오늘 실패한 run 보여줘</span></div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px"><span data-jm-i18n="inbox.ask">자연어 쿼리</span>
+          <span class="card-meta" data-jm-i18n="inbox.askHint">예: 오늘 실패한 run 보여줘</span></div>
         <form class="ask-form" id="ask-form">
-          <input id="ask-input" placeholder="오늘 실패한 run 보여줘" autocomplete="off">
-          <button type="submit" id="ask-btn">질문</button>
+          <input id="ask-input" placeholder="오늘 실패한 run 보여줘" autocomplete="off"
+                 data-jm-i18n-placeholder="inbox.askHint">
+          <button type="submit" id="ask-btn" data-jm-i18n="inbox.askBtn">질문</button>
         </form>
         <div id="ask-answer" style="margin-top:10px"></div>
       </div>
       <div class="card" data-widget="inbox" id="inbox-card">
         <div class="card-top" style="justify-content:space-between">
-          <h3 style="margin:0;font-size:15px">알림함
+          <h3 style="margin:0;font-size:15px"><span data-jm-i18n="inbox.box">알림함</span>
             <span class="card-meta" id="inbox-count"></span></h3>
           <button class="secondary" id="inbox-read-all"
-                  style="padding:4px 10px;font-size:12px">모두 읽음</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="inbox.markAll">모두 읽음</button>
         </div>
-        <div id="inbox-list"><div class="empty">로딩…</div></div>
+        <div id="inbox-list"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
       </div>
       <div class="card" data-widget="usage">
-        <h3 style="margin:0 0 8px;font-size:15px">비용 요약
-          <span class="card-meta">최근 30일 · LLM/세션 비용</span></h3>
-        <div id="usage-body"><span class="empty">로딩…</span></div>
+        <h3 style="margin:0 0 8px;font-size:15px"><span data-jm-i18n="inbox.usage">비용 요약</span>
+          <span class="card-meta" data-jm-i18n="inbox.usageMeta">최근 30일 · LLM/세션 비용</span></h3>
+        <div id="usage-body"><span class="empty" data-jm-i18n="common.loading">로딩…</span></div>
       </div>
       <div class="card" data-widget="reports">
-        <h3 style="margin:0 0 8px;font-size:15px">리포트</h3>
+        <h3 style="margin:0 0 8px;font-size:15px" data-jm-i18n="inbox.reports">리포트</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
           <button class="secondary rpt-btn" data-kind="daily"
-                  style="padding:4px 12px;font-size:12px">일일 리포트</button>
+                  style="padding:4px 12px;font-size:12px" data-jm-i18n="rpt.daily">일일 리포트</button>
           <button class="secondary rpt-btn" data-kind="weekly"
-                  style="padding:4px 12px;font-size:12px">주간 리포트</button>
+                  style="padding:4px 12px;font-size:12px" data-jm-i18n="rpt.weekly">주간 리포트</button>
           <button class="secondary rpt-btn" data-kind="exec_daily"
-                  style="padding:4px 12px;font-size:12px">경영 일일</button>
+                  style="padding:4px 12px;font-size:12px" data-jm-i18n="rpt.execDaily">경영 일일</button>
           <button class="secondary rpt-btn" data-kind="exec_weekly"
-                  style="padding:4px 12px;font-size:12px">경영 주간</button>
+                  style="padding:4px 12px;font-size:12px" data-jm-i18n="rpt.execWeekly">경영 주간</button>
           <button class="secondary" id="rpt-generate"
-                  style="padding:4px 12px;font-size:12px">생성</button>
+                  style="padding:4px 12px;font-size:12px" data-jm-i18n="common.create">생성</button>
           <span class="card-meta" id="rpt-kind"></span>
         </div>
-        <div id="rpt-body"><span class="empty">리포트를 불러오려면 버튼을 누르세요</span></div>
+        <div id="rpt-body"><span class="empty" data-jm-i18n="inbox.rptEmpty">리포트를 불러오려면 버튼을 누르세요</span></div>
       </div>
       <div class="card" data-widget="cards" id="cards-widget">
         <div class="card-top" style="justify-content:space-between">
-          <h3 style="margin:0;font-size:15px">카드</h3>
+          <h3 style="margin:0;font-size:15px" data-jm-i18n="inbox.cards">카드</h3>
           <button class="secondary" id="card-add-btn"
-                  style="padding:4px 10px;font-size:12px">+ 카드 추가</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="card.add">+ 카드 추가</button>
         </div>
         <div id="card-form" hidden style="margin-bottom:10px">
           <div class="grid-form">
-            <input id="card-title" placeholder="제목" autocomplete="off">
+            <input id="card-title" placeholder="제목" autocomplete="off"
+                   data-jm-i18n-placeholder="card.titlePh">
             <input id="card-url" placeholder="URL" autocomplete="off">
-            <input id="card-jsonpath" placeholder="JSON 경로 (선택, 예: $.value)" autocomplete="off">
+            <input id="card-jsonpath" placeholder="JSON 경로 (선택, 예: $.value)" autocomplete="off"
+                   data-jm-i18n-placeholder="card.jsonpathPh">
             <div class="mini-form">
-              <label style="font-size:13px"><input type="checkbox" id="card-enabled" checked> 활성</label>
+              <label style="font-size:13px"><input type="checkbox" id="card-enabled" checked> <span data-jm-i18n="card.enabled">활성</span></label>
               <button type="button" class="secondary" id="card-save"
-                      style="padding:4px 12px;font-size:12px">저장</button>
+                      style="padding:4px 12px;font-size:12px" data-jm-i18n="common.save">저장</button>
               <button type="button" class="secondary" id="card-cancel"
-                      style="padding:4px 12px;font-size:12px">취소</button>
+                      style="padding:4px 12px;font-size:12px" data-jm-i18n="common.cancel">취소</button>
             </div>
             <span class="status-line" id="card-status" role="status"></span>
           </div>
         </div>
-        <div id="cards-list"><span class="empty">카드 없음</span></div>
+        <div id="cards-list"><span class="empty" data-jm-i18n="card.empty">카드 없음</span></div>
       </div>
     </section>
 
@@ -1603,16 +1606,16 @@
         <h1 class="page-title" data-jm-i18n="page.insights.title">인사이트</h1>
         <p class="page-desc" data-jm-i18n="page.insights.desc">세션 · 실행 · 비용 통계</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-          <select id="ins-days" aria-label="통계 기간">
-            <option value="7">최근 7일</option>
-            <option value="30" selected>최근 30일</option>
-            <option value="90">최근 90일</option>
+          <select id="ins-days" aria-label="통계 기간" data-jm-i18n-aria="ins.daysAria">
+            <option value="7" data-jm-i18n="common.last7">최근 7일</option>
+            <option value="30" data-jm-i18n="common.last30" selected>최근 30일</option>
+            <option value="90" data-jm-i18n="common.last90">최근 90일</option>
           </select>
           <button class="secondary" id="ins-reload"
-                  style="padding:4px 10px;font-size:12px">새로고침</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
         </div>
       </div>
-      <div id="ins-body"><div class="empty">로딩…</div></div>
+      <div id="ins-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 자동화 (읽기 전용) -->
@@ -1621,7 +1624,7 @@
         <h1 class="page-title" data-jm-i18n="page.automation.title">자동화</h1>
         <p class="page-desc" data-jm-i18n="page.automation.desc">스케줄 · 알림 규칙 · 리포트 상태 — 관리는 Agent-Office/설정에서</p>
       </div>
-      <div id="auto-body"><div class="empty">로딩…</div></div>
+      <div id="auto-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 시스템 -->
@@ -1630,9 +1633,9 @@
         <h1 class="page-title" data-jm-i18n="page.system.title">시스템</h1>
         <p class="page-desc" data-jm-i18n="page.system.desc">서버 · DB · 에이전트 브리지 상태</p>
         <button class="secondary" id="sys-reload"
-                style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
+                style="margin-top:8px;padding:4px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
       </div>
-      <div id="sys-body"><div class="empty">로딩…</div></div>
+      <div id="sys-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 아카이브 -->
@@ -1644,39 +1647,40 @@
       <div class="card">
         <form id="arch-form" style="display:flex;gap:8px;flex-wrap:wrap">
           <input id="arch-q" placeholder="검색어" autocomplete="off"
+                 data-jm-i18n-placeholder="arch.qPh"
                  style="flex:1;min-width:180px">
-          <select id="arch-kind" aria-label="종류 필터">
-            <option value="">전체</option>
-            <option value="report">리포트</option>
-            <option value="run">실행</option>
-            <option value="session">세션</option>
+          <select id="arch-kind" aria-label="종류 필터" data-jm-i18n-aria="arch.kindAria">
+            <option value="" data-jm-i18n="common.all">전체</option>
+            <option value="report" data-jm-i18n="arch.kindReport">리포트</option>
+            <option value="run" data-jm-i18n="common.runNoun">실행</option>
+            <option value="session" data-jm-i18n="common.sessionNoun">세션</option>
           </select>
-          <button type="submit">검색</button>
+          <button type="submit" data-jm-i18n="common.search">검색</button>
         </form>
       </div>
-      <div id="arch-body"><div class="empty">검색어를 입력하고 검색을 누르세요</div></div>
+      <div id="arch-body"><div class="empty" data-jm-i18n="arch.empty">검색어를 입력하고 검색을 누르세요</div></div>
       <div class="card">
-        <h3 style="margin:0 0 8px;font-size:15px">내보내기 / 공유</h3>
+        <h3 style="margin:0 0 8px;font-size:15px" data-jm-i18n="arch.exportTitle">내보내기 / 공유</h3>
         <div class="mini-form">
-          <select id="exp-kind" aria-label="내보내기 종류">
-            <option value="runs">실행</option>
-            <option value="sessions">세션</option>
-            <option value="usage">사용량</option>
-            <option value="reports">리포트</option>
+          <select id="exp-kind" data-jm-i18n-aria="arch.expKindAria" aria-label="내보내기 종류">
+            <option value="runs" data-jm-i18n="common.runNoun">실행</option>
+            <option value="sessions" data-jm-i18n="common.sessionNoun">세션</option>
+            <option value="usage" data-jm-i18n="arch.kindUsage">사용량</option>
+            <option value="reports" data-jm-i18n="inbox.reports">리포트</option>
           </select>
-          <select id="exp-format" aria-label="형식">
+          <select id="exp-format" data-jm-i18n-aria="arch.expFormatAria" aria-label="형식">
             <option value="csv">CSV</option>
             <option value="json">JSON</option>
           </select>
-          <select id="exp-days" aria-label="기간">
-            <option value="7">최근 7일</option>
-            <option value="30" selected>최근 30일</option>
-            <option value="90">최근 90일</option>
+          <select id="exp-days" data-jm-i18n-aria="arch.expDaysAria" aria-label="기간">
+            <option value="7" data-jm-i18n="common.last7">최근 7일</option>
+            <option value="30" data-jm-i18n="common.last30" selected>최근 30일</option>
+            <option value="90" data-jm-i18n="common.last90">최근 90일</option>
           </select>
-          <button class="secondary" id="exp-dl" style="padding:6px 12px;font-size:13px">다운로드</button>
-          <button class="secondary" id="share-open" style="padding:6px 12px;font-size:13px">공유 링크 만들기</button>
+          <button class="secondary" id="exp-dl" style="padding:6px 12px;font-size:13px" data-jm-i18n="common.download">다운로드</button>
+          <button class="secondary" id="share-open" style="padding:6px 12px;font-size:13px" data-jm-i18n="share.open">공유 링크 만들기</button>
         </div>
-        <div class="card-meta" style="margin-top:6px">공유 링크는 로그인 없이 열리는 읽기 전용 URL입니다.</div>
+        <div class="card-meta" style="margin-top:6px" data-jm-i18n="share.hint">공유 링크는 로그인 없이 열리는 읽기 전용 URL입니다.</div>
       </div>
     </section>
 
@@ -1686,18 +1690,18 @@
         <h1 class="page-title" data-jm-i18n="page.cost.title">비용</h1>
         <p class="page-desc" data-jm-i18n="page.cost.desc">LLM/세션 비용 상세 — 월 예산은 설정에서 관리</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-          <select id="cost-days" aria-label="비용 기간">
-            <option value="7">최근 7일</option>
-            <option value="30" selected>최근 30일</option>
-            <option value="90">최근 90일</option>
+          <select id="cost-days" aria-label="비용 기간" data-jm-i18n-aria="cost.daysAria">
+            <option value="7" data-jm-i18n="common.last7">최근 7일</option>
+            <option value="30" data-jm-i18n="common.last30" selected>최근 30일</option>
+            <option value="90" data-jm-i18n="common.last90">최근 90일</option>
           </select>
           <button class="secondary" id="cost-reload"
-                  style="padding:4px 10px;font-size:12px">새로고침</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
           <button class="secondary" id="cost-settings"
-                  style="padding:4px 10px;font-size:12px">예산 설정</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="cost.budget">예산 설정</button>
         </div>
       </div>
-      <div id="cost-body"><div class="empty">로딩…</div></div>
+      <div id="cost-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 개발자 (읽기 전용) -->
@@ -1706,7 +1710,7 @@
         <h1 class="page-title" data-jm-i18n="page.developer.title">개발자</h1>
         <p class="page-desc" data-jm-i18n="page.developer.desc">연동 · 인증 설정 상태</p>
       </div>
-      <div id="dev-body"><div class="empty">로딩…</div></div>
+      <div id="dev-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 플레이북 -->
@@ -1716,22 +1720,24 @@
         <p class="page-desc" data-jm-i18n="page.playbooks.desc">자주 쓰는 워크플로 실행 템플릿</p>
       </div>
       <div class="card">
-        <h3 style="margin:0 0 10px;font-size:15px">새 플레이북</h3>
+        <h3 style="margin:0 0 10px;font-size:15px" data-jm-i18n="pb.new">새 플레이북</h3>
         <form id="pb-form" class="grid-form">
           <div class="mini-form">
             <input id="pb-name" placeholder="이름 (예: 주간 리뷰)" required
+                   data-jm-i18n-placeholder="pb.namePh"
                    style="flex:1;min-width:180px" autocomplete="off">
-            <select id="pb-workflow" aria-label="워크플로"></select>
+            <select id="pb-workflow" aria-label="워크플로" data-jm-i18n-aria="th.workflow"></select>
           </div>
           <textarea id="pb-task" rows="3" required
-            placeholder="작업 내용 (task) — 플레이북 실행 시 이 입력이 사용됩니다"></textarea>
+            placeholder="작업 내용 (task) — 플레이북 실행 시 이 입력이 사용됩니다"
+            data-jm-i18n-placeholder="pb.taskPh"></textarea>
           <div>
-            <button type="submit">생성</button>
+            <button type="submit" data-jm-i18n="common.create">생성</button>
             <span class="status-line" id="pb-status" role="status"></span>
           </div>
         </form>
       </div>
-      <div id="pb-list"><div class="empty">로딩…</div></div>
+      <div id="pb-list"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 커넥터 -->
@@ -1741,7 +1747,7 @@
         <p class="page-desc" data-jm-i18n="page.connectors.desc">외부 서비스 연동 — 토큰은 서버에 암호화되어 저장됩니다</p>
       </div>
       <div class="card">
-        <h3 style="margin:0 0 10px;font-size:15px">커넥터 추가</h3>
+        <h3 style="margin:0 0 10px;font-size:15px" data-jm-i18n="conn.add">커넥터 추가</h3>
         <form id="conn-form" class="grid-form">
           <div class="mini-form">
             <select id="conn-type" aria-label="커넥터 종류">
@@ -1752,16 +1758,17 @@
               <option value="webhook">Webhook</option>
             </select>
             <input id="conn-name" placeholder="이름 (예: 회사 GitHub)" required
+                   data-jm-i18n-placeholder="conn.namePh"
                    style="flex:1;min-width:180px" autocomplete="off">
           </div>
           <div class="mini-form" id="conn-config"></div>
           <div>
-            <button type="submit">추가</button>
+            <button type="submit" data-jm-i18n="common.add">추가</button>
             <span class="status-line" id="conn-status" role="status"></span>
           </div>
         </form>
       </div>
-      <div id="conn-list"><div class="empty">로딩…</div></div>
+      <div id="conn-list"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 트리거 -->
@@ -1771,46 +1778,47 @@
         <p class="page-desc" data-jm-i18n="page.triggers.desc">세션 상태가 조건에 맞으면 워크플로/플레이북/리포트를 자동 실행</p>
       </div>
       <div class="card">
-        <h3 style="margin:0 0 10px;font-size:15px">트리거 추가</h3>
+        <h3 style="margin:0 0 10px;font-size:15px" data-jm-i18n="trg.add">트리거 추가</h3>
         <form id="trg-form" class="grid-form">
-          <div style="font-size:12px;font-weight:700;color:var(--muted)">조건 (match)</div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted)" data-jm-i18n="trg.match">조건 (match)</div>
           <div class="mini-form">
-            <select id="trg-tool" aria-label="도구">
-              <option value="">도구: 전체</option>
+            <select id="trg-tool" aria-label="도구" data-jm-i18n-aria="trg.toolAria">
+              <option value="" data-jm-i18n="trg.toolAll">도구: 전체</option>
               <option value="devin">Devin</option>
               <option value="codex">Codex</option>
               <option value="claude">Claude</option>
               <option value="gemini">Gemini</option>
             </select>
-            <input id="trg-project" placeholder="프로젝트 (선택)" autocomplete="off">
-            <select id="trg-state" aria-label="상태">
-              <option value="">상태: 전체</option>
-              <option value="working">작업 중</option>
-              <option value="decision">결정 대기</option>
-              <option value="rest">휴식</option>
+            <input id="trg-project" placeholder="프로젝트 (선택)" autocomplete="off"
+                   data-jm-i18n-placeholder="trg.projectPh">
+            <select id="trg-state" aria-label="상태" data-jm-i18n-aria="th.status">
+              <option value="" data-jm-i18n="trg.stateAll">상태: 전체</option>
+              <option value="working" data-jm-i18n="trg.stateWorking">작업 중</option>
+              <option value="decision" data-jm-i18n="trg.stateDecision">결정 대기</option>
+              <option value="rest" data-jm-i18n="trg.stateRest">휴식</option>
             </select>
           </div>
-          <div style="font-size:12px;font-weight:700;color:var(--muted)">동작 (action)</div>
+          <div style="font-size:12px;font-weight:700;color:var(--muted)" data-jm-i18n="trg.action">동작 (action)</div>
           <div class="mini-form">
-            <select id="trg-action" aria-label="동작 종류">
-              <option value="run_workflow">워크플로 실행</option>
-              <option value="run_playbook">플레이북 실행</option>
-              <option value="report">리포트 생성</option>
+            <select id="trg-action" aria-label="동작 종류" data-jm-i18n-aria="trg.actionAria">
+              <option value="run_workflow" data-jm-i18n="trg.actRun">워크플로 실행</option>
+              <option value="run_playbook" data-jm-i18n="trg.actPlaybook">플레이북 실행</option>
+              <option value="report" data-jm-i18n="trg.actReport">리포트 생성</option>
             </select>
-            <select id="trg-wf" aria-label="워크플로" hidden></select>
-            <select id="trg-pb" aria-label="플레이북" hidden></select>
-            <select id="trg-report" aria-label="리포트 종류" hidden>
-              <option value="daily">일일 리포트</option>
-              <option value="weekly">주간 리포트</option>
+            <select id="trg-wf" aria-label="워크플로" hidden data-jm-i18n-aria="th.workflow"></select>
+            <select id="trg-pb" aria-label="플레이북" hidden data-jm-i18n-aria="page.playbooks.title"></select>
+            <select id="trg-report" aria-label="리포트 종류" hidden data-jm-i18n-aria="inbox.reports">
+              <option value="daily" data-jm-i18n="rpt.daily">일일 리포트</option>
+              <option value="weekly" data-jm-i18n="rpt.weekly">주간 리포트</option>
             </select>
           </div>
           <div>
-            <button type="submit">추가</button>
+            <button type="submit" data-jm-i18n="common.add">추가</button>
             <span class="status-line" id="trg-status" role="status"></span>
           </div>
         </form>
       </div>
-      <div id="trg-list"><div class="empty">로딩…</div></div>
+      <div id="trg-list"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 워크플로 빌더 -->
@@ -1821,30 +1829,32 @@
       </div>
       <div class="wf-grid">
         <div class="card" style="margin-bottom:0">
-          <h3 style="margin:0 0 8px;font-size:15px">커스텀 워크플로</h3>
-          <div id="wf-custom-list"><div class="empty">로딩…</div></div>
+          <h3 style="margin:0 0 8px;font-size:15px" data-jm-i18n="wf.custom">커스텀 워크플로</h3>
+          <div id="wf-custom-list"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
         </div>
         <div>
           <div class="card">
             <div class="mini-form" style="margin-bottom:8px">
               <input id="wf-name" placeholder="워크플로 이름 (key)" autocomplete="off"
+                     data-jm-i18n-placeholder="wf.namePh"
                      style="flex:1;min-width:180px">
               <button class="secondary" id="wf-template"
-                      style="padding:6px 12px;font-size:13px">템플릿 삽입</button>
+                      style="padding:6px 12px;font-size:13px" data-jm-i18n="wf.template">템플릿 삽입</button>
             </div>
             <textarea id="wf-spec" class="spec-editor" spellcheck="false"
               placeholder='{"key":"...","version":"0.1.0","entry":"...","stages":[...]}'></textarea>
             <div class="mini-form" style="margin-top:10px">
               <input id="wf-task" placeholder="실행 시 task 입력 (선택)" autocomplete="off"
+                     data-jm-i18n-placeholder="wf.taskPh"
                      style="flex:1;min-width:180px">
-              <button id="wf-save" style="padding:6px 14px;font-size:13px">저장</button>
+              <button id="wf-save" style="padding:6px 14px;font-size:13px" data-jm-i18n="common.save">저장</button>
               <button class="secondary" id="wf-run"
-                      style="padding:6px 14px;font-size:13px">실행</button>
+                      style="padding:6px 14px;font-size:13px" data-jm-i18n="common.run">실행</button>
             </div>
             <div id="wf-status" class="status-line" role="status"></div>
           </div>
           <div class="card">
-            <h3 style="margin:0 0 6px;font-size:14px">스펙 형식</h3>
+            <h3 style="margin:0 0 6px;font-size:14px" data-jm-i18n="wf.specTitle">스펙 형식</h3>
             <pre class="block" style="font-size:11.5px">{
   "key": "my_flow", "version": "0.1.0",
   "entry": "analyze",
@@ -1868,8 +1878,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
       </div>
       <div class="card">
         <div class="table-scroll"><table>
-          <thead><tr><th>이메일</th><th>이름</th><th>역할</th><th>실행 수</th><th>최근 활동</th></tr></thead>
-          <tbody id="team-body"><tr><td colspan="5" class="empty">로딩…</td></tr></tbody>
+          <thead><tr><th data-jm-i18n="th.email">이메일</th><th data-jm-i18n="th.name">이름</th><th data-jm-i18n="th.role">역할</th><th data-jm-i18n="th.runs">실행 수</th><th data-jm-i18n="th.lastActivity">최근 활동</th></tr></thead>
+          <tbody id="team-body"><tr><td colspan="5" class="empty" data-jm-i18n="common.loading">로딩…</td></tr></tbody>
         </table></div>
       </div>
     </section>
@@ -1882,8 +1892,8 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
       </div>
       <div class="card">
         <div class="table-scroll"><table>
-          <thead><tr><th>시각</th><th>행위자</th><th>행동</th><th>대상</th><th>상세</th></tr></thead>
-          <tbody id="audit-body"><tr><td colspan="5" class="empty">로딩…</td></tr></tbody>
+          <thead><tr><th data-jm-i18n="th.time">시각</th><th data-jm-i18n="th.actor">행위자</th><th data-jm-i18n="th.action">행동</th><th data-jm-i18n="th.target">대상</th><th data-jm-i18n="th.detail">상세</th></tr></thead>
+          <tbody id="audit-body"><tr><td colspan="5" class="empty" data-jm-i18n="common.loading">로딩…</td></tr></tbody>
         </table></div>
       </div>
     </section>
@@ -1895,21 +1905,24 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
         <p class="page-desc" data-jm-i18n="page.projects.desc">세션·실행을 프로젝트별로 묶어 보기 — 프로젝트가 없는 세션은 '(기타)'로 표시됩니다</p>
       </div>
       <div class="card">
-        <h3 style="margin:0 0 10px;font-size:15px">프로젝트 추가</h3>
+        <h3 style="margin:0 0 10px;font-size:15px" data-jm-i18n="proj.add">프로젝트 추가</h3>
         <form id="proj-form" class="mini-form">
           <input id="proj-name" placeholder="이름" required autocomplete="off"
+                 data-jm-i18n-placeholder="proj.namePh"
                  style="flex:1;min-width:140px">
           <input id="proj-color" placeholder="색상 (#hex)" autocomplete="off"
+                 data-jm-i18n-placeholder="proj.colorPh"
                  style="width:110px">
           <input id="proj-goal" placeholder="목표" autocomplete="off"
+                 data-jm-i18n-placeholder="proj.goalPh"
                  style="flex:1;min-width:140px">
           <input id="proj-target" type="number" min="0" placeholder="목표 수"
-                 aria-label="목표 수" style="width:90px">
-          <button type="submit" style="padding:6px 14px;font-size:13px">추가</button>
+                 aria-label="목표 수" data-jm-i18n-aria="proj.targetAria" style="width:90px">
+          <button type="submit" style="padding:6px 14px;font-size:13px" data-jm-i18n="common.add">추가</button>
           <span class="status-line" id="proj-status" role="status"></span>
         </form>
       </div>
-      <div id="proj-body"><div class="empty">로딩…</div></div>
+      <div id="proj-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 세션 기록 (lead+) -->
@@ -1920,9 +1933,10 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
       </div>
       <div class="card">
         <input id="sl-q" type="search" placeholder="세션 검색 (도구/프로젝트/제목/키)…"
+               data-jm-i18n-placeholder="sl.qPh"
                autocomplete="off" style="width:100%">
       </div>
-      <div id="sl-list"><div class="empty">로딩…</div></div>
+      <div id="sl-list"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 리스크 (lead+) -->
@@ -1931,9 +1945,9 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
         <h1 class="page-title" data-jm-i18n="page.risks.title">리스크</h1>
         <p class="page-desc" data-jm-i18n="page.risks.desc">실패·지연·오류 징후를 심각도 순으로 표시</p>
         <button class="secondary" id="risk-reload"
-                style="margin-top:8px;padding:4px 10px;font-size:12px">새로고침</button>
+                style="margin-top:8px;padding:4px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
       </div>
-      <div id="risk-body"><div class="empty">로딩…</div></div>
+      <div id="risk-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 승인 대기 (lead+) -->
@@ -1942,12 +1956,12 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
         <h1 class="page-title" data-jm-i18n="page.approvals.title">승인 대기</h1>
         <p class="page-desc" data-jm-i18n="page.approvals.desc">실행·세션·트리거 승인을 오래된 순으로 — 30초마다 자동 갱신</p>
         <div style="display:flex;gap:8px;margin-top:8px">
-          <button id="appr-approve-all" style="padding:4px 10px;font-size:12px">전체 승인</button>
+          <button id="appr-approve-all" style="padding:4px 10px;font-size:12px" data-jm-i18n="appr.approveAll">전체 승인</button>
           <button class="secondary" id="appr-reload"
-                  style="padding:4px 10px;font-size:12px">새로고침</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
         </div>
       </div>
-      <div id="appr-body"><div class="empty">로딩…</div></div>
+      <div id="appr-body"><div class="empty" data-jm-i18n="common.loading">로딩…</div></div>
     </section>
 
     <!-- 성과 (lead+) -->
@@ -1956,35 +1970,35 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
         <h1 class="page-title" data-jm-i18n="page.perf.title">성과</h1>
         <p class="page-desc" data-jm-i18n="page.perf.desc">워크플로 실행을 모델/에이전트/도구별로 비교</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-          <select id="perf-wf" aria-label="워크플로"></select>
-          <select id="perf-group" aria-label="그룹 기준">
-            <option value="model">모델별</option>
-            <option value="agent">에이전트별</option>
-            <option value="tool">도구별</option>
+          <select id="perf-wf" aria-label="워크플로" data-jm-i18n-aria="th.workflow"></select>
+          <select id="perf-group" aria-label="그룹 기준" data-jm-i18n-aria="perf.groupAria">
+            <option value="model" data-jm-i18n="perf.byModel">모델별</option>
+            <option value="agent" data-jm-i18n="perf.byAgent">에이전트별</option>
+            <option value="tool" data-jm-i18n="perf.byTool">도구별</option>
           </select>
           <button class="secondary" id="perf-reload"
-                  style="padding:4px 10px;font-size:12px">조회</button>
+                  style="padding:4px 10px;font-size:12px" data-jm-i18n="perf.query">조회</button>
         </div>
       </div>
-      <div id="perf-body"><div class="empty">조건을 선택하고 조회를 누르세요</div></div>
+      <div id="perf-body"><div class="empty" data-jm-i18n="perf.empty">조건을 선택하고 조회를 누르세요</div></div>
     </section>
   </main>
 </div>
 
 <dialog id="sl-dialog" style="width:min(760px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <h2 style="font-size:18px;margin:0" id="sl-title">세션 기록</h2>
+    <h2 style="font-size:18px;margin:0" id="sl-title" data-jm-i18n="page.sessionlog.title">세션 기록</h2>
     <button class="secondary" id="sl-close" style="padding:4px 12px">✕</button>
   </div>
-  <div id="sl-body"><span class="empty">로딩…</span></div>
+  <div id="sl-body"><span class="empty" data-jm-i18n="common.loading">로딩…</span></div>
 </dialog>
 
 <dialog id="compare-dialog" style="width:min(960px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <h2 style="font-size:18px;margin:0">실행 비교</h2>
+    <h2 style="font-size:18px;margin:0" data-jm-i18n="dlg.compare">실행 비교</h2>
     <button class="secondary" id="compare-close" style="padding:4px 12px">✕</button>
   </div>
-  <div id="compare-body" class="table-scroll"><span class="empty">로딩…</span></div>
+  <div id="compare-body" class="table-scroll"><span class="empty" data-jm-i18n="common.loading">로딩…</span></div>
 </dialog>
 
 <dialog id="settings-dialog" style="width:min(560px,94vw);padding:24px">
@@ -2028,13 +2042,13 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
       <div id="health-body" style="margin-top:8px">
         <span class="card-meta">열면 로드</span></div>
       <button type="button" class="secondary" id="health-reload"
-              style="margin-top:6px;padding:3px 10px;font-size:12px">새로고침</button>
+              style="margin-top:6px;padding:3px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
     </details>
     <div id="users-section" hidden style="margin-top:14px">
       <div style="font-size:13px;font-weight:600;margin-bottom:2px">사용자</div>
       <div class="table-scroll"><table>
         <thead><tr><th>이메일</th><th>역할</th><th>생성일</th></tr></thead>
-        <tbody id="users-body"><tr><td colspan="3" class="empty">로딩…</td></tr></tbody>
+        <tbody id="users-body"><tr><td colspan="3" class="empty" data-jm-i18n="common.loading">로딩…</td></tr></tbody>
       </table></div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -2047,64 +2061,69 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
 <div id="auth-overlay" hidden
      style="position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:100">
   <div class="card" style="width:340px;position:relative">
-    <button id="auth-close" title="닫기"
+    <button id="auth-close" title="닫기" data-jm-i18n-title="common.close"
             style="position:absolute;top:10px;right:12px;border:none;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;padding:4px;line-height:1">✕</button>
-    <div class="card-title">jobMate 로그인</div>
+    <div class="card-title" data-jm-i18n="auth.title">jobMate 로그인</div>
     <div style="display:flex;gap:6px;margin:10px 0">
-      <button id="auth-tab-login" class="secondary auth-tab" style="flex:1">로그인</button>
-      <button id="auth-tab-signup" class="secondary auth-tab" style="flex:1">회원가입</button>
+      <button id="auth-tab-login" class="secondary auth-tab" style="flex:1" data-jm-i18n="auth.tabLogin">로그인</button>
+      <button id="auth-tab-signup" class="secondary auth-tab" style="flex:1" data-jm-i18n="auth.tabSignup">회원가입</button>
     </div>
     <input id="auth-email" type="email" placeholder="이메일"
+           data-jm-i18n-placeholder="auth.phEmail"
            style="width:100%;margin:6px 0;box-sizing:border-box">
     <input id="auth-name" placeholder="이름 (선택)" hidden
+           data-jm-i18n-placeholder="auth.phName"
            style="width:100%;margin:6px 0;box-sizing:border-box">
     <input id="auth-password" type="password" placeholder="비밀번호 (8자 이상)"
+           data-jm-i18n-placeholder="auth.phPassword"
            style="width:100%;margin:6px 0;box-sizing:border-box">
     <div id="auth-err" class="card-meta" role="alert"
          style="color:#e5484d;min-height:1em"></div>
     <div id="auth-info" class="card-meta" role="status"
          style="color:var(--muted);min-height:1em"></div>
     <button id="auth-resend" class="secondary" hidden
-            style="width:100%;margin:6px 0">인증 메일 재발송</button>
-    <button id="auth-submit" style="width:100%">로그인</button>
+            style="width:100%;margin:6px 0" data-jm-i18n="auth.resend">인증 메일 재발송</button>
+    <button id="auth-submit" style="width:100%" data-jm-i18n="auth.tabLogin">로그인</button>
     <a id="auth-google" href="/api/v1/auth/google"
-       style="display:block;text-align:center;margin-top:10px;padding:9px;border:1px solid var(--border-strong);border-radius:10px;color:var(--ink);text-decoration:none;font-weight:600;background:var(--surface)">Google로 계속하기</a>
+       style="display:block;text-align:center;margin-top:10px;padding:9px;border:1px solid var(--border-strong);border-radius:10px;color:var(--ink);text-decoration:none;font-weight:600;background:var(--surface)" data-jm-i18n="auth.google">Google로 계속하기</a>
   </div>
 </div>
 <div id="auth-needed" hidden
      style="position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:99;display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border-strong);border-radius:12px;padding:10px 14px;box-shadow:0 8px 30px rgba(0,0,0,.25)">
-  <span class="card-meta">로그인이 필요합니다 — 세션이 만료됐거나 로그인이 필요해요.</span>
-  <button id="auth-needed-btn" style="padding:6px 12px;font-size:13px">다시 로그인</button>
+  <span class="card-meta" data-jm-i18n="auth.needed">로그인이 필요합니다 — 세션이 만료됐거나 로그인이 필요해요.</span>
+  <button id="auth-needed-btn" style="padding:6px 12px;font-size:13px" data-jm-i18n="auth.neededBtn">다시 로그인</button>
 </div>
 
 <dialog id="share-dialog" style="width:min(480px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <h2 style="font-size:18px;margin:0">공유 링크 만들기</h2>
+    <h2 style="font-size:18px;margin:0" data-jm-i18n="share.title">공유 링크 만들기</h2>
     <button class="secondary" id="share-close" style="padding:4px 12px">✕</button>
   </div>
   <div class="grid-form">
-    <label style="font-size:13px;font-weight:600">종류
+    <label style="font-size:13px;font-weight:600"><span data-jm-i18n="share.kind">종류</span>
       <select id="share-kind" style="width:100%;margin-top:4px">
-        <option value="run">실행</option>
-        <option value="report">리포트</option>
-        <option value="insights">인사이트</option>
+        <option value="run" data-jm-i18n="common.runNoun">실행</option>
+        <option value="report" data-jm-i18n="inbox.reports">리포트</option>
+        <option value="insights" data-jm-i18n="page.insights.title">인사이트</option>
       </select></label>
-    <label style="font-size:13px;font-weight:600">참조 ID (선택 — run id 등)
+    <label style="font-size:13px;font-weight:600"><span data-jm-i18n="share.refId">참조 ID (선택 — run id 등)</span>
       <input id="share-ref" placeholder="비우면 최신 항목" autocomplete="off"
+             data-jm-i18n-placeholder="share.refPh"
              style="width:100%;margin-top:4px;box-sizing:border-box"></label>
-    <div><button id="share-create">링크 생성</button></div>
+    <div><button id="share-create" data-jm-i18n="share.create">링크 생성</button></div>
     <div id="share-result"></div>
   </div>
 </dialog>
 
 <!-- 모바일 요약 바 (≤820px에서만 표시) -->
-<nav id="mob-bar" aria-label="모바일 요약">
-  <button type="button" data-mob="approvals"><b id="mob-approval">–</b><span>승인 대기</span></button>
-  <button type="button" data-mob="runs"><b id="mob-runs">–</b><span>오늘 실행</span></button>
-  <button type="button" data-mob="office-sessions"><b id="mob-sessions">–</b><span>활성 세션</span></button>
-  <button type="button" data-mob="cost"><b id="mob-cost">–</b><span>월 비용</span></button>
+<nav id="mob-bar" aria-label="모바일 요약" data-jm-i18n-aria="mob.aria">
+  <button type="button" data-mob="approvals"><b id="mob-approval">–</b><span data-jm-i18n="mob.approvals">승인 대기</span></button>
+  <button type="button" data-mob="runs"><b id="mob-runs">–</b><span data-jm-i18n="mob.runs">오늘 실행</span></button>
+  <button type="button" data-mob="office-sessions"><b id="mob-sessions">–</b><span data-jm-i18n="mob.sessions">활성 세션</span></button>
+  <button type="button" data-mob="cost"><b id="mob-cost">–</b><span data-jm-i18n="mob.cost">월 비용</span></button>
 </nav>
 
+<script src="/static/i18n.js"></script>
 <script>
 const API = "/api/v1";
 // 서버(index 라우트)가 서빙 시 실제 키로 치환. 치환 안 된 플레이스홀더는 미주입으로 간주.
@@ -2112,6 +2131,347 @@ const EMBEDDED_API_KEY = "__JOBMATE_API_KEY__";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// ── i18n (ko/en) — /static/i18n.js 의 JM_I18N. 사전에 없는 키는 ko 원문/키로 fallback.
+// JS 렌더 문자열용 T(key, fallback, ...args): 사전에 있으면 번역, 없으면 fallback.
+if (window.JM_I18N) JM_I18N.register({
+  ko: {
+    "lang.label": "언어",
+    "hdr.push": "알림 켜기", "hdr.pushOff": "알림 끄기",
+    "hdr.logout": "로그아웃", "hdr.settings": "설정",
+    "common.close": "닫기", "common.loading": "로딩…", "common.refresh": "새로고침",
+    "common.run": "실행", "common.runNoun": "실행", "common.search": "검색",
+    "common.add": "추가", "common.create": "생성", "common.save": "저장",
+    "common.cancel": "취소", "common.download": "다운로드", "common.compare": "비교",
+    "common.all": "전체", "common.selectAll": "전체 선택",
+    "common.last7": "최근 7일", "common.last30": "최근 30일", "common.last90": "최근 90일",
+    "common.netDown": "연결 끊김 — 재시도 중", "common.retryNow": "지금 재시도",
+    "common.sessionNoun": "세션",
+    "nav.office": "Agent-Office", "nav.radar": "Skill Radar",
+    "nav.gmail": "Gmail Checker", "nav.calendar": "Calendar",
+    "nav.runs": "실행 이력", "nav.inbox": "알림", "nav.projects": "프로젝트",
+    "nav.sessionlog": "세션 기록", "nav.risks": "리스크", "nav.approvals": "승인",
+    "nav.perf": "성과", "nav.insights": "인사이트", "nav.automation": "자동화",
+    "nav.system": "시스템", "nav.archive": "아카이브", "nav.cost": "비용",
+    "nav.developer": "개발자", "nav.playbooks": "플레이북", "nav.connectors": "커넥터",
+    "nav.triggers": "트리거", "nav.builder": "워크플로 빌더", "nav.team": "팀",
+    "nav.audit": "감사 로그",
+    "legal.privacy": "개인정보처리방침", "legal.terms": "이용약관",
+    "page.gmail.title": "Gmail Checker",
+    "page.gmail.desc": "수신함 메시지 요약 및 일정 추출 상태",
+    "page.office.title": "Agent Command",
+    "page.office.desc": "dev_review 워크플로 실행 관제판",
+    "page.calendar.title": "Calendar",
+    "page.calendar.desc": "추출·등록된 일정과 알림 예약",
+    "page.runs.title": "실행", "page.runs.desc": "워크플로 실행 및 상태 조회",
+    "page.inbox.title": "알림",
+    "page.inbox.desc": "받은 알림 · 자연어 쿼리 · 비용 요약 · 리포트",
+    "page.insights.title": "인사이트", "page.insights.desc": "세션 · 실행 · 비용 통계",
+    "page.automation.title": "자동화",
+    "page.automation.desc": "스케줄 · 알림 규칙 · 리포트 상태 — 관리는 Agent-Office/설정에서",
+    "page.system.title": "시스템", "page.system.desc": "서버 · DB · 에이전트 브리지 상태",
+    "page.archive.title": "아카이브", "page.archive.desc": "리포트 · 실행 · 세션 기록 검색",
+    "page.cost.title": "비용", "page.cost.desc": "LLM/세션 비용 상세 — 월 예산은 설정에서 관리",
+    "page.developer.title": "개발자", "page.developer.desc": "연동 · 인증 설정 상태",
+    "page.playbooks.title": "플레이북", "page.playbooks.desc": "자주 쓰는 워크플로 실행 템플릿",
+    "page.connectors.title": "커넥터",
+    "page.connectors.desc": "외부 서비스 연동 — 토큰은 서버에 암호화되어 저장됩니다",
+    "page.triggers.title": "트리거",
+    "page.triggers.desc": "세션 상태가 조건에 맞으면 워크플로/플레이북/리포트를 자동 실행",
+    "page.builder.title": "워크플로 빌더",
+    "page.builder.desc": "커스텀 워크플로 스펙(JSON)을 작성·저장·실행",
+    "page.team.title": "팀", "page.team.desc": "멤버 목록과 활동 요약",
+    "page.audit.title": "감사 로그", "page.audit.desc": "관리자 전용 — 최근 200건 · 최신순",
+    "page.projects.title": "프로젝트",
+    "page.projects.desc": "세션·실행을 프로젝트별로 묶어 보기 — 프로젝트가 없는 세션은 '(기타)'로 표시됩니다",
+    "page.sessionlog.title": "세션 기록",
+    "page.sessionlog.desc": "에이전트 세션의 상태 전이 타임라인·통계·프로젝트 태그",
+    "page.risks.title": "리스크", "page.risks.desc": "실패·지연·오류 징후를 심각도 순으로 표시",
+    "page.approvals.title": "승인 대기",
+    "page.approvals.desc": "실행·세션·트리거 승인을 오래된 순으로 — 30초마다 자동 갱신",
+    "page.perf.title": "성과", "page.perf.desc": "워크플로 실행을 모델/에이전트/도구별로 비교",
+    "office.tabLabel": "Agent-Office 탭", "office.tab.workflow": "워크플로",
+    "office.tab.sessions": "세션", "office.attnTitle": "승인 대기 중인 세션",
+    "office.toolFilter": "세션 도구 필터", "office.sessFilter": "세션 필터",
+    "office.projFilter": "프로젝트 필터", "office.sessSearch": "세션 검색…",
+    "office.hiddenHint": "필터에 숨겨진 활성 세션을 전체 보기로 전환",
+    "office.modeLabel": "관제 모드", "office.mode.board": "3D 보드",
+    "office.mode.sprites": "스프라이트 사무실", "office.demo": "데모",
+    "office.chip.elapsed": "실행시간", "office.chip.tokens": "총 토큰",
+    "office.chip.progress": "진행률", "office.wfSelect": "워크플로 선택",
+    "office.taskPh": "실행할 작업 (task)", "office.waiting": "승인 대기",
+    "office.emptyRuns": "실행된 dev_review 워크플로가 없습니다",
+    "office.selectAgent": "선택 에이전트", "office.eventLog": "이벤트 로그",
+    "office.auditTitle": "실시간 감사 로그",
+    "office.auditMeta": "선택된 실행 · 최근 30건 · 3초 갱신",
+    "office.auditEmpty": "표시할 실행이 없습니다",
+    "office.schedTitle": "스케줄 관리", "office.schedMeta": "주기적으로 워크플로를 자동 실행",
+    "office.schedLoading": "불러오는 중…", "office.schedWf": "스케줄 워크플로",
+    "office.schedInterval": "간격(분)", "office.schedTask": "작업 내용 (선택)",
+    "office.schedAdd": "스케줄 추가",
+    "office.sessEmpty1": "활성 에이전트 세션이 없습니다 — 로컬에서",
+    "office.sessEmpty2": "를 실행하세요",
+    "office.active": "활성", "office.ended": "종료", "office.allProjects": "전체 프로젝트",
+    "gmail.digestTitle": "오늘의 요약",
+    "runs.llmUsage": "LLM 사용량", "runs.taskPh": "예: 로그인 실패 시 재시도 로직 추가",
+    "runs.stats": "실행 통계", "runs.statsMeta": "최근 30일 · 열면 로드",
+    "runs.statsEmpty": "통계를 보려면 새로고침을 누르세요",
+    "runs.history": "실행 이력", "runs.cmpHint": "체크박스로 최대 5개 선택",
+    "runs.pickRun": "실행을 선택하세요.",
+    "inbox.ask": "자연어 쿼리", "inbox.askHint": "예: 오늘 실패한 run 보여줘",
+    "inbox.askBtn": "질문", "inbox.box": "알림함", "inbox.markAll": "모두 읽음",
+    "inbox.usage": "비용 요약", "inbox.usageMeta": "최근 30일 · LLM/세션 비용",
+    "inbox.reports": "리포트", "inbox.rptEmpty": "리포트를 불러오려면 버튼을 누르세요",
+    "inbox.cards": "카드",
+    "rpt.daily": "일일 리포트", "rpt.weekly": "주간 리포트",
+    "rpt.execDaily": "경영 일일", "rpt.execWeekly": "경영 주간",
+    "card.add": "+ 카드 추가", "card.titlePh": "제목",
+    "card.jsonpathPh": "JSON 경로 (선택, 예: $.value)", "card.enabled": "활성",
+    "card.empty": "카드 없음",
+    "ins.daysAria": "통계 기간",
+    "arch.kindAria": "종류 필터", "arch.kindReport": "리포트", "arch.kindUsage": "사용량",
+    "arch.qPh": "검색어", "arch.empty": "검색어를 입력하고 검색을 누르세요",
+    "arch.exportTitle": "보내기 / 공유", "arch.expKindAria": "보내기 종류",
+    "arch.expFormatAria": "형식", "arch.expDaysAria": "기간",
+    "cost.daysAria": "비용 기간", "cost.budget": "예산 설정",
+    "pb.new": "새 플레이북", "pb.namePh": "이름 (예: 주간 리뷰)",
+    "pb.taskPh": "작업 내용 (task) — 플레이북 실행 시 이 입력이 사용됩니다",
+    "conn.add": "커넥터 추가", "conn.namePh": "이름 (예: 회사 GitHub)",
+    "trg.add": "트리거 추가", "trg.match": "조건 (match)", "trg.toolAria": "도구",
+    "trg.toolAll": "도구: 전체", "trg.projectPh": "프로젝트 (선택)",
+    "trg.stateAll": "상태: 전체", "trg.stateWorking": "작업 중",
+    "trg.stateDecision": "결정 대기", "trg.stateRest": "휴식",
+    "trg.action": "동작 (action)", "trg.actionAria": "동작 종류",
+    "trg.actRun": "워크플로 실행", "trg.actPlaybook": "플레이북 실행",
+    "trg.actReport": "리포트 생성",
+    "wf.custom": "커스텀 워크플로", "wf.namePh": "워크플로 이름 (key)",
+    "wf.template": "템플릿 삽입", "wf.taskPh": "실행 시 task 입력 (선택)",
+    "wf.specTitle": "스펙 형식",
+    "proj.add": "프로젝트 추가", "proj.namePh": "이름", "proj.colorPh": "색상 (#hex)",
+    "proj.goalPh": "목표", "proj.targetAria": "목표 수",
+    "sl.qPh": "세션 검색 (도구/프로젝트/제목/키)…",
+    "appr.approveAll": "전체 승인",
+    "perf.groupAria": "그룹 기준", "perf.byModel": "모델별", "perf.byAgent": "에이전트별",
+    "perf.byTool": "도구별", "perf.query": "조회", "perf.empty": "조건을 선택하고 조회를 누르세요",
+    "th.email": "이메일", "th.name": "이름", "th.role": "역할", "th.runs": "실행 수",
+    "th.lastActivity": "최근 활동", "th.time": "시각", "th.actor": "행위자",
+    "th.action": "행동", "th.target": "대상", "th.detail": "상세",
+    "th.workflow": "워크플로", "th.status": "상태", "th.created": "생성",
+    "dlg.compare": "실행 비교",
+    "share.title": "공유 링크 만들기", "share.kind": "종류", "share.refId": "참조 ID (선택 — run id 등)",
+    "share.refPh": "비우면 최신 항목", "share.create": "링크 생성",
+    "share.open": "공유 링크 만들기", "share.hint": "공유 링크는 로그인 없이 열리는 읽기 전용 URL입니다.",
+    "auth.title": "jobMate 로그인", "auth.tabLogin": "로그인", "auth.tabSignup": "회원가입",
+    "auth.phEmail": "이메일", "auth.phName": "이름 (선택)", "auth.phPassword": "비밀번호 (8자 이상)",
+    "auth.resend": "인증 메일 재발송", "auth.google": "Google로 계속하기",
+    "auth.needed": "로그인이 필요합니다 — 세션이 만료됐거나 로그인이 필요해요.",
+    "auth.neededBtn": "다시 로그인",
+    "mob.aria": "모바일 요약", "mob.approvals": "승인 대기", "mob.runs": "오늘 실행",
+    "mob.sessions": "활성 세션", "mob.cost": "월 비용",
+    // JS 렌더 문구
+    "auth.submitLogin": "로그인", "auth.submitSignup": "가입하기",
+    "auth.errEmpty": "이메일과 비밀번호를 입력하세요",
+    "auth.errVerify": "인증 실패", "auth.errGoogleDenied": "Google 로그인이 취소되었습니다",
+    "auth.errGoogleFailed": "Google 인증 처리에 실패했습니다",
+    "auth.errGoogleNoEmail": "Google 계정의 이메일을 확인할 수 없습니다",
+    "auth.errEmailNotAllowed": "허용되지 않은 이메일입니다",
+    "auth.errSignup": "회원가입에 실패했습니다",
+    "auth.infoResendHint": "인증 메일을 받지 못했다면 아래 버튼으로 재발송하세요.",
+    "auth.infoVerifySent": "인증 메일을 발송했습니다 — 메일의 링크를 열어 인증을 완료한 뒤 로그인하세요.",
+    "auth.infoVerifyFail": "메일 발송에 실패했습니다 — 관리자에게 문의하거나 잠시 후 재발송을 시도하세요.",
+    "auth.infoResent": "인증 메일을 다시 발송했습니다 — 받은편지함을 확인하세요.",
+    "auth.infoResendFail": "발송할 수 없습니다 — 이미 인증됐거나 가입되지 않은 이메일일 수 있습니다.",
+    "auth.infoResending": "재발송 중…", "auth.infoEnterEmail": "이메일을 입력하세요",
+    "auth.infoRetryLater": "잠시 후 다시 시도하세요.",
+    "auth.errNet": "네트워크 오류",
+    "err.needLogin": "로그인이 필요합니다 — 새로고침 후 로그인해주세요",
+    "err.needLoginShort": "로그인이 필요합니다",
+    "err.netCheck": "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요",
+    "err.tooMany": "요청이 너무 많습니다. 잠시 후 다시 시도해주세요",
+    "push.iosNeed": "아이폰/아이패드에서는 Safari의 '공유 → 홈 화면에 추가'로 jobMate를 설치한 뒤,\n설치된 앱에서 알림을 켜주세요. (iOS 16.4 이상)",
+    "push.unsupported": "이 브라우저는 Web Push를 지원하지 않습니다.\nSafari는 macOS 13+ / iOS 16.4+에서 지원됩니다.",
+    "push.noKey": "서버에 VAPID_PUBLIC_KEY가 설정되지 않았습니다.",
+    "appr.approveAllDoing": "전체 승인",
+  },
+  en: {
+    "lang.label": "Language",
+    "hdr.push": "Enable notifications", "hdr.pushOff": "Disable notifications",
+    "hdr.logout": "Log out", "hdr.settings": "Settings",
+    "common.close": "Close", "common.loading": "Loading…", "common.refresh": "Refresh",
+    "common.run": "Run", "common.runNoun": "Run", "common.search": "Search",
+    "common.add": "Add", "common.create": "Create", "common.save": "Save",
+    "common.cancel": "Cancel", "common.download": "Download", "common.compare": "Compare",
+    "common.all": "All", "common.selectAll": "Select all",
+    "common.last7": "Last 7 days", "common.last30": "Last 30 days", "common.last90": "Last 90 days",
+    "common.netDown": "Connection lost — retrying", "common.retryNow": "Retry now",
+    "common.sessionNoun": "Session",
+    "nav.office": "Agent-Office", "nav.radar": "Skill Radar",
+    "nav.gmail": "Gmail Checker", "nav.calendar": "Calendar",
+    "nav.runs": "Run History", "nav.inbox": "Inbox", "nav.projects": "Projects",
+    "nav.sessionlog": "Session Log", "nav.risks": "Risks", "nav.approvals": "Approvals",
+    "nav.perf": "Performance", "nav.insights": "Insights", "nav.automation": "Automation",
+    "nav.system": "System", "nav.archive": "Archive", "nav.cost": "Cost",
+    "nav.developer": "Developer", "nav.playbooks": "Playbooks", "nav.connectors": "Connectors",
+    "nav.triggers": "Triggers", "nav.builder": "Workflow Builder", "nav.team": "Team",
+    "nav.audit": "Audit Log",
+    "legal.privacy": "Privacy Policy", "legal.terms": "Terms of Service",
+    "page.gmail.title": "Gmail Checker",
+    "page.gmail.desc": "Inbox summary and calendar extraction status",
+    "page.office.title": "Agent Command",
+    "page.office.desc": "dev_review workflow run control board",
+    "page.calendar.title": "Calendar",
+    "page.calendar.desc": "Extracted and registered events and notification schedules",
+    "page.runs.title": "Runs", "page.runs.desc": "Run workflows and check status",
+    "page.inbox.title": "Inbox",
+    "page.inbox.desc": "Notifications · natural-language queries · cost summary · reports",
+    "page.insights.title": "Insights", "page.insights.desc": "Session · run · cost statistics",
+    "page.automation.title": "Automation",
+    "page.automation.desc": "Schedules · notification rules · report status — manage in Agent-Office/Settings",
+    "page.system.title": "System", "page.system.desc": "Server · DB · agent bridge status",
+    "page.archive.title": "Archive", "page.archive.desc": "Search reports · runs · session logs",
+    "page.cost.title": "Cost", "page.cost.desc": "LLM/session cost details — monthly budget managed in Settings",
+    "page.developer.title": "Developer", "page.developer.desc": "Integration · auth configuration status",
+    "page.playbooks.title": "Playbooks", "page.playbooks.desc": "Frequently used workflow run templates",
+    "page.connectors.title": "Connectors",
+    "page.connectors.desc": "External service integrations — tokens are stored encrypted on the server",
+    "page.triggers.title": "Triggers",
+    "page.triggers.desc": "Auto-run workflows/playbooks/reports when session state matches",
+    "page.builder.title": "Workflow Builder",
+    "page.builder.desc": "Write, save and run custom workflow specs (JSON)",
+    "page.team.title": "Team", "page.team.desc": "Member list and activity summary",
+    "page.audit.title": "Audit Log", "page.audit.desc": "Admin only — latest 200 entries, newest first",
+    "page.projects.title": "Projects",
+    "page.projects.desc": "Group sessions and runs by project — sessions without a project show as '(Other)'",
+    "page.sessionlog.title": "Session Log",
+    "page.sessionlog.desc": "Agent session state timeline · stats · project tags",
+    "page.risks.title": "Risks", "page.risks.desc": "Failures, delays and error signals sorted by severity",
+    "page.approvals.title": "Pending Approvals",
+    "page.approvals.desc": "Run, session and trigger approvals, oldest first — auto-refreshes every 30s",
+    "page.perf.title": "Performance", "page.perf.desc": "Compare workflow runs by model/agent/tool",
+    "office.tabLabel": "Agent-Office tabs", "office.tab.workflow": "Workflow",
+    "office.tab.sessions": "Sessions", "office.attnTitle": "Sessions waiting for approval",
+    "office.toolFilter": "Session tool filter", "office.sessFilter": "Session filters",
+    "office.projFilter": "Project filter", "office.sessSearch": "Search sessions…",
+    "office.hiddenHint": "Show all active sessions hidden by filters",
+    "office.modeLabel": "View mode", "office.mode.board": "3D Board",
+    "office.mode.sprites": "Sprite Office", "office.demo": "Demo",
+    "office.chip.elapsed": "Elapsed", "office.chip.tokens": "Total tokens",
+    "office.chip.progress": "Progress", "office.wfSelect": "Select workflow",
+    "office.taskPh": "Task to run (task)", "office.waiting": "Pending approval",
+    "office.emptyRuns": "No dev_review workflow runs yet",
+    "office.selectAgent": "Select an agent", "office.eventLog": "Event log",
+    "office.auditTitle": "Live audit log",
+    "office.auditMeta": "Selected run · latest 30 · refreshes every 3s",
+    "office.auditEmpty": "No run to show",
+    "office.schedTitle": "Schedule manager", "office.schedMeta": "Run workflows automatically on a schedule",
+    "office.schedLoading": "Loading…", "office.schedWf": "Schedule workflow",
+    "office.schedInterval": "Interval (min)", "office.schedTask": "Task (optional)",
+    "office.schedAdd": "Add schedule",
+    "office.sessEmpty1": "No active agent sessions — run",
+    "office.sessEmpty2": "locally",
+    "office.active": "Active", "office.ended": "Ended", "office.allProjects": "All projects",
+    "gmail.digestTitle": "Today's summary",
+    "runs.llmUsage": "LLM Usage", "runs.taskPh": "e.g. Add retry logic for login failures",
+    "runs.stats": "Run stats", "runs.statsMeta": "Last 30 days · loads when opened",
+    "runs.statsEmpty": "Press Refresh to load stats",
+    "runs.history": "Run history", "runs.cmpHint": "Select up to 5 with checkboxes",
+    "runs.pickRun": "Select a run.",
+    "inbox.ask": "Natural-language query", "inbox.askHint": "e.g. show me today's failed runs",
+    "inbox.askBtn": "Ask", "inbox.box": "Inbox", "inbox.markAll": "Mark all read",
+    "inbox.usage": "Cost summary", "inbox.usageMeta": "Last 30 days · LLM/session costs",
+    "inbox.reports": "Reports", "inbox.rptEmpty": "Press a button to load a report",
+    "inbox.cards": "Cards",
+    "rpt.daily": "Daily report", "rpt.weekly": "Weekly report",
+    "rpt.execDaily": "Exec daily", "rpt.execWeekly": "Exec weekly",
+    "card.add": "+ Add card", "card.titlePh": "Title",
+    "card.jsonpathPh": "JSON path (optional, e.g. $.value)", "card.enabled": "Enabled",
+    "card.empty": "No cards",
+    "ins.daysAria": "Stats range",
+    "arch.kindAria": "Kind filter", "arch.kindReport": "Report", "arch.kindUsage": "Usage",
+    "arch.qPh": "Query", "arch.empty": "Enter a query and press Search",
+    "arch.exportTitle": "Export / Share", "arch.expKindAria": "Export type",
+    "arch.expFormatAria": "Format", "arch.expDaysAria": "Range",
+    "cost.daysAria": "Cost range", "cost.budget": "Budget settings",
+    "pb.new": "New playbook", "pb.namePh": "Name (e.g. weekly review)",
+    "pb.taskPh": "Task — used when running the playbook",
+    "conn.add": "Add connector", "conn.namePh": "Name (e.g. company GitHub)",
+    "trg.add": "Add trigger", "trg.match": "Condition (match)", "trg.toolAria": "Tool",
+    "trg.toolAll": "Tool: all", "trg.projectPh": "Project (optional)",
+    "trg.stateAll": "State: all", "trg.stateWorking": "Working",
+    "trg.stateDecision": "Decision pending", "trg.stateRest": "Idle",
+    "trg.action": "Action", "trg.actionAria": "Action type",
+    "trg.actRun": "Run workflow", "trg.actPlaybook": "Run playbook",
+    "trg.actReport": "Generate report",
+    "wf.custom": "Custom workflows", "wf.namePh": "Workflow name (key)",
+    "wf.template": "Insert template", "wf.taskPh": "task input on run (optional)",
+    "wf.specTitle": "Spec format",
+    "proj.add": "Add project", "proj.namePh": "Name", "proj.colorPh": "Color (#hex)",
+    "proj.goalPh": "Goal", "proj.targetAria": "Target count",
+    "sl.qPh": "Search sessions (tool/project/title/key)…",
+    "appr.approveAll": "Approve all",
+    "perf.groupAria": "Group by", "perf.byModel": "By model", "perf.byAgent": "By agent",
+    "perf.byTool": "By tool", "perf.query": "Query", "perf.empty": "Select conditions and press Query",
+    "th.email": "Email", "th.name": "Name", "th.role": "Role", "th.runs": "Runs",
+    "th.lastActivity": "Last activity", "th.time": "Time", "th.actor": "Actor",
+    "th.action": "Action", "th.target": "Target", "th.detail": "Details",
+    "th.workflow": "Workflow", "th.status": "Status", "th.created": "Created",
+    "dlg.compare": "Compare runs",
+    "share.title": "Create share link", "share.kind": "Kind", "share.refId": "Reference ID (optional — run id etc.)",
+    "share.refPh": "Empty = latest", "share.create": "Create link",
+    "share.open": "Create share link", "share.hint": "Share links are read-only URLs that open without login.",
+    "auth.title": "Sign in to jobMate", "auth.tabLogin": "Log in", "auth.tabSignup": "Sign up",
+    "auth.phEmail": "Email", "auth.phName": "Name (optional)", "auth.phPassword": "Password (8+ chars)",
+    "auth.resend": "Resend verification email", "auth.google": "Continue with Google",
+    "auth.needed": "Sign-in required — your session expired or login is needed.",
+    "auth.neededBtn": "Log in again",
+    "mob.aria": "Mobile summary", "mob.approvals": "Pending", "mob.runs": "Today",
+    "mob.sessions": "Active", "mob.cost": "This month",
+    // JS-rendered strings
+    "auth.submitLogin": "Log in", "auth.submitSignup": "Sign up",
+    "auth.errEmpty": "Enter your email and password",
+    "auth.errVerify": "Verification failed", "auth.errGoogleDenied": "Google sign-in was cancelled",
+    "auth.errGoogleFailed": "Google sign-in failed",
+    "auth.errGoogleNoEmail": "Couldn't get the email from your Google account",
+    "auth.errEmailNotAllowed": "This email is not allowed",
+    "auth.errSignup": "Sign-up failed",
+    "auth.infoResendHint": "If you didn't get the email, resend it with the button below.",
+    "auth.infoVerifySent": "Verification email sent — open the link in the email, complete verification, then log in.",
+    "auth.infoVerifyFail": "Failed to send the email — contact an admin or try resending later.",
+    "auth.infoResent": "Verification email resent — check your inbox.",
+    "auth.infoResendFail": "Couldn't send — the email may already be verified or not registered.",
+    "auth.infoResending": "Resending…", "auth.infoEnterEmail": "Enter your email",
+    "auth.infoRetryLater": "Please try again later.",
+    "auth.errNet": "Network error",
+    "err.needLogin": "Sign-in required — refresh the page and log in again",
+    "err.needLoginShort": "Sign-in required",
+    "err.netCheck": "Check your network connection — verify internet access and try again",
+    "err.tooMany": "Too many requests. Please try again later",
+    "push.iosNeed": "On iPhone/iPad, install jobMate via Safari's 'Share → Add to Home Screen',\nthen enable notifications in the installed app. (iOS 16.4+)",
+    "push.unsupported": "This browser doesn't support Web Push.\nSafari supports it on macOS 13+ / iOS 16.4+.",
+    "push.noKey": "VAPID_PUBLIC_KEY is not configured on the server.",
+    "appr.approveAllDoing": "Approve all",
+  },
+});
+const T = (k, fb, ...a) => (window.JM_I18N && JM_I18N.has(k)) ? JM_I18N.t(k, ...a) : fb;
+
+// 헤더 언어 토글 — ko/en segmented control. 선택은 localStorage('jobmate_lang')에 유지.
+(function initLangToggle() {
+  const box = $("#jm-lang-toggle");
+  if (!box) return;
+  const sync = () => {
+    const cur = window.JM_I18N ? JM_I18N.lang() : "ko";
+    box.querySelectorAll("[data-lang]").forEach(b =>
+      b.setAttribute("aria-pressed", String(b.dataset.lang === cur)));
+  };
+  box.querySelectorAll("[data-lang]").forEach(b =>
+    b.addEventListener("click", () => window.JM_I18N && JM_I18N.setLang(b.dataset.lang)));
+  window.addEventListener("jm-lang-change", () => {
+    sync();
+    // auth-submit 라벨은 모드(로그인/가입)에 따라 JS가 관리 — apply()가 덮어쓴 뒤 복원
+    try { if (typeof _setAuthMode === "function") _setAuthMode(_authMode); } catch (e) {}
+  });
+  sync();
+})();
 
 // URL 컨텍스트 전용 검증 — esc()는 HTML 이스케이프일 뿐 javascript:/data:
 // 같은 위험 스킴을 막지 못한다. http/https 절대 URL과 단일 슬래시
@@ -2143,12 +2503,12 @@ function apiHeaders() {
 // 기존에 저장된 키는 apiHeaders()가 계속 읽어주며, 로그아웃 시 제거된다.
 let _authResolvers = [];
 let _authMode = "login"; // login | signup
-const _AUTH_ERR_MSG = {
-  google_denied: "Google 로그인이 취소되었습니다",
-  google_exchange_failed: "Google 인증 처리에 실패했습니다",
-  google_no_email: "Google 계정의 이메일을 확인할 수 없습니다",
-  email_not_allowed: "허용되지 않은 이메일입니다",
-  signup_failed: "회원가입에 실패했습니다",
+const _AUTH_ERR_KEY = {
+  google_denied: "auth.errGoogleDenied",
+  google_exchange_failed: "auth.errGoogleFailed",
+  google_no_email: "auth.errGoogleNoEmail",
+  email_not_allowed: "auth.errEmailNotAllowed",
+  signup_failed: "auth.errSignup",
 };
 const _authErrParam = new URLSearchParams(location.search).get("auth_error") || "";
 if (_authErrParam) {
@@ -2173,7 +2533,8 @@ function showAuth(errMsg) {
   $("#auth-overlay").hidden = false;
   _loadAuthConfig();
   if (wasHidden || errMsg) {
-    $("#auth-err").textContent = errMsg || _AUTH_ERR_MSG[_authErrParam] || "";
+    const _ak = _AUTH_ERR_KEY[_authErrParam];
+    $("#auth-err").textContent = errMsg || (_ak ? T(_ak, "") : "") || "";
     $("#auth-info").textContent = "";
     $("#auth-resend").hidden = true;
     $("#auth-email").value = "";
@@ -2217,7 +2578,8 @@ $("#auth-needed-btn")?.addEventListener("click", () => {
 function _setAuthMode(mode) {
   _authMode = mode;
   $("#auth-name").hidden = mode !== "signup";
-  $("#auth-submit").textContent = mode === "signup" ? "가입하기" : "로그인";
+  $("#auth-submit").textContent = mode === "signup"
+    ? T("auth.submitSignup", "가입하기") : T("auth.submitLogin", "로그인");
   $("#auth-tab-login").style.fontWeight = mode === "login" ? "700" : "";
   $("#auth-tab-signup").style.fontWeight = mode === "signup" ? "700" : "";
 }
@@ -2231,7 +2593,7 @@ $("#auth-submit").addEventListener("click", async () => {
   errEl.textContent = "";
   infoEl.textContent = "";
   $("#auth-resend").hidden = true;
-  if (!email || !password) { errEl.textContent = "이메일과 비밀번호를 입력하세요"; return; }
+  if (!email || !password) { errEl.textContent = T("auth.errEmpty", "이메일과 비밀번호를 입력하세요"); return; }
   const body = {email, password};
   if (_authMode === "signup") body.display_name = $("#auth-name").value.trim();
   try {
@@ -2242,45 +2604,45 @@ $("#auth-submit").addEventListener("click", async () => {
     if (!r.ok) {
       if (j.error && j.error.code === "email_not_verified") {
         errEl.textContent = j.error.message;
-        infoEl.textContent = "인증 메일을 받지 못했다면 아래 버튼으로 재발송하세요.";
+        infoEl.textContent = T("auth.infoResendHint", "인증 메일을 받지 못했다면 아래 버튼으로 재발송하세요.");
         $("#auth-resend").hidden = false;
       } else {
-        errEl.textContent = j.error ? j.error.message : "인증 실패";
+        errEl.textContent = j.error ? j.error.message : T("auth.errVerify", "인증 실패");
       }
       return;
     }
     if (_authMode === "signup" && j.email_verification_pending) {
       // 이메일 인증 대기 — 세션이 없으므로 리로드하지 않고 안내만 표시
       infoEl.textContent = j.verify_email_sent
-        ? "인증 메일을 발송했습니다 — 메일의 링크를 열어 인증을 완료한 뒤 로그인하세요."
-        : "메일 발송에 실패했습니다 — 관리자에게 문의하거나 잠시 후 재발송을 시도하세요.";
+        ? T("auth.infoVerifySent", "인증 메일을 발송했습니다 — 메일의 링크를 열어 인증을 완료한 뒤 로그인하세요.")
+        : T("auth.infoVerifyFail", "메일 발송에 실패했습니다 — 관리자에게 문의하거나 잠시 후 재발송을 시도하세요.");
       $("#auth-resend").hidden = false;
       $("#auth-email").value = "";
       $("#auth-password").value = "";
       return;
     }
     location.reload();
-  } catch (e) { errEl.textContent = "네트워크 오류"; }
+  } catch (e) { errEl.textContent = T("auth.errNet", "네트워크 오류"); }
 });
 $("#auth-resend").addEventListener("click", async () => {
   const email = $("#auth-email").value.trim();
   const infoEl = $("#auth-info");
-  if (!email) { infoEl.textContent = "이메일을 입력하세요"; return; }
-  infoEl.textContent = "재발송 중…";
+  if (!email) { infoEl.textContent = T("auth.infoEnterEmail", "이메일을 입력하세요"); return; }
+  infoEl.textContent = T("auth.infoResending", "재발송 중…");
   try {
     const r = await fetch(API + "/auth/verify/resend", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({email})});
     const j = await r.json().catch(() => ({}));
     if (r.status === 429) {
-      infoEl.textContent = j.error ? j.error.message : "잠시 후 다시 시도하세요.";
+      infoEl.textContent = j.error ? j.error.message : T("auth.infoRetryLater", "잠시 후 다시 시도하세요.");
     } else if (j.sent) {
-      infoEl.textContent = "인증 메일을 다시 발송했습니다 — 받은편지함을 확인하세요.";
+      infoEl.textContent = T("auth.infoResent", "인증 메일을 다시 발송했습니다 — 받은편지함을 확인하세요.");
     } else {
-      infoEl.textContent = "발송할 수 없습니다 — 이미 인증됐거나 가입되지 않은 이메일일 수 있습니다.";
+      infoEl.textContent = T("auth.infoResendFail", "발송할 수 없습니다 — 이미 인증됐거나 가입되지 않은 이메일일 수 있습니다.");
       $("#auth-resend").hidden = true;
     }
-  } catch (e) { infoEl.textContent = "네트워크 오류"; }
+  } catch (e) { infoEl.textContent = T("auth.errNet", "네트워크 오류"); }
 });
 $("#auth-password").addEventListener("keydown", e => {
   if (e.key === "Enter") $("#auth-submit").click();
@@ -2299,8 +2661,8 @@ async function api(path, opts, _retried) {
     r = await fetch(API + path, Object.assign({}, opts, {headers}));
   } catch (e) {
     // TypeError: Failed to fetch 등 브라우저 영어 원문 → 한국어 안내로 변환
-    const err = new Error(
-      "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요");
+    const err = new Error(T("err.netCheck",
+      "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요"));
     err.cause = e;
     throw err;
   }
@@ -2310,14 +2672,14 @@ async function api(path, opts, _retried) {
     showAuthNeeded();
   }
   if (r.status === 401) {
-    throw new Error("로그인이 필요합니다 — 새로고침 후 로그인해주세요");
+    throw new Error(T("err.needLogin", "로그인이 필요합니다 — 새로고침 후 로그인해주세요"));
   }
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
     const msg = j.error ? j.error.message : "";
     if (r.status === 429) {
       throw new Error((msg ? msg + " — " : "") +
-        "요청이 너무 많습니다. 잠시 후 다시 시도해주세요");
+        T("err.tooMany", "요청이 너무 많습니다. 잠시 후 다시 시도해주세요"));
     }
     throw new Error(msg || r.statusText || `요청 실패 (${r.status})`);
   }
@@ -4888,7 +5250,7 @@ async function showRunCompare() {
   if (_cmpSel.size < 2) { alert("비교할 실행을 2개 이상 선택하세요"); return; }
   const body = $("#compare-body");
   $("#compare-dialog").showModal();
-  body.innerHTML = '<span class="empty">로딩…</span>';
+  body.innerHTML = '<span class="empty" data-jm-i18n="common.loading">로딩…</span>';
   const ids = [..._cmpSel];
   const details = await Promise.all(ids.map(id =>
     api("/runs/" + encodeURIComponent(id))
@@ -4925,7 +5287,7 @@ $("#stats-wf").addEventListener("change", loadRunStats);
 async function loadRunStats() {
   const body = $("#runs-stats-body");
   if (!body) return;
-  body.innerHTML = '<span class="empty">로딩…</span>';
+  body.innerHTML = '<span class="empty" data-jm-i18n="common.loading">로딩…</span>';
   try {
     await syncWorkflowSelects();
     const wf = ($("#stats-wf") || {}).value || "";
@@ -5041,7 +5403,7 @@ $("#runs-cmp-all").addEventListener("change", (e) => {
 });
 async function showDetail(id) {
   const el = $("#detail-body");
-  el.innerHTML = '<span class="empty">로딩…</span>';
+  el.innerHTML = '<span class="empty" data-jm-i18n="common.loading">로딩…</span>';
   try {
     const d = await api("/runs/" + id);
     const stages = (d.stages || []).map(s =>
@@ -5162,42 +5524,10 @@ $("#notify-rules-list")?.addEventListener("click", (e) => {
   }
 });
 
-$("#settings-open").addEventListener("click", async () => {
-  const dlg = $("#settings-dialog");
-  try {
-    const s = await api("/settings");
-    $("#set-gmail-minutes").value = String(s.gmail_check_minutes || 30);
-    $("#set-radar-interval").value = s.radar_interval || "daily";
-    _notifyRules = Array.isArray(s.notify_rules)
-      ? s.notify_rules.map(r => ({
-          tool: r.tool || "", project: r.project || "",
-          statuses: _notifyRuleStatuses(r)}))
-      : [];
-    _renderNotifyRules();
-    $("#set-monthly-budget").value =
-      s.monthly_budget_usd != null ? String(s.monthly_budget_usd) : "";
-    _prefsCache = s;
-    _widgetDraft = _normalizeWidgets(s);
-    _renderWidgetList();
-    _renderSidebarMenuList();
-    applyRoleGating();
-    $("#settings-status").textContent = "";
-  } catch (e) { $("#settings-status").textContent = e.message; }
-  dlg.showModal();
-  // 관리자만 사용자 섹션 표시 — 비관리자/401/403은 조용히 숨김.
-  // 다이얼로그 오픈을 막지 않도록 백그라운드로 확인하고,
-  // api()의 401→로그인 오버레이 흐름을 타지 않도록 raw fetch 사용.
-  (async () => {
-    try {
-      const r = await fetch(API + "/auth/me", {headers: apiHeaders()});
-      if (!r.ok) { $("#users-section").hidden = true; return; }
-      const me = await r.json();
-      const u = (me && me.user) || me || {};
-      const admin = u.role === "admin";
-      $("#users-section").hidden = !admin;
-      if (admin) loadUsers();
-    } catch (e) { $("#users-section").hidden = true; }
-  })();
+// 설정은 별도 페이지(/static/settings.html)로 이동 — 아래 settings-dialog 마크업·핸들러는
+// 레거시로 남겨 두되 이 버튼에서는 더 이상 열지 않는다.
+$("#settings-open").addEventListener("click", () => {
+  location.href = "/static/settings.html";
 });
 $("#settings-close").addEventListener("click", () => $("#settings-dialog").close());
 $("#settings-dialog").addEventListener("click", (e) => {
@@ -5739,7 +6069,7 @@ const _ynBadge = v => v
 async function loadInsights() {
   const el = $("#ins-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const d = await api("/insights?days=" + encodeURIComponent(_daysSel("ins-days")));
     const s = d.sessions || {}, r = d.runs || {}, cst = d.cost || {};
@@ -5795,7 +6125,7 @@ $("#ins-reload")?.addEventListener("click", loadInsights);
 async function loadAutomation() {
   const el = $("#auto-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const d = await api("/automation/overview");
     const sch = Array.isArray(d.schedules) ? d.schedules : [];
@@ -5852,7 +6182,7 @@ async function loadAutomation() {
 async function loadSystemView() {
   const el = $("#sys-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const h = await api("/health/detail");
     const apiUptime = h.api && h.api.uptime_s != null
@@ -5959,7 +6289,7 @@ $("#arch-form")?.addEventListener("submit", (e) => {
 async function loadCostView() {
   const el = $("#cost-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const days = _daysSel("cost-days");
     const d = await api("/usage/summary?days=" + encodeURIComponent(days));
@@ -6017,7 +6347,7 @@ $("#cost-settings")?.addEventListener("click", () =>
 async function loadDeveloper() {
   const el = $("#dev-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const d = await api("/developer/status");
     const ints = Array.isArray(d.integrations) ? d.integrations : [];
@@ -6081,7 +6411,7 @@ async function _allWorkflowKeys() {
 async function loadPlaybooks() {
   const el = $("#pb-list");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const [d, wfs] = await Promise.all([
       api("/playbooks"), _allWorkflowKeys()]);
@@ -6186,7 +6516,7 @@ $("#conn-type")?.addEventListener("change", connRenderConfigFields);
 async function loadConnectors() {
   const el = $("#conn-list");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const d = await api("/connectors");
     const items = d.items || [];
@@ -6338,7 +6668,7 @@ trgSyncActionFields();
 async function loadTriggers() {
   const el = $("#trg-list");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const [d, wfs, pbs] = await Promise.all([
       api("/triggers"),
@@ -6551,7 +6881,7 @@ async function loadBuilder() {
 async function loadTeam() {
   const tb = $("#team-body");
   if (!tb) return;
-  tb.innerHTML = '<tr><td colspan="5" class="empty">로딩…</td></tr>';
+  tb.innerHTML = '<tr><td colspan="5" class="empty" data-jm-i18n="common.loading">로딩…</td></tr>';
   try {
     const me = await jmMe();
     const meEmail = (me.email || "").toLowerCase();
@@ -6601,7 +6931,7 @@ async function loadTeam() {
 async function loadAudit() {
   const tb = $("#audit-body");
   if (!tb) return;
-  tb.innerHTML = '<tr><td colspan="5" class="empty">로딩…</td></tr>';
+  tb.innerHTML = '<tr><td colspan="5" class="empty" data-jm-i18n="common.loading">로딩…</td></tr>';
   try {
     const d = await api("/audit?limit=200");
     const items = (d.items || [])
@@ -6680,7 +7010,7 @@ function jmTopStages(sf, n) {
 async function loadProjects() {
   const el = $("#proj-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const [d, me] = await Promise.all([api("/projects/overview"), jmMe()]);
     const items = d.items || [];
@@ -6835,7 +7165,7 @@ let _slSessions = [];
 async function loadSessionlog() {
   const el = $("#sl-list");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const d = await api("/agent-sessions?limit=100&include_ended=true");
     _slSessions = _sessionListFrom(d);
@@ -6883,7 +7213,7 @@ async function openSessionHistory(s) {
   const dlg = $("#sl-dialog"), body = $("#sl-body");
   $("#sl-title").textContent =
     `${SESSION_TOOL_LABEL[s.tool] || s.tool} · ${s.title || s.session_key}`;
-  body.innerHTML = '<span class="empty">로딩…</span>';
+  body.innerHTML = '<span class="empty" data-jm-i18n="common.loading">로딩…</span>';
   dlg.showModal();
   try {
     // 계약: GET /agent-sessions/{session_key}/history — tool 한정 경로로 폴백
@@ -6998,7 +7328,7 @@ const RISK_TYPE_ICON = {error: "🔴", failure: "🔴", timeout: "⏱",
 async function loadRisks() {
   const el = $("#risk-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const d = await api("/risks");
     const items = (d.items || [])
@@ -7051,7 +7381,7 @@ function jmGoRiskRef(kind, id) {
 async function loadApprovals() {
   const el = $("#appr-body");
   if (!el) return;
-  el.innerHTML = '<div class="empty">로딩…</div>';
+  el.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   try {
     const d = await api("/approvals");
     const items = (d.items || [])
@@ -7141,7 +7471,7 @@ $("#appr-approve-all")?.addEventListener("click", async (ev) => {
     alert(e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = "전체 승인";
+    btn.textContent = T("appr.approveAllDoing", "전체 승인");
     loadApprovals();
   }
 });
@@ -7189,7 +7519,7 @@ $("#perf-wf")?.addEventListener("change", loadPerfCompare);
 async function loadPerfCompare() {
   const body = $("#perf-body");
   if (!body) return;
-  body.innerHTML = '<div class="empty">로딩…</div>';
+  body.innerHTML = '<div class="empty" data-jm-i18n="common.loading">로딩…</div>';
   const wf = ($("#perf-wf") || {}).value || "";
   const gb = ($("#perf-group") || {}).value || "model";
   try {
@@ -7302,7 +7632,7 @@ $("#exp-dl")?.addEventListener("click", async () => {
       if (r.status === 401 && attempt === 0) {
         const k = await askApiKey();
         if (k) continue;
-        alert("로그인이 필요합니다");
+        alert(T("err.needLoginShort", "로그인이 필요합니다"));
         return;
       }
       if (!r.ok) {
@@ -7381,7 +7711,7 @@ async function loadCards() {
         <div class="card-val" data-val>…</div>
         <div class="mini-form" style="margin-top:8px">
           <button class="secondary card-toggle" style="padding:3px 10px;font-size:12px">${c.enabled === false ? "사용" : "중지"}</button>
-          <button class="secondary card-refresh" style="padding:3px 10px;font-size:12px">새로고침</button>
+          <button class="secondary card-refresh" style="padding:3px 10px;font-size:12px" data-jm-i18n="common.refresh">새로고침</button>
           <button class="secondary card-del" style="padding:3px 10px;font-size:12px">삭제</button>
           <span class="status-line card-msg" role="status"></span>
         </div>
@@ -7560,8 +7890,9 @@ async function refreshPushState() {
     const reg = await navigator.serviceWorker.getRegistration("/");
     const sub = reg && (await reg.pushManager.getSubscription());
     btn.classList.toggle("on", !!sub);
-    btn.title = sub ? "알림 끄기" : "알림 켜기";
-    btn.setAttribute("aria-label", sub ? "알림 끄기" : "알림 켜기");
+    const _po = sub ? "hdr.pushOff" : "hdr.push";
+    btn.title = T(_po, sub ? "알림 끄기" : "알림 켜기");
+    btn.setAttribute("aria-label", btn.title);
   } catch (e) {}
 }
 $("#push-toggle").addEventListener("click", async () => {
@@ -7574,11 +7905,11 @@ $("#push-toggle").addEventListener("click", async () => {
     const isStandalone = window.matchMedia("(display-mode: standalone)").matches
       || window.navigator.standalone === true;
     if (isIOS && !isStandalone) {
-      alert("아이폰/아이패드에서는 Safari의 '공유 → 홈 화면에 추가'로 jobMate를 설치한 뒤,\n설치된 앱에서 알림을 켜주세요. (iOS 16.4 이상)");
+      alert(T("push.iosNeed", "아이폰/아이패드에서는 Safari의 '공유 → 홈 화면에 추가'로 jobMate를 설치한 뒤,\n설치된 앱에서 알림을 켜주세요. (iOS 16.4 이상)"));
       return;
     }
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-      alert("이 브라우저는 Web Push를 지원하지 않습니다.\nSafari는 macOS 13+ / iOS 16.4+에서 지원됩니다."); return; }
+      alert(T("push.unsupported", "이 브라우저는 Web Push를 지원하지 않습니다.\nSafari는 macOS 13+ / iOS 16.4+에서 지원됩니다.")); return; }
     const reg = await navigator.serviceWorker.register("/sw.js");
     if (btn.classList.contains("on")) {
       const sub = await reg.pushManager.getSubscription();
@@ -7590,7 +7921,7 @@ $("#push-toggle").addEventListener("click", async () => {
       }
     } else {
       const {public_key} = await api("/push/vapid-key");
-      if (!public_key) { alert("서버에 VAPID_PUBLIC_KEY가 설정되지 않았습니다."); return; }
+      if (!public_key) { alert(T("push.noKey", "서버에 VAPID_PUBLIC_KEY가 설정되지 않았습니다.")); return; }
       const sub = await reg.pushManager.subscribe({userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(public_key)});
       await api("/push/subscribe", {method:"POST",
