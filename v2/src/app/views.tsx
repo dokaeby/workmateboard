@@ -10,6 +10,7 @@ import type { ViewKey } from "../shared/api/types";
  */
 export const VIEW_COMPONENTS: Partial<Record<ViewKey, ComponentType>> = {
   office: lazy(() => import("../features/office")),
+  monitor: lazy(() => import("../features/monitor")),
   radar: lazy(() => import("../features/radar")),
   gmail: lazy(() => import("../features/gmail")),
   calendar: lazy(() => import("../features/calendar")),

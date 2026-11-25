@@ -1387,6 +1387,21 @@ def create_app(
         """workflow별 run 성공/실패/토큰/단계 실패율 집계 (최대 365일)."""
         return store.run_stats(workflow, max(1, min(days, 365)))
 
+    @app.get("/api/v1/llm-monitor/stats")
+    def llm_monitor_stats(days: int = 30) -> JSONResponse:
+        """LLM 모니터 대시보드 — 지연시간 백분위/토큰/모델/프롬프트 버전/
+        stage 호출·실패율/승인 백로그/일별 시계열/최근 실패 run + LangSmith 상태."""
+        data = store.llm_stats(max(1, min(days, 365)))
+        tracing = os.environ.get("LANGCHAIN_TRACING_V2") == "true" and bool(
+            os.environ.get("LANGCHAIN_API_KEY")
+        )
+        data["langsmith"] = {
+            "enabled": tracing,
+            "project": os.environ.get("LANGCHAIN_PROJECT", ""),
+            "sample_rate": os.environ.get("JOBMATE_LANGSMITH_SAMPLE_RATE", "1.0"),
+        }
+        return JSONResponse(content=data)
+
     @app.get("/api/v1/runs/{run_id}")
     def get_run(run_id: str, request: Request) -> JSONResponse:
         d = run_detail(run_id)

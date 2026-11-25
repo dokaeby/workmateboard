@@ -2,7 +2,7 @@
 
 export type Role = "member" | "lead" | "admin";
 export type ViewKey =
-  | "office" | "radar" | "gmail" | "calendar" | "runs" | "inbox"
+  | "office" | "monitor" | "radar" | "gmail" | "calendar" | "runs" | "inbox"
   | "projects" | "sessionlog" | "risks" | "approvals" | "perf"
   | "insights" | "automation" | "system" | "archive" | "cost"
   | "developer" | "playbooks" | "connectors" | "triggers" | "builder"

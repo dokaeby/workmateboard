@@ -10,6 +10,9 @@
 
 from __future__ import annotations
 
+import functools
+import os
+import random
 import re
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -17,6 +20,16 @@ from typing import Any, TypeVar
 from langsmith import traceable
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _sample_rate() -> float:
+    """JOBMATE_LANGSMITH_SAMPLE_RATE (0~1, 기본 1.0) — 백그라운드 잡 trace 샘플링.
+    LangSmith 비용/저장량 관리용 (블로그 권고: sample-rate를 상황에 따라 조절)."""
+    try:
+        return max(0.0, min(1.0, float(os.environ.get("JOBMATE_LANGSMITH_SAMPLE_RATE", "1"))))
+    except ValueError:
+        return 1.0
+
 
 # LangSmith로 나가면 안 되는 값 — 키 이름 기준 마스킹.
 # (토큰/시크릿류 + 인바운드 메시지 원문: 이메일 본문 등 PII)
@@ -75,10 +88,26 @@ def _process_outputs(outputs: Any) -> Any:
 
 
 def job_traceable(name: str) -> Callable[[F], F]:
-    """백그라운드 잡 함수용 @traceable 래퍼 — 직렬화 불가 인자/민감 값을 자동 필터링."""
-    return traceable(  # type: ignore[return-value]
+    """백그라운드 잡 함수용 @traceable 래퍼 — 직렬화 불가 인자/민감 값을 자동 필터링.
+    JOBMATE_LANGSMITH_SAMPLE_RATE < 1 이면 호출당 비결정적 샘플링으로
+    trace 수집량(비용)을 조절한다 (블로그 권고: 샘플링으로 시작)."""
+    rate = _sample_rate()
+    traced = traceable(
         name=name,
         run_type="chain",
         process_inputs=_process_inputs,
         process_outputs=_process_outputs,
     )
+
+    def deco(fn: F) -> F:
+        tfn = traced(fn)
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if rate >= 1.0 or random.random() < rate:  # noqa: S311 — 보안 용도 아님(샘플링)
+                return tfn(*args, **kwargs)
+            return fn(*args, **kwargs)
+
+        return wrapper  # type: ignore[return-value]
+
+    return deco
