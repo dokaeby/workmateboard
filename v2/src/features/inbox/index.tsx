@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { InboxItem, ViewKey } from "../../shared/api/types";
 import { useAppStore } from "../../shared/store/appStore";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n, registerI18n, tx, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
 
@@ -26,6 +26,7 @@ registerI18n({
     "k.approval": "승인",
     "k.schedule": "일정",
     "k.report": "리포트",
+    "k.budget_alert": "예산",
     "inbox.ask": "자연어 쿼리",
     "inbox.askHint": "예: 오늘 실패한 run 보여줘",
     "inbox.askBtn": "질문",
@@ -76,6 +77,7 @@ registerI18n({
     "k.approval": "Approval",
     "k.schedule": "Schedule",
     "k.report": "Report",
+    "k.budget_alert": "Budget",
     "inbox.ask": "Natural-language query",
     "inbox.askHint": "e.g. show me today's failed runs",
     "inbox.askBtn": "Ask",
@@ -110,6 +112,14 @@ registerI18n({
     "inbox.rptSec.narrative": "Summary",
     "inbox.rptSec.highlights": "Highlights",
     "inbox.rptSec.risks": "Risks",
+    // 백엔드가 저장한 한국어 인박스 제목의 EN 렌더링 (패턴 매칭)
+    "inbox.t.approval": "Approval pending: {wf}",
+    "inbox.t.scheduleRun": "Scheduled run: {wf}",
+    "inbox.t.scheduleFail": "Scheduled run failed: {wf}",
+    "inbox.t.attention": "Approval needed: {what}",
+    "inbox.t.budget": "LLM token budget {pct}% used ({month})",
+    "inbox.t.reportTrigger": "{kind} report (trigger)",
+    "inbox.t.reportDone": "{kind} report generated",
   },
 });
 
@@ -120,6 +130,7 @@ const KIND_TONE: Record<string, "muted" | "ok" | "warn" | "err" | "accent"> = {
   approval: "accent",
   schedule: "ok",
   report: "ok",
+  budget_alert: "warn",
 };
 
 // 링크의 ?view= 파라미터 → ViewKey (레거시 VIEW_ALIASES: reports→inbox)
@@ -131,9 +142,42 @@ const VALID_VIEWS = new Set<ViewKey>([
   "triggers", "builder", "team", "audit", "settings",
 ]);
 
+const RPT_KIND_EN: Record<string, string> = {
+  daily: "Daily",
+  weekly: "Weekly",
+  exec_daily: "Exec daily",
+  exec_weekly: "Exec weekly",
+};
+
+/** DB에 저장된 한국어 인박스 제목을 언어별로 렌더 — 알려진 패턴만 번역, 나머지 원문. */
+function inboxItemTitle(it: InboxItem, t: TFn): string {
+  const title = String(it.title || "");
+  const kind = it.kind || "notification";
+  let m: RegExpMatchArray | null;
+  if ((m = title.match(/^승인 대기: (.+)$/))) return tx(t, "inbox.t.approval", { wf: m[1] }, title);
+  if ((m = title.match(/^스케줄 실행: (.+)$/))) return tx(t, "inbox.t.scheduleRun", { wf: m[1] }, title);
+  if ((m = title.match(/^스케줄 실패: (.+)$/))) return tx(t, "inbox.t.scheduleFail", { wf: m[1] }, title);
+  if ((m = title.match(/^승인 필요: (.+)$/))) return tx(t, "inbox.t.attention", { what: m[1] }, title);
+  if (
+    kind === "budget_alert" &&
+    (m = title.match(/^LLM 토큰 예산 (\d+)% 사용 \(([^)]+)\)$/))
+  ) {
+    return tx(t, "inbox.t.budget", { pct: m[1], month: m[2] }, title);
+  }
+  if (kind === "report") {
+    if ((m = title.match(/^(.+?) 리포트 \(트리거\)$/))) {
+      return tx(t, "inbox.t.reportTrigger", { kind: RPT_KIND_EN[m[1]] || m[1] }, title);
+    }
+    if ((m = title.match(/^(.+?) 리포트 생성됨$/))) {
+      return tx(t, "inbox.t.reportDone", { kind: RPT_KIND_EN[m[1]] || m[1] }, title);
+    }
+  }
+  return title;
+}
+
 function kindLabel(kind: string, t: (k: string, f?: string) => string): string {
   const key = `k.${kind || "notification"}`;
-  const known = ["notification", "session_attention", "approval", "schedule", "report"];
+  const known = ["notification", "session_attention", "approval", "schedule", "report", "budget_alert"];
   return known.includes(kind) ? t(key, kind) : kind || t("k.notification", "알림");
 }
 
@@ -582,7 +626,7 @@ export default function InboxPage() {
                 {!it.read && <span className="h-2 w-2 shrink-0 rounded-full bg-accent" />}
                 <Badge tone={KIND_TONE[kind] || "muted"}>{kindLabel(kind, t)}</Badge>
                 <span className={`min-w-0 flex-1 truncate text-sm ${it.read ? "text-ink-2" : "font-semibold text-ink"}`}>
-                  {it.title || t("inbox.noTitle", "(제목 없음)")}
+                  {inboxItemTitle(it, t) || t("inbox.noTitle", "(제목 없음)")}
                 </span>
                 <span className="shrink-0 text-xs text-muted">{when}</span>
               </div>

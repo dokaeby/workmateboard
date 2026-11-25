@@ -40,5 +40,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "appr.confirmAll": "Approve all {n} runs?",
     "appr.doneAll": "Approved {ok}",
     "appr.failed": "failed",
+    "appr.triggerError.title": "Trigger error: {id}",
   },
 };

@@ -27,6 +27,8 @@ export interface ApprovalItem {
   age_seconds?: number;
   session_key?: string;
   tool?: string;
+  title_key?: string;
+  title_params?: Record<string, unknown>;
 }
 export interface ApprovalsResponse { items: ApprovalItem[] }
 

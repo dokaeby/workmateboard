@@ -4,7 +4,11 @@
  * 모든 뷰/기능은 반드시 이 모듈의 api()/apiGet()/apiPost()를 사용한다.
  */
 
+import { getLang } from "../i18n";
+
 const API_BASE = "/api/v1";
+
+const en = () => getLang() === "en";
 
 export class ApiError extends Error {
   status: number;
@@ -38,7 +42,13 @@ export async function api<T = unknown>(
   try {
     r = await fetch(API_BASE + path, { ...rest, headers: h, body });
   } catch {
-    throw new ApiError(0, "network", "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요");
+    throw new ApiError(
+      0,
+      "network",
+      en()
+        ? "Network error — check your connection and try again"
+        : "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요",
+    );
   }
   if (r.status === 401) {
     // 세션 만료 — 앱 셸이 auth 상태로 전환하도록 이벤트 발생.
@@ -47,7 +57,11 @@ export async function api<T = unknown>(
     if (!path.startsWith("/auth/sessions")) {
       window.dispatchEvent(new CustomEvent("jm:unauthorized"));
     }
-    throw new ApiError(401, "unauthorized", "로그인이 필요합니다 — 새로고침 후 로그인해주세요");
+    throw new ApiError(
+      401,
+      "unauthorized",
+      en() ? "Sign-in required — refresh and sign in again" : "로그인이 필요합니다 — 새로고침 후 로그인해주세요",
+    );
   }
   const text = await r.text();
   let data: unknown = {};
@@ -60,10 +74,14 @@ export async function api<T = unknown>(
     const msg = errObj?.message || (typeof j?.error === "string" ? j.error : "") || r.statusText;
     const code = errObj?.code || "";
     if (r.status === 429) {
-      throw new ApiError(429, code || "rate_limited",
-        (msg ? msg + " — " : "") + "요청이 너무 많습니다. 잠시 후 다시 시도해주세요");
+      throw new ApiError(
+        429,
+        code || "rate_limited",
+        (msg ? msg + " — " : "") +
+          (en() ? "Too many requests — try again shortly" : "요청이 너무 많습니다. 잠시 후 다시 시도해주세요"),
+      );
     }
-    throw new ApiError(r.status, code, msg || `요청 실패 (${r.status})`);
+    throw new ApiError(r.status, code, msg || (en() ? `Request failed (${r.status})` : `요청 실패 (${r.status})`));
   }
   return data as T;
 }

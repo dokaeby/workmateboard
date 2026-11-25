@@ -504,9 +504,10 @@ def _risk(
     ref_id: str,
     at: Any,
     now: datetime,
+    i18n: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     age = _age_seconds(at, now)
-    return {
+    out: dict[str, Any] = {
         "type": rtype,
         "severity": severity,
         "title": title,
@@ -516,6 +517,11 @@ def _risk(
         "at": str(at or ""),
         "age_seconds": round(age, 1) if age is not None else None,
     }
+    if i18n:
+        # 프론트 i18n용 — title/detail의 언어별 템플릿 키+파라미터.
+        # 한국어 title/detail은 리포트/하위호환용으로 그대로 유지한다.
+        out["i18n"] = i18n
+    return out
 
 
 def detect_risks(store: Store) -> dict[str, Any]:
@@ -563,6 +569,12 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 latest_rid,
                 g["latest_at"],
                 now,
+                i18n={
+                    "title_key": "risk.stage_failure.title",
+                    "title_params": {"wf": wf, "stage": skey},
+                    "detail_key": "risk.stage_failure.detail",
+                    "detail_params": {"n": n, "stage": skey},
+                },
             )
         )
 
@@ -588,6 +600,12 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 r.id,
                 getattr(r, "updated_at", None),
                 now,
+                i18n={
+                    "title_key": "risk.stale_approval.title",
+                    "title_params": {"wf": str(getattr(r, "workflow_key", "") or "")},
+                    "detail_key": "risk.stale_approval.detail",
+                    "detail_params": {"task": task or r.id, "dur_s": round(age)},
+                },
             )
         )
 
@@ -609,6 +627,19 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 str(s.get("session_key") or ""),
                 sess_at,
                 now,
+                i18n={
+                    "title_key": "risk.idle_session.title",
+                    "title_params": {
+                        "health": health,
+                        "tool": str(s.get("tool") or ""),
+                        "key": str(s.get("session_key") or "")[:12],
+                    },
+                    "detail_key": "risk.idle_session.detail",
+                    "detail_params": {
+                        "status": str(s.get("status") or ""),
+                        "dur_s": round(_age_seconds(sess_at, now) or 0),
+                    },
+                },
             )
         )
 
@@ -643,6 +674,14 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 "",
                 now.isoformat(),
                 now,
+                i18n={
+                    "title_key": "risk.cost_spike.title",
+                    "detail_key": "risk.cost_spike.detail",
+                    "detail_params": {
+                        "today": f"{today_cost:.2f}",
+                        "avg": f"{avg7:.2f}",
+                    },
+                },
             )
         )
 
@@ -662,6 +701,12 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 str(t.get("id") or ""),
                 trig_at,
                 now,
+                i18n={
+                    "title_key": "risk.trigger_failure.title",
+                    "title_params": {"id": str(t.get("id") or "")},
+                    "detail_key": "risk.trigger_failure.detail",
+                    "detail_params": {"err": err_msg[:160]},
+                },
             )
         )
 
@@ -692,6 +737,14 @@ def detect_risks(store: Store) -> dict[str, Any]:
                     "",
                     now.isoformat(),
                     now,
+                    i18n={
+                        "title_key": "risk.budget.title",
+                        "detail_key": "risk.budget.detail",
+                        "detail_params": {
+                            "mtd": f"{mtd:.2f}",
+                            "budget": f"{budget:.2f}",
+                        },
+                    },
                 )
             )
 
@@ -780,6 +833,8 @@ def approval_queue(store: Store) -> dict[str, Any]:
                 "kind": "trigger",
                 "id": str(t.get("id") or ""),
                 "title": f"트리거 오류: {str(t.get('id') or '')[:12]}",
+                "title_key": "appr.triggerError.title",
+                "title_params": {"id": str(t.get("id") or "")[:12]},
                 "waiting_since": str(waiting or ""),
                 "age_seconds": _age_seconds(waiting, now),
                 "project": _proj_raw(match.get("project")),

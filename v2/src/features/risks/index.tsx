@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
 import { useAppStore } from "../../shared/store/appStore";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n, registerI18n, tx, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtAge, fmtTs } from "../../shared/lib/format";
 
@@ -25,8 +25,28 @@ registerI18n({
     "sev.high": "High",
     "sev.medium": "Medium",
     "sev.low": "Low",
+    // 백엔드 detect_risks의 i18n 메타 — ko는 원문 fallback 사용
+    "risk.stage_failure.title": "{wf} · {stage} stage repeatedly failing",
+    "risk.stage_failure.detail": "Failed in {n} runs over the last 7 days.",
+    "risk.stale_approval.title": "Approval pending too long: {wf}",
+    "risk.stale_approval.detail": "{task} — waiting for approval for {dur}.",
+    "risk.idle_session.title": "Session {health}: {tool} {key}",
+    "risk.idle_session.detail": "Status {status} — last event {dur} ago.",
+    "risk.cost_spike.title": "LLM cost spike today",
+    "risk.cost_spike.detail": "Today's est. cost ${today} — over 3× the 7-day daily avg of ${avg}.",
+    "risk.trigger_failure.title": "Trigger error: {id}",
+    "risk.trigger_failure.detail": "Error on last trigger — {err}",
+    "risk.budget.title": "Monthly budget exceeded",
+    "risk.budget.detail": "This month's est. cost ${mtd} > budget ${budget}.",
   },
 });
+
+interface RiskI18n {
+  title_key?: string;
+  title_params?: Record<string, unknown>;
+  detail_key?: string;
+  detail_params?: Record<string, unknown>;
+}
 
 interface RiskItem {
   type?: string;
@@ -37,6 +57,7 @@ interface RiskItem {
   ref_id?: string;
   at?: string;
   age_seconds?: number | null;
+  i18n?: RiskI18n;
 }
 interface RisksResponse { items?: RiskItem[] }
 
@@ -57,6 +78,39 @@ function sevLabel(sev: string, t: (k: string, f?: string) => string): string {
   return t("sev.low", "낮음");
 }
 
+function fmtDurS(sec: number, en: boolean): string {
+  const s = Math.max(0, Math.round(sec));
+  if (en) {
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+    const d = Math.floor(h / 24);
+    return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
+  }
+  if (s < 60) return `${s}초`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}분`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}시간`;
+  return `${Math.floor(h / 24)}일`;
+}
+
+/** 백엔드 i18n 메타가 있으면 언어별 템플릿으로 렌더, 없으면 원문 그대로. */
+function riskText(r: RiskItem, field: "title" | "detail", t: TFn, en: boolean): string {
+  const raw = String(r[field] ?? "");
+  const meta = r.i18n;
+  if (!meta) return raw;
+  const params = { ...(meta[`${field}_params`] || {}) };
+  if (params.dur_s != null) {
+    params.dur = fmtDurS(Number(params.dur_s), en);
+    delete params.dur_s;
+  }
+  if (params.health != null) params.health = String(params.health).replaceAll("_", " ");
+  return tx(t, meta[`${field}_key`], params, raw);
+}
+
 // 레거시 jmGoRiskRef — ref_kind별 대상 뷰로 이동
 function goToRef(kind: string | undefined, setView: (v: "runs" | "sessionlog" | "triggers" | "inbox") => void) {
   const k = String(kind || "").toLowerCase();
@@ -67,7 +121,7 @@ function goToRef(kind: string | undefined, setView: (v: "runs" | "sessionlog" | 
 }
 
 export default function RisksPage() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const setView = useAppStore((s) => s.setView);
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -108,13 +162,17 @@ export default function RisksPage() {
             <Card key={`${r.type}:${r.ref_kind}:${r.ref_id}:${i}`} className="border-l-4">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={sevTone(sev)}>{sevLabel(sev, t)}</Badge>
-                <span className="text-sm font-semibold text-ink">{r.title || r.type || t("risks.title", "리스크")}</span>
+                <span className="text-sm font-semibold text-ink">
+                  {riskText(r, "title", t, lang === "en") || r.type || t("risks.title", "리스크")}
+                </span>
                 <span className="ml-auto text-xs text-muted">
                   {r.type ? <span className="mr-1 rounded bg-surface-hover px-1">{r.type}</span> : null}
                   {fmtAge(r.age_seconds)} · {fmtTs(r.at)}
                 </span>
               </div>
-              {r.detail ? <div className="mt-2 text-sm text-ink-2">{r.detail}</div> : null}
+              {r.detail || r.i18n?.detail_key ? (
+                <div className="mt-2 text-sm text-ink-2">{riskText(r, "detail", t, lang === "en")}</div>
+              ) : null}
               {r.ref_kind && r.ref_id ? (
                 <div className="mt-2">
                   <Button

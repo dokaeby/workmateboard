@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
 import type { ApprovalsResponse, ApprovalItem } from "../../shared/api/types";
 import { useAppStore } from "../../shared/store/appStore";
-import { useI18n, registerI18n } from "../../shared/i18n";
+import { useI18n, registerI18n, tx } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtAge, fmtTs } from "../../shared/lib/format";
 import { useState } from "react";
@@ -101,7 +101,9 @@ export default function ApprovalsPage() {
                 {kindLabel(a.kind || "", t)}
               </Badge>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-ink">{a.title || a.id}</div>
+                <div className="truncate text-sm font-medium text-ink">
+                  {tx(t, a.title_key, a.title_params, a.title) || a.id}
+                </div>
                 <div className="text-xs text-muted">
                   {a.project ? <span className="mr-1 rounded bg-surface-hover px-1">{a.project}</span> : null}
                   {t("appr.waiting", "대기")} {fmtAge(a.age_seconds)} · {fmtTs(a.waiting_since)}

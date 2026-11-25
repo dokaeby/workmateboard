@@ -47,3 +47,20 @@ export function useI18n() {
     t: (key: string, fallback?: string) => dicts[lang][key] ?? dicts.ko[key] ?? fallback ?? key,
   };
 }
+
+export type TFn = (key: string, fallback?: string) => string;
+
+/** t() + {param} 치환 — 백엔드 i18n 메타(title_key/params) 렌더링용. */
+export function tx(
+  t: TFn,
+  key: string | undefined,
+  params: Record<string, unknown> | undefined,
+  fallback?: string,
+): string {
+  if (!key) return fallback ?? "";
+  let s = t(key, fallback ?? key);
+  for (const [k, v] of Object.entries(params || {})) {
+    s = s.replaceAll(`{${k}}`, String(v ?? ""));
+  }
+  return s;
+}
