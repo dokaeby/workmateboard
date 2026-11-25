@@ -316,3 +316,25 @@ def test_local_dev_mode_skips_verification():
     assert "jobmate_session" in r.headers.get("set-cookie", "")
     client.cookies.clear()
     assert _login(client, email="local@b.com").status_code == 200
+
+
+def test_mailer_local_log_masks_verification_token(monkeypatch, caplog):
+    """로컬 개발 로그의 인증 URL에서 token 등 민감 쿼리 값이 마스킹된다
+    (로그에 토큰 원문 금지 원칙 — CLAUDE.md)."""
+    import logging
+
+    monkeypatch.delenv("JOBMATE_SMTP_HOST", raising=False)
+    monkeypatch.delenv("VERCEL", raising=False)
+    monkeypatch.delenv("JOBMATE_SMTP_USER", raising=False)
+    with caplog.at_level(logging.INFO, logger="jobmate.mailer"):
+        assert (
+            mailer.send_verification_email(
+                "a@b.com",
+                "http://localhost:8000/api/v1/auth/verify?token=SECRET_TOKEN_123&next=/x",
+            )
+            is False
+        )
+    assert "SECRET_TOKEN_123" not in caplog.text
+    assert "token=***" in caplog.text
+    # 도메인+경로는 남아 로컬 개발 편의 유지
+    assert "localhost:8000/api/v1/auth/verify" in caplog.text

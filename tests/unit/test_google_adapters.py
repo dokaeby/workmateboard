@@ -268,3 +268,23 @@ def test_scopes_cover_protocol():
     assert "gmail.readonly" in SCOPES["gmail"][0]
     assert "calendar.events" in SCOPES["calendar"][0]
     assert AUTH_URI.startswith("https://")
+
+
+def test_issue_token_times_out_without_callback(tmp_path, monkeypatch):
+    """OAuth 콜백이 오지 않으면 timeout 내에 GoogleAuthError —
+    handle_request()가 요청 없이 반복돼도 전체 deadline이 적용된다."""
+    import jobmate.adapters.google as g
+
+    monkeypatch.setattr(g.webbrowser, "open", lambda url: True)
+    import time
+
+    t0 = time.time()
+    with pytest.raises(GoogleAuthError, match="timeout"):
+        g.issue_token(
+            "gmail",
+            client_id="cid",
+            client_secret="sec",  # noqa: S106 - 테스트용 더미 값
+            token_path=tmp_path / "tok.json",
+            timeout=0.3,
+        )
+    assert time.time() - t0 < 5

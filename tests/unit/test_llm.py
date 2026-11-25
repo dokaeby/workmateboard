@@ -112,3 +112,117 @@ def test_configure_langsmith(monkeypatch):
     assert configure_langsmith(Settings(langsmith_tracing=False)) is False
     for k in ("LANGCHAIN_TRACING_V2", "LANGCHAIN_API_KEY", "LANGCHAIN_PROJECT"):
         os.environ.pop(k, None)
+
+
+def _codex_jwt(exp: float) -> str:
+    import base64
+    import json as _json
+
+    payload = base64.urlsafe_b64encode(_json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    return f"h.{payload}.s"
+
+
+def test_codex_auth_refresh_writes_atomically(tmp_path, monkeypatch):
+    """토큰 갱신 시 auth.json이 임시파일+os.replace로 원자적 저장된다."""
+    import json as _json
+    import os
+    import time
+
+    import jobmate.llm.codex as cx
+    from jobmate.llm import LLMError
+
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        _json.dumps(
+            {
+                "tokens": {
+                    "access_token": _codex_jwt(time.time() - 10),  # 만료
+                    "refresh_token": "rt-old",
+                    "account_id": "acc",
+                }
+            }
+        )
+    )
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": _codex_jwt(time.time() + 3600), "refresh_token": "rt-new"}
+
+    monkeypatch.setattr(cx.httpx, "post", lambda *a, **k: _Resp())
+    auth = cx.CodexAuth(auth_file)
+    headers = auth.headers()
+    assert headers["Authorization"].startswith("Bearer ")
+    # 파일이 유효 JSON으로 갱신됐고 tmp 잔여물이 없다
+    data = _json.loads(auth_file.read_text())
+    assert data["tokens"]["refresh_token"] == "rt-new"  # noqa: S105 - 테스트용 더미 값
+    assert not (tmp_path / "auth.json.tmp").exists()
+    if os.name != "nt":
+        assert oct(auth_file.stat().st_mode & 0o777) == "0o600"
+    # 깨진 auth.json은 LLMError
+    bad = tmp_path / "bad.json"
+    bad.write_text("{")
+    with pytest.raises(LLMError):
+        cx.CodexAuth(bad).headers()
+
+
+def test_codex_stream_without_completed_returns_partial(tmp_path, monkeypatch, caplog):
+    """response.completed 없이 끝난 SSE도 부분 텍스트를 반환하되 경고를 남긴다."""
+    import json as _json
+    import logging
+    import time
+
+    import jobmate.llm.codex as cx
+    from jobmate.models import ModelConfig
+
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        _json.dumps(
+            {
+                "tokens": {
+                    "access_token": _codex_jwt(time.time() + 3600),
+                    "account_id": "acc",
+                }
+            }
+        )
+    )
+
+    class _Resp:
+        status_code = 200
+        request = None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"type":"response.output_text.delta","delta":"hel"}'
+            yield 'data: {"type":"response.output_text.delta","delta":"lo"}'
+
+    class _StreamCtx:
+        def __enter__(self):
+            return _Resp()
+
+        def __exit__(self, *a):
+            return False
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def stream(self, *a, **k):
+            return _StreamCtx()
+
+    monkeypatch.setattr(cx.httpx, "Client", _Client)
+    llm = cx.CodexResponsesLLM(auth_path=auth_file)
+    with caplog.at_level(logging.WARNING, logger="jobmate.llm.codex"):
+        text, usage, calls = llm._stream("http://x/responses", {}, ModelConfig(model="m"))
+    assert text == "hello"
+    assert calls == []
+    assert "without response.completed" in caplog.text

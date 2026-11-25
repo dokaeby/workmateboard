@@ -974,6 +974,16 @@ def _loads(s: str) -> dict[str, Any]:
         return {}
 
 
+def _clamp_limit(limit: Any, default: int = 50, maximum: int = 1000) -> int:
+    """LIMIT 파라미터 정규화 — 음수/비정수/None이 SQLite `LIMIT -1`(무제한)
+    반환으로 이어지지 않도록 최소 1·최대 maximum로 클램프한다."""
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        n = default
+    return max(1, min(n, maximum))
+
+
 class Store:
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -983,7 +993,10 @@ class Store:
         self._integrity_errors: tuple[type[Exception], ...] = (
             (psycopg.errors.IntegrityError,) if self._pg else (sqlite3.IntegrityError,)
         )
-        self._lock = threading.Lock()
+        # RLock — tx() 안에서 다른 store 메서드(각자 tx()를 잡는)를 호출하는
+        # 중첩 경로가 생겨도 같은 스레드면 재진입 가능해야 한다(비재진입 Lock은
+        # 자기 데드락). PG/SQLite 모두 tx 직렬화 의미는 동일하다.
+        self._lock = threading.RLock()
         self._local = threading.local()
         self._sqlite_conns: list[Any] = []
         self._closed = False
@@ -1178,6 +1191,7 @@ class Store:
         return self._row_to_run(row) if row else None
 
     def list_runs(self, limit: int = 50, workflow: str | None = None) -> list[Run]:
+        limit = _clamp_limit(limit, 50, 500)
         if workflow is None:
             rows = self._conn.execute(
                 "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
@@ -1197,20 +1211,37 @@ class Store:
         error: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        run = self.get_run(run_id)
-        if run is None:
-            return
+        """run 갱신 — 단일 UPDATE로 lost update 방지.
+
+        이전 구현은 get_run으로 읽은 뒤 전체 컬럼을 다시 써서, 읽기~쓰기 사이에
+        다른 writer(stage 완료 등)가 바꾼 status/metadata를 덮어쓸 수 있었다.
+        COALESCE(?, col) 패턴으로 None 인자만 기존 값을 유지하고, status/error/
+        metadata 각각 독립적으로 현재 행 기준 갱신한다."""
         with self.tx() as c:
             c.execute(
-                "UPDATE runs SET status=?, error=?, metadata=?, updated_at=? WHERE id=?",
+                "UPDATE runs SET status=COALESCE(?, status),"
+                " error=COALESCE(?, error), metadata=COALESCE(?, metadata),"
+                " updated_at=? WHERE id=?",
                 (
-                    (status or run.status).value,
-                    error if error is not None else run.error,
-                    json.dumps(metadata if metadata is not None else run.metadata),
+                    status.value if status is not None else None,
+                    error,
+                    json.dumps(metadata) if metadata is not None else None,
                     _iso(_now()),
                     run_id,
                 ),
             )
+
+    def claim_run_status(self, run_id: str, from_status: str, to_status: str) -> bool:
+        """run 상태 조건부 전이 — WHERE status=? 원자 claim.
+
+        동시 승인/재개 요청이 둘 다 waiting_approval을 읽고 resume하는 것을
+        막는다. rowcount>0이면 이 호출이 claim에 성공한 것."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE runs SET status=?, updated_at=? WHERE id=? AND status=?",
+                (to_status, _iso(_now()), run_id, from_status),
+            )
+        return cur.rowcount > 0
 
     def _row_to_run(self, row: Any) -> Run:
         return Run(
@@ -1523,6 +1554,7 @@ class Store:
             )
 
     def list_links(self, limit: int = 50) -> list[EventLink]:
+        limit = _clamp_limit(limit)
         rows = self._conn.execute(
             "SELECT * FROM event_links ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
@@ -1595,6 +1627,7 @@ class Store:
             )
 
     def list_notifications(self, limit: int = 50) -> list[Notification]:
+        limit = _clamp_limit(limit)
         rows = self._conn.execute(
             "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
@@ -1681,13 +1714,43 @@ class Store:
         ).fetchone()
         return row is not None
 
+    # 처리 중 메시지 리스 — claim 시 retry_at을 미래로 밀어 다른 worker가
+    # 같은 행을 집지 않게 한다. 프로세스 크래시면 리스 만료 후 재claim된다.
+    # gmail_calendar run은 LLM 다단계라 수 분 걸릴 수 있어 리스를 넉넉히 둔다.
+    # 크래시 시 이 시간만큼 처리가 지연될 뿐 중복 처리는 없다.
+    _MESSAGE_LEASE_SECONDS = 1800
+
     def pending_messages(self, limit: int = 100) -> list[dict[str, Any]]:
+        """처리 대상 메시지 — 'pending'이거나 리스 만료된 'processing' 행.
+
+        retry_at은 백오프(미래) 또는 리스(미래) 표시로도 쓰인다. ''(신규)는
+        어떤 ISO 문자열보다 작으므로 즉시 대상이 된다."""
         rows = self._conn.execute(
-            "SELECT * FROM message_extractions WHERE processing_status='pending'"
+            "SELECT * FROM message_extractions"
+            " WHERE processing_status IN ('pending','processing')"
             " AND retry_at <= ? ORDER BY created_at LIMIT ?",
-            (_iso(_now()), limit),
+            (_iso(_now()), max(1, min(int(limit), 1000))),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def claim_message(self, provider: str, source_id: str) -> bool:
+        """메시지 원자 claim — pending(또는 리스 만료 processing)을 processing으로.
+
+        UPDATE ... WHERE processing_status 조건 + retry_at 리스 설정을 한
+        문장으로 수행해, 복수 worker/cron tick이 같은 메시지를 동시에
+        처리해 run을 중복 생성하는 것을 막는다. rowcount>0이면 claim 성공."""
+        lease_until = _iso(_now() + timedelta(seconds=self._MESSAGE_LEASE_SECONDS))
+        now_iso = _iso(_now())
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE message_extractions SET processing_status='processing',"
+                " retry_at=?"
+                " WHERE source_provider=? AND source_id=?"
+                " AND processing_status IN ('pending','processing')"
+                " AND retry_at <= ?",
+                (lease_until, provider, source_id, now_iso),
+            )
+        return cur.rowcount > 0
 
     def finish_message(
         self,
@@ -1709,6 +1772,7 @@ class Store:
     def list_message_extractions(
         self, provider: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
+        limit = _clamp_limit(limit, 20, 500)
         q = "SELECT * FROM message_extractions"
         args: list[Any] = []
         if provider:
@@ -1788,6 +1852,7 @@ class Store:
     def list_scheduled_events(
         self, status: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
+        limit = _clamp_limit(limit)
         q = "SELECT * FROM scheduled_events"
         args: list[Any] = []
         if status:
@@ -1811,6 +1876,25 @@ class Store:
         "calendar_event_id",
         "source_refs",
     )
+
+    def claim_event_review(self, event_id: str, stale_before: str) -> bool:
+        """일정 검토 원자 claim — status를 'registering'으로 조건부 전이.
+
+        needs_review/needs_confirmation/candidate 상태이거나, 이전 claim이
+        크래시로 남은 'registering'(updated_at < stale_before)일 때만 성공.
+        find_by_marker→create_event 사이의 중복 캘린더 생성을 막는다.
+        rowcount>0이면 claim 성공 — 호출자는 작업 후 registered/rejected 등으로
+        전이하거나, 실패 시 원래 상태로 복구해야 한다."""
+        now = _iso(_now())
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE scheduled_events SET status='registering', updated_at=?"
+                " WHERE id=? AND (status IN"
+                " ('needs_review','needs_confirmation','candidate')"
+                " OR (status='registering' AND updated_at < ?))",
+                (now, event_id, stale_before),
+            )
+        return cur.rowcount > 0
 
     def get_scheduled_event(self, event_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
@@ -1862,6 +1946,7 @@ class Store:
             )
 
     def list_notification_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        limit = _clamp_limit(limit)
         rows = self._conn.execute(
             "SELECT * FROM notification_jobs ORDER BY fire_at DESC LIMIT ?", (limit,)
         ).fetchall()
@@ -2144,6 +2229,26 @@ class Store:
                 (_iso(_now()), token_hash),
             )
 
+    def revoke_user_sessions(self, user_id: str) -> int:
+        """사용자의 모든 유효 세션 폐기 — 비밀번호 변경 등 보안 이벤트용.
+        반환값: 폐기된 세션 수."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+                (_iso(_now()), user_id),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0)
+
+    def list_user_sessions(self, user_id: str) -> list[dict[str, Any]]:
+        """사용자의 유효(미폐기·미만료) 세션 목록 — id는 토큰 해시."""
+        rows = self._conn.execute(
+            "SELECT id, created_at, expires_at FROM auth_sessions"
+            " WHERE user_id=? AND revoked_at IS NULL AND expires_at>?"
+            " ORDER BY created_at DESC",
+            (user_id, _iso(_now())),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # ---- email_verifications (가입 이메일 인증) ----
     def create_email_verification(self, email: str, ttl_hours: int = 24) -> str:
         """인증 토큰 발급 — 반환값이 원문(메일 링크용), DB에는 SHA-256 해시만 저장."""
@@ -2156,6 +2261,12 @@ class Store:
         # opportunistic 정리 — used/expired 행이 누적되지 않도록 발급 시 함께 삭제
         self.delete_expired_verifications(now)
         with self.tx() as c:
+            # 같은 이메일의 기존 미사용 토큰은 이번 발급으로 무효화 —
+            # 재발송/재가입 시 이전 링크가 계속 유효한 채 남는 것을 막는다.
+            c.execute(
+                "UPDATE email_verifications SET used_at=? WHERE email=? AND used_at IS NULL",
+                (_iso(now), email.lower()),
+            )
             c.execute(
                 "INSERT INTO email_verifications(id,email,token_hash,expires_at,created_at)"
                 " VALUES(?,?,?,?,?)",
@@ -2182,6 +2293,26 @@ class Store:
         if exp is None or exp <= _now():
             return None
         return str(r["email"])
+
+    def consume_email_verification(self, token_hash: str) -> str | None:
+        """토큰 원자적 consume — 유효(미사용·미만료)하면 used_at 마킹 후 이메일 반환.
+
+        SELECT 후 UPDATE하는 비원자 경로는 동시 요청이 같은 토큰을 둘 다
+        유효하다고 판정할 수 있다. WHERE used_at IS NULL AND expires_at>? 조건의
+        UPDATE rowcount로 단 한 번만 성공하도록 직렬화한다(SQLite/PG 공용)."""
+        now = _now()
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE email_verifications SET used_at=?"
+                " WHERE token_hash=? AND used_at IS NULL AND expires_at>?",
+                (_iso(now), token_hash, _iso(now)),
+            )
+            if int(getattr(cur, "rowcount", 0) or 0) <= 0:
+                return None
+            r = c.execute(
+                "SELECT email FROM email_verifications WHERE token_hash=?", (token_hash,)
+            ).fetchone()
+            return str(r["email"]) if r else None
 
     def mark_verification_used(self, token_hash: str) -> None:
         with self.tx() as c:
@@ -2257,6 +2388,8 @@ class Store:
         self, provider: str = "gmail", limit: int = 30
     ) -> list[dict[str, Any]]:
         from ..security import decrypt_str
+
+        limit = _clamp_limit(limit, 30, 200)
 
         rows = self._conn.execute(
             "SELECT * FROM email_summaries WHERE source_provider=?"
@@ -2474,7 +2607,7 @@ class Store:
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY last_event_at DESC NULLS LAST, updated_at DESC LIMIT ?"
-        params.append(limit)
+        params.append(_clamp_limit(limit, 50, 500))
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
@@ -2486,7 +2619,7 @@ class Store:
             "SELECT id,tool,session_key,status,project,doing,ask,event_at,created_at"
             " FROM agent_session_events WHERE tool=? AND session_key=?"
             " ORDER BY created_at DESC, id DESC LIMIT ?",
-            (tool, session_key, limit),
+            (tool, session_key, _clamp_limit(limit, 100, 500)),
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
@@ -2840,6 +2973,27 @@ class Store:
         ).fetchall()
         return [self._schedule_json(r) for r in rows]
 
+    def claim_schedule_fire(
+        self,
+        schedule_id: str,
+        expected_next_run_at: str,
+        last_run_at: str,
+        next_run_at: str,
+    ) -> bool:
+        """스케줄 발사 원자 claim — next_run_at compare-and-swap.
+
+        due_schedules()로 읽은 행의 next_run_at이 그대로일 때만 last/next를
+        갱신한다. automation loop과 cron tick(또는 다중 인스턴스)이 동시에
+        같은 스케줄을 발사해 run을 중복 생성하는 것을 막는다.
+        rowcount>0이면 claim 성공 — 호출자는 run 생성으로 진행한다."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE workflow_schedules SET last_run_at=?, next_run_at=?"
+                " WHERE id=? AND enabled=1 AND next_run_at=?",
+                (last_run_at, next_run_at, schedule_id, expected_next_run_at),
+            )
+        return cur.rowcount > 0
+
     def mark_schedule_fired(self, schedule_id: str, last_run_at: str, next_run_at: str) -> None:
         with self.tx() as c:
             c.execute(
@@ -2977,7 +3131,7 @@ class Store:
         else:
             sql = f"SELECT {cols} FROM inbox_items"  # noqa: S608 - cols는 고정 상수
         sql += " ORDER BY created_at DESC LIMIT ?"
-        rows = self._conn.execute(sql, (limit,)).fetchall()
+        rows = self._conn.execute(sql, (_clamp_limit(limit, 50, 200),)).fetchall()
         return [
             {
                 "id": r["id"],
@@ -3014,7 +3168,7 @@ class Store:
         dedupe_key=notif:{id}로 멱등 — GET /inbox 호출 시마다 호출해도 안전."""
         rows = self._conn.execute(
             "SELECT id,title,body,source_url FROM notifications ORDER BY created_at DESC LIMIT ?",
-            (limit,),
+            (_clamp_limit(limit, 200, 1000),),
         ).fetchall()
         for r in rows:
             self.upsert_inbox_item(
@@ -3079,7 +3233,7 @@ class Store:
             "SELECT recorded_at,status,doing,project FROM session_activity"
             " WHERE tool=? AND session_key=?"
             " ORDER BY recorded_at DESC, id DESC LIMIT ?",
-            (tool, session_key, limit),
+            (tool, session_key, _clamp_limit(limit, 200, 500)),
         ).fetchall()
         return [
             {
@@ -3172,6 +3326,26 @@ class Store:
                 "UPDATE users SET role=?, updated_at=? WHERE id=?",
                 (role, _iso(_now()), user_id),
             )
+
+    def set_user_password(self, user_id: str, password_hash: str) -> None:
+        """비밀번호 해시 교체 — 호출 측에서 현재 비밀번호 검증 + 세션 revoke 책임."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+                (password_hash, _iso(_now()), user_id),
+            )
+
+    def promote_to_admin_if_first(self, user_id: str) -> bool:
+        """사용자가 유일한 사용자일 때만 admin 승격 — 단일 UPDATE 조건으로
+        동시 가입 레이스에서 둘 다 admin이 되거나 둘 다 놓치는 것을 막는다.
+        반환값: 실제로 승격됐으면 True."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE users SET role='admin', updated_at=?"
+                " WHERE id=? AND (SELECT COUNT(*) FROM users)=1",
+                (_iso(_now()), user_id),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0) > 0
 
     # ---- playbooks (원클릭 작업 템플릿) ----
     @staticmethod
@@ -3533,7 +3707,7 @@ class Store:
         rows = self._conn.execute(
             "SELECT id,run_id,actor,action,object_ref,detail,created_at"
             " FROM audit_events ORDER BY created_at DESC, id DESC LIMIT ?",
-            (min(max(int(limit), 1), 1000),),
+            (_clamp_limit(limit, 200, 1000),),
         ).fetchall()
         return [
             {

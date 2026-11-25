@@ -58,7 +58,7 @@
   /* ── 레이아웃: 사이드바 + 메인 ── */
   .app-body {
     display: grid; grid-template-columns: 220px minmax(0, 1fr);
-    gap: 24px; max-width: 1720px; margin: 0 auto;
+    gap: 24px; margin: 0 auto;
     padding: 24px; align-items: start;
   }
   .sidebar {
@@ -145,9 +145,15 @@
     background: radial-gradient(ellipse at center,
       transparent 45%, rgba(0,5,13,.55) 100%);
   }
-  .office-perspective { position: relative; }
+  .office-perspective {
+    position: relative; display: flex; justify-content: center;
+  }
   .office-plate {
-    position: relative; width: 100%; aspect-ratio: 1069 / 609;
+    position: relative;
+    /* 폭은 채우되, 1069:609 비율 유지한 채 높이가 뷰포트의 ~80%를 넘지 않게 캡.
+       노드·간선·배경은 모두 % 좌표라 왜곡 없이 같이 줄어든다. */
+    width: min(100%, 140.4vh);  /* = 80vh × 1069/609 — 비율 유지하며 높이 ~80vh 캡 */
+    aspect-ratio: 1069 / 609; margin: 0 auto;
     overflow: hidden;
   }
   /* 플레이트 위 은은한 청색 면광 */
@@ -531,7 +537,9 @@
   #jmo-notice p { margin: 0; }
   #jmo-notice p + p { margin-top: 2px; }
   #jmo-side {
-    width: 340px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px;
+    /* 고정 340px → 컨테이너 폭에 비례(최소 240 / 최대 360). 좁으면 canvas가 넓어진다 */
+    width: clamp(240px, 26%, 360px); flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 6px;
     min-height: 0; padding: 10px; background: var(--surface);
     border-left: 1px solid var(--border); overflow: hidden;
   }
@@ -541,7 +549,8 @@
   #jmo-people { max-height: 50%; flex-shrink: 0; }
   #jmo-log { flex: 1; min-height: 0; }
   .o-live { color: #15803D; font-size: 11px; }
-  .office-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .office-split { display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 3fr); gap: 12px; }
   @media (max-width: 820px) {
     .office-split { grid-template-columns: 1fr; }
     /* 모바일: 입체감 제거하고 노드를 플레이트 위에 플렉스로 펼침 */
@@ -925,6 +934,21 @@
     .app-body { grid-template-columns: 1fr; }
     .sidebar { position: static; }
     .nav { display: flex; gap: 4px; overflow-x: auto; }
+  }
+  /* ── 태블릿 (821–1100px): 사이드바 슬림 + office 분할 해제 + 보드 노드 축소 ── */
+  @media (min-width: 821px) and (max-width: 1100px) {
+    .app-body { grid-template-columns: 180px minmax(0, 1fr);
+                gap: 16px; padding: 16px; }
+    .sidebar { padding: 12px 8px; }
+    .nav-item { padding: 8px 10px; font-size: 13px; gap: 8px; }
+    .office-split { grid-template-columns: 1fr; }
+    /* 플레이트가 좁아지므로 노드 최소 높이·글씨를 살짝 줄여 넘침 방지 */
+    .office-node-face { min-height: 76px; padding: 10px 12px; gap: 8px; }
+    .office-node-code { font-size: 15px; }
+    .office-node-label { font-size: 11.5px; }
+    .office-node-ico svg { width: 22px; height: 22px; }
+    .office-node-orch .office-node-face { min-height: 70px; padding: 10px 18px; }
+    .office-node-orch .office-node-code { font-size: 18px; }
   }
   /* ── 알림 센터 / 비용 / 쿼리 / 리포트 / 위젯 / 상태 ── */
   .nav-badge {
@@ -2004,6 +2028,22 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+// URL 컨텍스트 전용 검증 — esc()는 HTML 이스케이프일 뿐 javascript:/data:
+// 같은 위험 스킴을 막지 못한다. http/https 절대 URL과 단일 슬래시
+// 상대경로(/, ./, ../, #, ?)만 허용하고, 프로토콜 상대 //host·백슬래시·
+// 기타 스킴은 "#"로 치환한다. 속성 이스케이프와 별개로 반드시 병행할 것.
+function safeUrl(url) {
+  const s = String(url ?? "").trim();
+  if (!s) return "";
+  if (s.startsWith("//") || s.startsWith("\\\\")) return "#";
+  if (/^(\/|\.\/|\.\.\/|#|\?)/.test(s)) return s;
+  try {
+    const u = new URL(s);
+    if (u.protocol === "http:" || u.protocol === "https:") return s;
+  } catch (e) { /* 스킴 없는/파싱 불가 URL → 아래에서 차단 */ }
+  return "#";
+}
+
 function apiHeaders() {
   const headers = {};
   // 서버 주입 키가 항상 최신 — localStorage의 오래된 키가 401을 유발하지 않도록 우선 사용
@@ -2012,17 +2052,10 @@ function apiHeaders() {
   if (key) headers["X-API-Key"] = key;
   return headers;
 }
-// ?key=... 로 진입하면 localStorage에 저장하고 URL에서 제거 (북마크 한 번이면 이후 자동 인증)
-(() => {
-  const p = new URLSearchParams(location.search);
-  const k = (p.get("key") || p.get("api_key") || "").trim();
-  if (k) {
-    localStorage.setItem("jobmate_api_key", k);
-    p.delete("key"); p.delete("api_key");
-    const q = p.toString();
-    history.replaceState(null, "", location.pathname + (q ? "?" + q : "") + location.hash);
-  }
-})();
+// ?key= / ?api_key= 쿼리 파라미터 자동 수확은 제거했다 — 피싱 링크로
+// localStorage의 API 키를 교체당하고 히스토리에 키가 잔존할 수 있기 때문.
+// 인증은 세션 쿠키(/auth/login) 또는 서버 주입 EMBEDDED_API_KEY로 처리한다.
+// 기존에 저장된 키는 apiHeaders()가 계속 읽어주며, 로그아웃 시 제거된다.
 let _authResolvers = [];
 let _authMode = "login"; // login | signup
 const _AUTH_ERR_MSG = {
@@ -2198,18 +2231,21 @@ const badge = (s) => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 
 /* ── 역할 기반 메뉴 (member < lead < admin) ──
    /auth/me 의 role 을 정규화해 nav-item[data-min-role] 표시 여부를 결정한다.
-   me 로드 전(_jmRoleRank === null)에는 모두 허용 — 뷰 로더가 403을
-   graceful empty state로 처리한다. */
+   fail-closed: me 로드 전(_jmRoleRank === null)에는 member(rank 0)로 간주해
+   lead/admin 전용 메뉴를 숨긴다. /auth/me resolve 후 applyRoleGating()이
+   실제 role로 다시 계산하고, resolve 전에 큐잉된 클릭(_jmPendingView)은
+   권한이 있으면 1회 재시도한다. */
 const JM_ROLE_RANK = {member: 0, lead: 1, admin: 2};
 let _jmRole = null;      // 정규화된 현재 사용자 role
 let _jmRoleRank = null;  // 숫자 rank — me 로드 전에는 null
+let _jmPendingView = null;  // role resolve 전 클릭된 min-role 뷰 (부팅 시 재시도)
 function jmNormalizeRole(r) {
   const k = String(r || "").toLowerCase();
   return JM_ROLE_RANK[k] != null ? k : "member";  // "user"/누락 → member
 }
 function jmRoleAllows(min) {
-  if (_jmRoleRank == null) return true;          // 아직 모름 → 일단 허용
-  return _jmRoleRank >= (JM_ROLE_RANK[min] || 0);
+  // fail-closed — role 미확정 시 member로 간주 (lead/admin 항목 차단)
+  return (_jmRoleRank ?? JM_ROLE_RANK.member) >= (JM_ROLE_RANK[min] || 0);
 }
 /* 사이드바 메뉴 표시 설정 — Agent-Office·Skill Radar는 항상 표시.
    prefs.sidebar_menu = {view: true|false}, 미설정 시 나머지는 전부 숨김. */
@@ -2253,8 +2289,12 @@ const VIEWS = { gmail: loadGmail,
 const loaded = {};
 document.querySelectorAll(".nav-item").forEach(b =>
   b.addEventListener("click", () => {
-    // 역할 게이팅 — 권한 없는 뷰는 deep-link/프로그램 클릭도 차단
-    if (b.dataset.minRole && !jmRoleAllows(b.dataset.minRole)) return;
+    // 역할 게이팅 — 권한 없는 뷰는 deep-link/프로그램 클릭도 차단.
+    // role 미확정(null) 상태의 min-role 클릭은 resolve 후 재시도하도록 큐잉.
+    if (b.dataset.minRole) {
+      if (_jmRoleRank == null) { _jmPendingView = b.dataset.view; return; }
+      if (!jmRoleAllows(b.dataset.minRole)) return;
+    }
     document.querySelectorAll(".nav-item").forEach(x =>
       x.classList.toggle("active", x === b));
     document.querySelectorAll("main > section").forEach(s =>
@@ -2273,7 +2313,7 @@ function summaryCard(c) {
     <div class="card-top"><span class="badge processed">요약</span>
       <span class="card-meta">${esc(dt)}</span>
       <a class="card-meta" style="margin-left:auto;color:var(--accent)"
-         href="${esc(c.url)}" target="_blank" rel="noopener">Gmail ↗</a></div>
+         href="${esc(safeUrl(c.url))}" target="_blank" rel="noopener">Gmail ↗</a></div>
     <div class="card-title">${esc(c.subject || "(제목 없음)")}</div>
     <div class="card-meta" style="margin-bottom:6px">${esc(c.sender || "")}</div>
     <div class="card-body">${esc(c.summary || "")}</div>
@@ -4240,7 +4280,7 @@ function renderCard(item, idx) {
   return `
   <article class="sr-card sr-fade-up">
     <div class="sr-card-top">
-      <span class="sr-rank">${item.rank ?? ""}</span>
+      <span class="sr-rank">${escapeHtml(item.rank ?? "")}</span>
       <div class="sr-card-main">
         <a class="sr-repo-name" href="#" data-repo="${escapeHtml(repoName)}">${escapeHtml(repoName)}</a>
         ${description}
@@ -4264,7 +4304,7 @@ function renderCard(item, idx) {
       <div class="sr-chips">${topics}</div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         ${runBtn}
-        <a class="sr-gh-btn" href="${escapeHtml(repoUrl)}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
+        <a class="sr-gh-btn" href="${escapeHtml(safeUrl(repoUrl))}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
       </div>
     </div>
   </article>`;
@@ -4454,7 +4494,7 @@ async function loadDates() {
     const data = await api(`/radar/dates?platform=${sr.platform}`);
     const dates = data.dates ?? [];
     dateSelect.innerHTML = dates.length
-      ? dates.map(d => `<option value="${d}">${d}</option>`).join("")
+      ? dates.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("")
       : '<option value="">—</option>';
     if (dates.length) {
       sr.date = dates[0];
@@ -4540,10 +4580,10 @@ async function loadRepoDetail() {
     const summaryLangs = it.summaries ?? {};
     const langBtns = Object.keys(summaryLangs).map(lg => {
       const label = lg === "ko" ? "한국어" : lg === "en" ? "English" : "中文";
-      return `<button class="sr-lang-btn${lg === sr.lang ? " sr-on" : ""}" data-lang="${lg}">${label}</button>`;
+      return `<button class="sr-lang-btn${lg === sr.lang ? " sr-on" : ""}" data-lang="${escapeHtml(lg)}">${label}</button>`;
     }).join("");
     const summaryHtml = lg => `
-      <div class="sr-sum-pane${lg === sr.lang ? "" : ""}" data-pane="${lg}" ${lg === sr.lang ? "" : "hidden"}>
+      <div class="sr-sum-pane${lg === sr.lang ? "" : ""}" data-pane="${escapeHtml(lg)}" ${lg === sr.lang ? "" : "hidden"}>
         <ul>${(summaryLangs[lg] ?? []).map(l => `<li><span>${escapeHtml(l)}</span></li>`).join("")}</ul>
       </div>`;
     const readme = it.readme_excerpt
@@ -4556,7 +4596,7 @@ async function loadRepoDetail() {
     const detailActions = `
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         ${detailRepoName ? `<span class="sr-run-wrap"><button class="sr-run-btn" data-run-detail>dev_review 실행</button><span class="sr-run-msg"></span></span>` : ""}
-        <a class="sr-gh-btn" href="${escapeHtml(it.repo_url || it.url || "")}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
+        <a class="sr-gh-btn" href="${escapeHtml(safeUrl(it.repo_url || it.url || ""))}" target="_blank" rel="noopener">GitHub ${ICON.arrow}</a>
       </div>`;
     repoView.innerHTML = `
       <button class="sr-topic-back" id="sr-repo-back" style="margin-bottom:12px">
@@ -4566,7 +4606,7 @@ async function loadRepoDetail() {
       <article class="sr-detail-card sr-fade-up">
         <div class="sr-detail-head">
           <div style="min-width:0;flex:1">
-            <a class="sr-detail-name" href="${escapeHtml(it.repo_url || it.url || "")}" target="_blank" rel="noopener">${escapeHtml(it.repo_full_name || it.repo || currentRepo)}</a>
+            <a class="sr-detail-name" href="${escapeHtml(safeUrl(it.repo_url || it.url || ""))}" target="_blank" rel="noopener">${escapeHtml(it.repo_full_name || it.repo || currentRepo)}</a>
             ${it.description ? `<p class="sr-desc" style="-webkit-line-clamp:3">${escapeHtml(it.description)}</p>` : ""}
             ${badgeMeta}
           </div>
@@ -4662,9 +4702,9 @@ async function loadLlmUsage() {
     }
     const rows = names.map(n => {
       const m = models[n];
-      return `<tr><td class="mono">${esc(n)}</td><td>${m.calls}</td>` +
-        `<td>${(m.tokens_in || 0).toLocaleString()}</td>` +
-        `<td>${(m.tokens_out || 0).toLocaleString()}</td></tr>`;
+      return `<tr><td class="mono">${esc(n)}</td><td>${esc(m.calls ?? 0)}</td>` +
+        `<td>${esc((m.tokens_in || 0).toLocaleString())}</td>` +
+        `<td>${esc((m.tokens_out || 0).toLocaleString())}</td></tr>`;
     }).join("");
     const maxTok = Math.max(1, ...daily.map(x => (x.tokens_in || 0) + (x.tokens_out || 0)));
     const bars = daily.slice(-14).map(x => {
@@ -4673,7 +4713,7 @@ async function loadLlmUsage() {
       return `<div class="office-kv"><span>${esc(x.date)}</span>` +
         `<b style="flex:1"><span style="display:inline-block;height:8px;` +
         `width:${w}%;background:var(--accent);border-radius:4px"></span></b>` +
-        `<b>${tot.toLocaleString()}</b></div>`;
+        `<b>${esc(tot.toLocaleString())}</b></div>`;
     }).join("");
     el.innerHTML =
       `<div class="table-scroll" style="margin-bottom:10px"><table>` +
@@ -4774,7 +4814,7 @@ function renderRunStats(d) {
   if (!body) return;
   const chips = [["총 실행", d.runs], ["성공", d.succeeded], ["실패", d.failed],
                  ["진행중", d.running], ["승인대기", d.waiting_approval]]
-    .map(([k, v]) => `<span class="office-chip">${k} <b>${v || 0}</b></span>`).join("");
+    .map(([k, v]) => `<span class="office-chip">${k} <b>${esc(v ?? 0)}</b></span>`).join("");
   const avg = d.avg_duration_s != null ? officeFmtSecs(d.avg_duration_s) : "-";
   const tokIn = (d.total_tokens_in || 0).toLocaleString();
   const tokOut = (d.total_tokens_out || 0).toLocaleString();
@@ -4787,7 +4827,7 @@ function renderRunStats(d) {
         `<b style="flex:1"><span style="display:inline-block;height:8px;` +
         `width:${Math.max(4, Math.round(c / sfMax * 100))}%;` +
         `background:var(--err);border-radius:4px"></span></b>` +
-        `<b>${c}</b></div>`).join("")
+        `<b>${esc(c)}</b></div>`).join("")
     : '<span class="card-meta">단계 실패 기록 없음</span>';
   // 최근 30일 daily runs 스파크라인 (div 바 — 차트 라이브러리 없음)
   const daily = d.daily || [];
@@ -4796,7 +4836,7 @@ function renderRunStats(d) {
     ? `<div class="office-spark">` + daily.map(x => {
         const h = Math.max(4, Math.round((x.runs || 0) / dMax * 100));
         return `<div style="height:${h}%" title="${esc(x.date)} · ` +
-          `${x.runs || 0}회 · 토큰 ${(x.tokens || 0).toLocaleString()}"></div>`;
+          `${esc(x.runs ?? 0)}회 · 토큰 ${esc((x.tokens || 0).toLocaleString())}"></div>`;
       }).join("") + `</div>` +
       `<div class="card-meta" style="display:flex;justify-content:space-between">` +
       `<span>${esc(daily[0].date)}</span><span>${esc(daily[daily.length - 1].date)}</span></div>`
@@ -4820,9 +4860,9 @@ async function refreshRuns() {
     }
     tb.innerHTML = runs.map(r => `<tr>
       <td><input type="checkbox" class="run-cmp" data-id="${esc(r.id)}"></td>
-      <td class="mono">${r.id}</td><td>${r.workflow}</td>
-      <td>${badge(r.status)}</td><td class="card-meta">${(r.created_at||"").slice(0,19).replace("T"," ")}</td>
-      <td><button class="secondary" data-id="${r.id}" style="padding:4px 10px;font-size:12px">상세</button></td></tr>`).join("");
+      <td class="mono">${esc(r.id)}</td><td>${esc(r.workflow)}</td>
+      <td>${badge(r.status)}</td><td class="card-meta">${esc((r.created_at||"").slice(0,19).replace("T"," "))}</td>
+      <td><button class="secondary" data-id="${esc(r.id)}" style="padding:4px 10px;font-size:12px">상세</button></td></tr>`).join("");
     tb.querySelectorAll("button[data-id]").forEach(b =>
       b.addEventListener("click", () => showDetail(b.dataset.id)));
     tb.querySelectorAll(".run-cmp").forEach(cb => {
@@ -4866,12 +4906,12 @@ async function showDetail(id) {
   try {
     const d = await api("/runs/" + id);
     const stages = (d.stages || []).map(s =>
-      `<li><span class="mono">${s.stage_key}</span> #${s.attempt} — ${s.status}` +
-      (s.error ? ` <span class="card-meta">(${esc(s.error.slice(0,80))})</span>` : "") + `</li>`).join("");
+      `<li><span class="mono">${esc(s.stage_key)}</span> #${esc(s.attempt)} — ${esc(s.status)}` +
+      (s.error ? ` <span class="card-meta">(${esc(String(s.error).slice(0,80))})</span>` : "") + `</li>`).join("");
     const pr = d.metadata && d.metadata.pr_summary
       ? `<details><summary>PR 요약</summary><pre class="block">${esc(d.metadata.pr_summary)}</pre></details>` : "";
     const appr = (d.approvals || []).map(a =>
-      `<li>${a.decision} — ${esc(a.comment || "")} <span class="card-meta">${a.decided_at}</span></li>`).join("");
+      `<li>${esc(a.decision)} — ${esc(a.comment || "")} <span class="card-meta">${esc(a.decided_at)}</span></li>`).join("");
     let approveBtn = "";
     if (d.status === "waiting_approval") {
       approveBtn = `<div style="margin-top:12px">
@@ -4879,8 +4919,8 @@ async function showDetail(id) {
         <button class="secondary" data-dec="reject">거부</button></div>`;
     }
     el.innerHTML = `
-      <p><span class="mono">${d.id}</span> ${badge(d.status)}
-         <span class="card-meta">${d.workflow} v${d.version}</span></p>
+      <p><span class="mono">${esc(d.id)}</span> ${badge(d.status)}
+         <span class="card-meta">${esc(d.workflow)} v${esc(d.version)}</span></p>
       ${d.error ? `<p style="color:var(--err)">${esc(d.error)}</p>` : ""}
       <h3 style="margin:14px 0 8px;font-size:14px">단계</h3><ul>${stages || "<li class='empty'>없음</li>"}</ul>
       ${appr ? `<h3 style="margin:14px 0 8px;font-size:14px">승인 기록</h3><ul>${appr}</ul>` : ""}
@@ -5251,6 +5291,8 @@ $("#inbox-list")?.addEventListener("click", async (e) => {
   if (!link) return;
   try {
     const u = new URL(link, location.origin);
+    // javascript:/data: 등 비http(s) 스킴 링크는 네비게이션 차단
+    if (u.protocol !== "http:" && u.protocol !== "https:") return;
     const v0 = u.searchParams.get("view");
     const v = v0 ? (VIEW_ALIASES[v0] || v0) : null;
     if (v) {
@@ -5732,7 +5774,11 @@ function archiveGo(link) {
   v = VIEW_ALIASES[v] || v;
   const nav = document.querySelector(`.nav-item[data-view="${CSS.escape(v)}"]`);
   if (nav) { nav.click(); return; }
-  if (/^(https?:)?\//.test(s)) location.href = s;
+  // 프로토콜 상대(//host)·javascript: 등 위험 스킴은 safeUrl이 "#"로 치환 — 차단
+  const su = safeUrl(s);
+  if (su && su !== "#" && (/^https?:\/\//.test(su) || su.startsWith("/"))) {
+    location.href = su;
+  }
 }
 async function loadArchive() {
   const el = $("#arch-body");
@@ -6084,7 +6130,7 @@ async function connLoadItems(card, force) {
     box.innerHTML = items.map(it => `
       <div class="conn-item-row">
         ${it.url
-          ? `<a href="${esc(it.url)}" target="_blank" rel="noopener"
+          ? `<a href="${esc(safeUrl(it.url))}" target="_blank" rel="noopener"
                style="color:var(--accent);font-weight:600;overflow-wrap:anywhere">${esc(it.title || it.url)}</a>`
           : `<b style="overflow-wrap:anywhere">${esc(it.title || "(제목 없음)")}</b>`}
         ${it.state ? badge(it.state) : ""}
@@ -6549,11 +6595,11 @@ function projCardHtml(p, myEmail, myRole) {
     ${target > 0 ? `<div class="proj-bar"><span style="width:${pct}%"></span></div>
       <div class="card-meta" style="margin-top:0">세션 ${sess}/${target} (${pct}%)</div>` : ""}
     <div class="proj-chips">
-      <span class="proj-chip">활성 세션 ${p.active_sessions ?? 0}</span>
-      <span class="proj-chip">실행 ${p.run_count ?? 0}</span>
-      <span class="proj-chip">성공률 ${p.success_rate ?? "-"}%</span>
+      <span class="proj-chip">활성 세션 ${esc(p.active_sessions ?? 0)}</span>
+      <span class="proj-chip">실행 ${esc(p.run_count ?? 0)}</span>
+      <span class="proj-chip">성공률 ${esc(p.success_rate ?? "-")}%</span>
       <span class="proj-chip">비용 ${usd(p.total_cost_usd)}</span>
-      ${p.open_approvals ? `<span class="proj-chip" style="color:var(--warn)">승인 대기 ${p.open_approvals}</span>` : ""}
+      ${p.open_approvals ? `<span class="proj-chip" style="color:var(--warn)">승인 대기 ${esc(p.open_approvals)}</span>` : ""}
     </div>
     ${acts ? `<div class="proj-acts">${acts}</div>` : ""}
     <div class="proj-detail" hidden></div>
@@ -6604,7 +6650,7 @@ function projDetailHtml(d) {
         `<div class="office-kv"><span>${esc(k)}</span>` +
         `<b style="flex:1"><span style="display:inline-block;height:8px;` +
         `width:${Math.max(4, Math.round(c / max * 100))}%;` +
-        `background:var(--err);border-radius:4px"></span></b><b>${c}</b></div>`).join(""));
+        `background:var(--err);border-radius:4px"></span></b><b>${esc(c)}</b></div>`).join(""));
   }
   // 일별 비용
   const cbd = Array.isArray(d.cost_by_day) ? d.cost_by_day : [];
@@ -6733,11 +6779,11 @@ function sessionHistoryHtml(d, s, projNames) {
   const stats = d.stats || {};
   const stateCounts = stats.state_counts || {};
   const statChips = Object.entries(stateCounts).map(([k, v]) =>
-    `<span class="proj-chip">${esc(k)} ${v}</span>`).join("") +
-    `<span class="proj-chip">결정 ${stats.decisions ?? 0}</span>` +
-    `<span class="proj-chip">승인 ${stats.approvals ?? 0}</span>` +
-    `<span class="proj-chip">오류 ${stats.errors ?? 0}</span>` +
-    `<span class="proj-chip">토큰 in ${(stats.tokens_in ?? 0).toLocaleString()} / out ${(stats.tokens_out ?? 0).toLocaleString()}</span>` +
+    `<span class="proj-chip">${esc(k)} ${esc(v)}</span>`).join("") +
+    `<span class="proj-chip">결정 ${esc(stats.decisions ?? 0)}</span>` +
+    `<span class="proj-chip">승인 ${esc(stats.approvals ?? 0)}</span>` +
+    `<span class="proj-chip">오류 ${esc(stats.errors ?? 0)}</span>` +
+    `<span class="proj-chip">토큰 in ${esc((stats.tokens_in ?? 0).toLocaleString())} / out ${esc((stats.tokens_out ?? 0).toLocaleString())}</span>` +
     `<span class="proj-chip">비용 ${usd(stats.est_cost_usd)}</span>` +
     `<span class="proj-chip">총 시간 ${officeFmtSecs(stats.total_seconds || 0)}</span>`;
   const tl = (d.timeline || []).slice().reverse();
@@ -6970,11 +7016,11 @@ function perfCompareHtml(d) {
       items.map(x => {
         const rate = Number(x.success_rate) || 0;
         return `<tr><td><b>${esc(x.group ?? "-")}</b></td>` +
-          `<td>${x.run_count ?? 0}</td>` +
+          `<td>${esc(x.run_count ?? 0)}</td>` +
           `<td><span class="perf-bar" style="width:${Math.max(2, Math.round(rate / maxRate * 60))}px"></span> ` +
-          `${rate}%</td>` +
+          `${esc(rate)}%</td>` +
           `<td>${officeFmtSecs(x.avg_seconds || 0)}</td>` +
-          `<td>${(x.total_tokens ?? 0).toLocaleString()}</td>` +
+          `<td>${esc((x.total_tokens ?? 0).toLocaleString())}</td>` +
           `<td>${usd(x.total_cost_usd)}</td>` +
           `<td class="card-meta">${esc(jmTopStages(x.failures_by_stage, 3))}</td></tr>`;
       }).join("") + `</tbody></table></div></div>`;
@@ -6984,8 +7030,8 @@ function perfCompareHtml(d) {
       `<div class="table-scroll"><table><thead><tr>` +
       `<th>도구</th><th>세션 수</th><th>활성</th><th>종료</th><th>평균 작업 시간</th></tr></thead><tbody>` +
       sess.map(x => `<tr><td><b>${esc(x.tool ?? "-")}</b></td>` +
-        `<td>${x.session_count ?? 0}</td><td>${x.active ?? 0}</td>` +
-        `<td>${x.ended ?? 0}</td>` +
+        `<td>${esc(x.session_count ?? 0)}</td><td>${esc(x.active ?? 0)}</td>` +
+        `<td>${esc(x.ended ?? 0)}</td>` +
         `<td>${officeFmtSecs(x.avg_work_seconds || 0)}</td></tr>`).join("") +
       `</tbody></table></div></div>`;
   }
@@ -7097,7 +7143,7 @@ $("#share-create")?.addEventListener("click", async () => {
       `style="flex:1;min-width:200px;font-family:ui-monospace,monospace;font-size:12px">` +
       `<button type="button" class="secondary" id="share-copy"
         style="padding:6px 12px;font-size:13px">복사</button>` +
-      `<a class="secondary" href="${esc(path)}" target="_blank" rel="noopener"
+      `<a class="secondary" href="${esc(safeUrl(path))}" target="_blank" rel="noopener"
         style="padding:6px 12px;font-size:13px;text-decoration:none;border:1px solid var(--accent);border-radius:10px;color:var(--accent)">열기</a>` +
       `</div>`;
     $("#share-copy")?.addEventListener("click", async () => {
@@ -7416,6 +7462,13 @@ jmMe().then(me => {
   _jmRole = jmNormalizeRole((me || {}).role);
   _jmRoleRank = JM_ROLE_RANK[_jmRole];
   applyRoleGating();
+  // role resolve 전 큐잉된 뷰 클릭 재시도 — 권한이 있으면 연다
+  // (사이드바 메뉴 표시 설정으로 hidden이어도 deep-link와 동일하게 허용)
+  const pv = _jmPendingView; _jmPendingView = null;
+  if (pv) {
+    const pb = document.querySelector(`.nav-item[data-view="${pv}"]`);
+    if (pb && (!pb.dataset.minRole || jmRoleAllows(pb.dataset.minRole))) pb.click();
+  }
 });
 // 기본 활성 뷰 로드 (Agent-Office가 첫 메뉴)
 document.querySelector(".nav-item.active")?.click();

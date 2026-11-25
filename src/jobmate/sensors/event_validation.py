@@ -23,6 +23,12 @@ def validate_event(ev: ExtractedEvent) -> tuple[bool, str]:
         end = datetime.fromisoformat(ev.end_at)
     except ValueError:
         return False, "bad_datetime"
+    # aware/naive 혼합 비교는 TypeError — naive 쪽을 이벤트 timezone으로 통일
+    tz = ZoneInfo(ev.timezone)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=tz)
     if end <= start:
         return False, "end_before_start"
     if not ev.title.strip():

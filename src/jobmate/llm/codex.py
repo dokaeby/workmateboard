@@ -80,8 +80,12 @@ class CodexAuth:
         if new.get("refresh_token"):
             tokens["refresh_token"] = new["refresh_token"]
         data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._path.write_text(json.dumps(data))
-        self._path.chmod(0o600)
+        # 원자적 쓰기 — 임시파일에 쓴 뒤 os.replace. write_text 직접 쓰기는
+        # 갱신 도중 프로세스가 죽으면 auth.json이 깨진 채 남을 수 있다.
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.chmod(0o600)
+        os.replace(tmp, self._path)
         logger.info("codex access token refreshed")
 
     def headers(self) -> dict[str, str]:
@@ -214,6 +218,7 @@ class CodexResponsesLLM:
         parts: list[str] = []
         calls: list[dict[str, Any]] = []
         usage = {"tokens_in": 0, "tokens_out": 0}
+        saw_completed = False
         with httpx.Client(timeout=model.timeout_seconds) as client:
             with client.stream("POST", url, headers=self._auth.headers(), json=payload) as resp:
                 if resp.status_code in (429, 500, 502, 503, 504):
@@ -241,6 +246,7 @@ class CodexResponsesLLM:
                                 }
                             )
                     elif etype == "response.completed":
+                        saw_completed = True
                         u = (ev.get("response") or {}).get("usage") or {}
                         usage = {
                             "tokens_in": u.get("input_tokens", 0),
@@ -248,6 +254,17 @@ class CodexResponsesLLM:
                         }
                     elif etype in ("response.failed", "error"):
                         raise LLMError(f"codex stream error: {json.dumps(ev)[:300]}")
+        if not saw_completed:
+            # 스트림이 response.completed 없이 종료 — 부분 텍스트를 그대로
+            # 반환하면 잘린 JSON이 스키마 파싱 실패/잘못된 결과로 이어질 수
+            # 있으므로 최소한 경고를 남긴다(호출부 동작은 변경하지 않음).
+            logger.warning(
+                "codex stream ended without response.completed model=%s "
+                "parts=%d calls=%d — returning partial output",
+                model.model,
+                len(parts),
+                len(calls),
+            )
         return "".join(parts), usage, calls
 
 

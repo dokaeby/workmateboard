@@ -6,6 +6,14 @@ localhost/사설 IP 리터럴 접근을 차단한다. DNS 이름은 getaddrinfo�
 공개 DNS 이름의 사설 IP 해석을 차단). DNS 해석은 OS resolver에 위임되며
 getaddrinfo 자체에 타임아웃을 둘 수 없어, 해석 지연 시 호출이 OS의
 resolver 타임아웃까지 블로킹될 수 있다(허용된 트레이드오프).
+
+DNS 리바인딩(TOCTOU) 대응: 검증 시점과 실제 접속 시점의 DNS 해석이
+달라지면(getaddrinfo가 매번 다른 IP를 반환하는 공격 도메인) 사설 IP로
+연결될 수 있다. 이를 막기 위해 fetch_bytes/fetch_json은 검증을 통과한
+호스트에 대해 **검증에 사용한 공인 IP 하나를 connect 대상에 고정**한다
+(httpcore NetworkBackend 래퍼). TLS SNI와 Host 헤더는 httpcore가
+origin(원래 호스트명) 기준으로 생성하므로 도메인 인증서 검증과
+가상호스트 라우팅이 그대로 유지된다.
 """
 
 from __future__ import annotations
@@ -17,10 +25,16 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+import httpcore
 import httpx
 
 MAX_FETCH_BYTES = 256 * 1024
 DEFAULT_TIMEOUT = 8.0
+
+# SSRF 포트 제한 — 공인 호스트라도 임의 TCP 포트(6379, 8080 등 내부/관리
+# 서비스 포트)를 두드리는 것을 차단한다. 카드/커넥터는 일반 웹 리소스만
+# 조회하므로 80/443만 허용한다.
+_ALLOWED_PORTS = frozenset({80, 443})
 
 _BLOCKED_HOSTNAMES = {
     "localhost",
@@ -48,16 +62,17 @@ def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 _DNS_CACHE_TTL = 60.0
 _DNS_CACHE_MAX = 512
-_dns_cache: dict[str, tuple[float, bool]] = {}
+# host -> (만료 monotonic, 공인 IP 튜플). 빈 튜플 = 검증 실패/사설 해석.
+_dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 
 
-def _host_dns_is_public(host: str) -> bool:
-    """DNS 이름이 공인 IP로만 해석되는지 검사.
+def _resolve_public_ips(host: str) -> tuple[str, ...]:
+    """DNS 이름이 공인 IP로만 해석되면 그 IP 문자열 튜플, 아니면 빈 튜플.
 
     getaddrinfo(host, port, proto=IPPROTO_TCP) 결과의 모든 IP가
-    _ip_is_public을 만족해야 True. 하나라도 사설/루프백/링크로컬/
-    멀티캐스트/예약/unspecified면 False. 해석 실패(OSError/gaierror)도
-    False — 검증 불가한 이름은 거부한다(명확한 일시적 DNS 장애로 인한
+    _ip_is_public을 만족해야 반환한다. 하나라도 사설/루프백/링크로컬/
+    멀티캐스트/예약/unspecified거나 해석 실패(OSError/gaierror)면 빈
+    튜플 — 검증 불가한 이름은 거부한다(명확한 일시적 DNS 장애로 인한
     false positive는 허용 범위).
 
     해석은 OS resolver에 위임 — getaddrinfo에 적용 가능한 타임아웃이
@@ -71,25 +86,31 @@ def _host_dns_is_public(host: str) -> bool:
     try:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except OSError:
-        return False
-    allowed = True
+        return ()
+    ips: list[str] = []
     for info in infos:
         sockaddr = info[4]
         if not sockaddr:
-            allowed = False
+            ips = []
             break
         try:
             ip = ipaddress.ip_address(sockaddr[0])
         except ValueError:
-            allowed = False
+            ips = []
             break
         if not _ip_is_public(ip):
-            allowed = False
+            ips = []
             break
+        ips.append(str(ip))
+    result = tuple(sorted(set(ips)))
     if len(_dns_cache) >= _DNS_CACHE_MAX:
         _dns_cache.clear()
-    _dns_cache[host] = (now + _DNS_CACHE_TTL, allowed)
-    return allowed
+    _dns_cache[host] = (now + _DNS_CACHE_TTL, result)
+    return result
+
+
+def _host_dns_is_public(host: str) -> bool:
+    return bool(_resolve_public_ips(host))
 
 
 def is_safe_fetch_url(url: str) -> bool:
@@ -102,6 +123,12 @@ def is_safe_fetch_url(url: str) -> bool:
     except ValueError:
         return False
     if parsed.scheme not in ("http", "https"):
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port is not None and port not in _ALLOWED_PORTS:
         return False
     host = (parsed.hostname or "").strip().lower()
     if not host:
@@ -121,6 +148,90 @@ def assert_safe_fetch_url(url: str) -> None:
         raise FetchError("url_not_allowed")
 
 
+class _PinnedSyncBackend(httpcore.SyncBackend):
+    """connect_tcp의 대상을 검증된 공인 IP로 고정하는 NetworkBackend.
+
+    httpcore는 TLS SNI(server_hostname)와 Host 헤더를 origin(원래 URL의
+    호스트명)에서 가져오므로, 여기서 connect 주소만 IP로 바꿔도
+    인증서 검증·가상호스트는 원래 도메인 기준으로 동작한다.
+    DNS 리바인딩(검증 후 재해석)이 차단된다.
+    """
+
+    def __init__(self, pinned_ip: str) -> None:
+        self._pinned_ip = pinned_ip
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.NetworkStream:
+        return super().connect_tcp(
+            self._pinned_ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+
+class _PinnedTransport(httpx.HTTPTransport):
+    """pinned IP로만 연결하는 httpx transport — fetch 1회 = origin 1개."""
+
+    def __init__(self, pinned_ip: str) -> None:
+        super().__init__()
+        # super().__init__이 만든 기본 pool을 pinned backend pool로 교체.
+        # ssl_context는 httpx 기본 생성 결과(verify=True)를 그대로 재사용.
+        old_pool = self._pool
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=old_pool._ssl_context,  # noqa: SLF001 - httpcore 내부 속성
+            network_backend=_PinnedSyncBackend(pinned_ip),
+        )
+        old_pool.close()
+
+
+def _pinned_ip_for(url: str) -> str | None:
+    """검증 통과 URL의 connect 대상이 될 공인 IP 1개를 반환.
+
+    is_safe_fetch_url과 동일한 검증을 거치되, DNS 이름은 검증에 사용한
+    해석 결과(캐시된 공인 IP 목록) 중 첫 번째를 고정한다. IP 리터럴은
+    그 자체를 반환. 검증 불가/사설이면 None."""
+    try:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+    except ValueError:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is not None and port not in _ALLOWED_PORTS:
+        return None
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return None
+    if host in _BLOCKED_HOSTNAMES or host.endswith(_BLOCKED_SUFFIXES):
+        return None
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ips = _resolve_public_ips(host)
+        return ips[0] if ips else None
+    return str(ip) if _ip_is_public(ip) else None
+
+
+def _read_limited(resp: httpx.Response, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in resp.iter_bytes(8192):
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= max_bytes:
+            break
+    return b"".join(chunks)[:max_bytes]
+
+
 def fetch_bytes(
     url: str,
     *,
@@ -129,22 +240,23 @@ def fetch_bytes(
     max_bytes: int = MAX_FETCH_BYTES,
 ) -> bytes:
     """GET → 본문 bytes (max_bytes에서 절단). 리다이렉트는 따라가지 않는다
-    (리다이렉트 대상이 가드를 우회할 수 있으므로)."""
+    (리다이렉트 대상이 가드를 우회할 수 있으므로).
+
+    DNS 이름은 검증에 사용한 공인 IP로 connect를 고정해 DNS 리바인딩을
+    차단한다(_PinnedTransport). 고정에 실패하면 FetchError."""
     assert_safe_fetch_url(url)
+    pinned = _pinned_ip_for(url)
+    if pinned is None:
+        raise FetchError("url_not_allowed")
     try:
-        with httpx.stream(
-            "GET", url, headers=headers or {}, timeout=timeout, follow_redirects=False
-        ) as resp:
+        with (
+            _PinnedTransport(pinned) as transport,
+            httpx.Client(transport=transport, timeout=timeout) as client,
+            client.stream("GET", url, headers=headers or {}, follow_redirects=False) as resp,
+        ):
             if resp.status_code >= 400:
                 raise FetchError(f"http_{resp.status_code}")
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in resp.iter_bytes(8192):
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= max_bytes:
-                    break
-            return b"".join(chunks)[:max_bytes]
+            return _read_limited(resp, max_bytes)
     except FetchError:
         raise
     except httpx.HTTPError as e:
@@ -218,6 +330,23 @@ def _first(d: dict[str, Any], *keys: str) -> Any:
     return ""
 
 
+def _safe_item_url(v: Any) -> str:
+    """커넥터 응답의 url 필드 스킴 검증 — http/https 절대 URL과 단일
+    슬래시 상대경로만 통과. javascript:/data:/vbscript:/프로토콜 상대
+    //host 등은 빈 문자열로 정규화한다(프론트 safeUrl과 중복 방어)."""
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    if low.startswith(("http://", "https://")):
+        return s
+    if s.startswith("//"):
+        return ""
+    if s.startswith(("/", "./", "../", "#", "?")):
+        return s
+    return ""
+
+
 def normalize_items(
     raw_items: list[Any], fields: dict[str, str] | None = None
 ) -> list[dict[str, Any]]:
@@ -258,7 +387,7 @@ def normalize_items(
             {
                 "id": str(get("id") or ""),
                 "title": str(title),
-                "url": str(get("url") or ""),
+                "url": _safe_item_url(get("url")),
                 "state": str(get("state") or ""),
                 "updated_at": str(get("updated_at") or ""),
                 "author": str(author or ""),

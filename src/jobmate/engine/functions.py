@@ -541,6 +541,7 @@ def radar_summarize(ctx: FunctionContext) -> dict[str, Any]:
                 description=r.get("description"),
                 topics=list(r.get("topics") or []),
                 readme=sanitized,
+                usage_acc=tokens,
             )
             metrics["llm_calls"] += 1
             item["taxonomy"] = cls.label
@@ -552,6 +553,7 @@ def radar_summarize(ctx: FunctionContext) -> dict[str, Any]:
                 full_name=name,
                 description=r.get("description"),
                 readme=sanitized,
+                usage_acc=tokens,
             )
             metrics["llm_calls"] += 1
             if summ is None:
@@ -623,6 +625,7 @@ def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
     _sum_model, judge_model = _radar_llm_models(ctx)
     platform = _radar_platform_name(ctx)
     retries: dict[str, int] = {}
+    tokens = {"tokens_in": 0, "tokens_out": 0}
 
     for item in repos:
         name = item.get("full_name", "")
@@ -638,6 +641,7 @@ def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
                 judge_model,
                 readme=readme,
                 summary_lines=item.get("_summary_en_lines") or [],
+                usage_acc=tokens,
             )
             metrics["llm_calls"] += 1
             metrics["verify_calls"] += 1
@@ -652,6 +656,7 @@ def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
                     full_name=name,
                     description=item.get("description"),
                     readme=readme,
+                    usage_acc=tokens,
                 )
                 metrics["llm_calls"] += 1
                 if summ is not None:
@@ -665,6 +670,7 @@ def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
                     judge_model,
                     readme=readme,
                     summary_lines=item.get("_summary_en_lines") or [],
+                    usage_acc=tokens,
                 )
                 metrics["llm_calls"] += 1
                 metrics["verify_calls"] += 1
@@ -675,7 +681,7 @@ def radar_verify(ctx: FunctionContext) -> dict[str, Any]:
         except Exception as e:
             logger.warning("radar verify failed run=%s repo=%s: %s", ctx.run_id, name, str(e)[:200])
             ctx.store.audit(ctx.run_id, "tool", "radar_verify_error", name, {"error": str(e)[:200]})
-    return {"status": "ok", "repos": repos, "metrics": metrics}
+    return {"status": "ok", "repos": repos, "metrics": metrics, **tokens}
 
 
 def radar_rank(ctx: FunctionContext) -> dict[str, Any]:

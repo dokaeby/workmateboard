@@ -197,7 +197,13 @@ def _claude_title(entries: Iterable[dict]) -> str:
 
 
 def _claude_slug_project(slug: str) -> str:
-    """'-Users-sec-Documents-foo' → 'foo' (basename)."""
+    """'-Users-sec-Documents-foo' → 'foo' (basename).
+
+    한계: Claude Code는 프로젝트 디렉터리명을 만들어 slug로 쓸 때
+    경로 구분자뿐 아니라 일부 특수문자도 '-'로 치환한다. 원래 이름에
+    '-'나 치환 대상 문자가 있으면 구분이 모호해지므로 이 값은
+    best-effort다 — 정확한 프로젝트명은 transcript의 cwd 메타데이터가
+    우선 사용되어야 한다(scan_claude 참조)."""
     decoded = slug.lstrip("-").replace("-", "/")
     return decoded.rsplit("/", 1)[-1] if decoded else slug
 
@@ -240,7 +246,10 @@ def scan_claude(root: Path, now: float) -> list[SessionState]:
             continue
         head, tail = _read_edges(path, _CLAUDE_HEAD_BYTES, _CLAUDE_TAIL_BYTES)
         head_entries, tail_entries = _claude_entries(head, tail)
-        entries = tail_entries or head_entries
+        # head+tail을 모두 사용 — 중간 크기 파일에서 tail만 쓰면
+        # head 구간의 초기 엔트리(session_meta, 첫 user 메시지 등)가 누락된다.
+        # 큰 파일은 tail 첫 라인이 잘려 있을 수 있으나 _claude_entries가 처리.
+        entries = head_entries + tail_entries
 
         title = _claude_title(head_entries) or _claude_title(entries)
         project = ""
@@ -358,6 +367,7 @@ def _zstd_edges(path: Path, head_bytes: int, tail_bytes: int) -> tuple[bytes, by
     tail = bytearray()
     head_done = False
     chunk_size = 1024 * 1024
+    timed_out = False
     try:
         while True:
             chunk = proc.stdout.read(chunk_size)
@@ -376,7 +386,16 @@ def _zstd_edges(path: Path, head_bytes: int, tail_bytes: int) -> tuple[bytes, by
                 del tail[: len(tail) - tail_bytes]
     finally:
         proc.stdout.close()
-        proc.wait()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # zstd가 행업 상태로 남지 않도록 kill — 부분 결과는 버린다.
+            proc.kill()
+            proc.wait()
+            timed_out = True
+            logger.warning("zstd decompress timed out for %s", path)
+    if timed_out:
+        return b"", b""
     return bytes(head), bytes(tail)
 
 
@@ -426,7 +445,8 @@ def scan_codex(root: Path, now: float) -> list[SessionState]:
         else:
             head, tail = _read_edges(path, _CODEX_HEAD_BYTES, _CODEX_TAIL_BYTES)
         head_entries, tail_entries = _codex_entries(head, tail)
-        entries = tail_entries or head_entries
+        # claude와 동일 — head+tail 모두 사용해 중간 구간 엔트리 누락 방지.
+        entries = head_entries + tail_entries
 
         project = ""
         title = ""
@@ -746,19 +766,20 @@ def _devin_subagent_titles(
     out: dict[str, dict[str, str]] = {}
     if not session_ids:
         return out
-    rows: list[tuple[Any, ...]] = []
-    for sid in session_ids:
-        try:
-            rows.extend(
-                con.execute(
-                    "SELECT session_id, chat_message FROM message_nodes"
-                    " WHERE session_id=?"
-                    " AND chat_message LIKE '%subagent started with agent_id=%'",
-                    (sid,),
-                ).fetchall()
-            )
-        except sqlite3.Error:
-            return out
+    # 세션별 개별 쿼리(N+1) 대신 IN 절 단일 쿼리 + LIMIT.
+    # sid 수가 비정상적으로 크면 쿼리가 비대해지므로 상한을 둔다.
+    sids = list(dict.fromkeys(session_ids))[:500]
+    try:
+        ph = ",".join("?" * len(sids))
+        rows = con.execute(
+            "SELECT session_id, chat_message FROM message_nodes"  # noqa: S608 - placeholder만 생성, 값은 바인딩
+            f" WHERE session_id IN ({ph})"
+            " AND chat_message LIKE '%subagent started with agent_id=%'"
+            " LIMIT 2000",
+            tuple(sids),
+        ).fetchall()
+    except sqlite3.Error:
+        return out
     pending: list[tuple[str, str, str]] = []  # (session_id, agent_id, tool_call_id)
     for sid, msg in rows:
         if not isinstance(msg, str):
@@ -767,22 +788,36 @@ def _devin_subagent_titles(
         t = re.search(r'"tool_call_id"\s*:\s*"(call_[^"]+)"', msg)
         if m and t:
             pending.append((sid, m.group(1), t.group(1)))
+    if not pending:
+        return out
+    # tool_call_state 조회도 (session_id, tool_call_id) 쌍 단위 배치 —
+    # pending 건별 개별 쿼리(N+1) 대신 IN 절 2개로 한 번에 가져온다.
+    pair_sids = sorted({str(s) for s, _, _ in pending})
+    call_ids = sorted({c for _, _, c in pending})
+    lookup: dict[tuple[str, str], Any] = {}
+    try:
+        ph_s = ",".join("?" * len(pair_sids))
+        ph_c = ",".join("?" * len(call_ids))
+        tc_rows = con.execute(
+            "SELECT session_id, tool_call_id, tool_call_json FROM tool_call_state"  # noqa: S608 - placeholder만 생성, 값은 바인딩
+            f" WHERE session_id IN ({ph_s}) AND tool_call_id IN ({ph_c})"
+            " LIMIT 2000",
+            tuple(pair_sids) + tuple(call_ids),
+        ).fetchall()
+        for s, c, j in tc_rows:
+            lookup[(str(s), str(c))] = j
+    except sqlite3.Error:
+        pass
     for sid, agent_id, call_id in pending:
         title = ""
-        try:
-            r = con.execute(
-                "SELECT tool_call_json FROM tool_call_state WHERE session_id=? AND tool_call_id=?",
-                (sid, call_id),
-            ).fetchone()
-        except sqlite3.Error:
-            r = None
-        if r and r[0]:
+        raw = lookup.get((str(sid), call_id))
+        if raw:
             try:
-                tj = json.loads(r[0])
+                tj = json.loads(raw)
                 title = str((tj.get("rawInput") or {}).get("title") or "")
-            except (json.JSONDecodeError, AttributeError):
+            except (json.JSONDecodeError, AttributeError, TypeError):
                 title = ""
-        out.setdefault(sid, {})[agent_id] = _clip(title, 60)
+        out.setdefault(str(sid), {})[agent_id] = _clip(title, 60)
     return out
 
 
@@ -791,26 +826,56 @@ def _devin_subagent_titles(
 # ---------------------------------------------------------------------------
 
 
+# ATIF transcript는 단일 JSON — head/tail 부분 파싱이 불가하므로
+# 비정상적으로 큰 파일은 로드 자체를 포기한다(스캔 지연·메모리 보호).
+_DEVIN_MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024
+_devin_lock_warned = False
+
+
 def scan_devin(root: Path, now: float) -> list[SessionState]:
     """root = ~/.local/share/devin/cli 디렉터리.
 
     transcripts/*.json (ATIF) + session_locks/<stem>.lock 존재 여부로
     활성 세션을 판별한다. lock이 없는 transcript는 ended이므로 반환하지 않는다
     (Bridge가 이전 스캔 대비 사라진 세션을 ended로 push한다).
+
+    session_locks/ 디렉터리 자체가 없으면 lock 기능을 지원하지 않는
+    버전으로 간주한다 — 이 경우 transcript를 전부 활성으로 처리하면
+    종료된 세션이 계속 살아있는 것처럼 보이므로, transcript는 수집하지
+    않는다(ended로 수렴). sessions.db 기반 세션은 영향 없음.
     """
+    global _devin_lock_warned
     states: list[SessionState] = []
     tdir = root / "transcripts"
     ldir = root / "session_locks"
     mtimes: dict[str, float] = {}  # session_key → 가장 최신 활동 시각
     if not tdir.is_dir():
         return states
+    lock_supported = ldir.is_dir()
+    if not lock_supported and tdir.is_dir() and not _devin_lock_warned:
+        _devin_lock_warned = True
+        logger.info(
+            "devin session_locks dir missing at %s — transcripts treated as ended",
+            ldir,
+        )
     for path in sorted(tdir.glob("*.json")):
         if not path.is_file():
             continue
         mtime = _mtime(path)
         if not _alive(mtime, now):
             continue
-        if ldir.is_dir() and not (ldir / f"{path.stem}.lock").exists():
+        if not lock_supported or not (ldir / f"{path.stem}.lock").exists():
+            continue
+        try:
+            if path.stat().st_size > _DEVIN_MAX_TRANSCRIPT_BYTES:
+                logger.warning(
+                    "devin transcript too large (%d bytes > %d), skipping %s",
+                    path.stat().st_size,
+                    _DEVIN_MAX_TRANSCRIPT_BYTES,
+                    path,
+                )
+                continue
+        except OSError:
             continue
         mtimes[path.stem] = mtime
         try:
@@ -992,6 +1057,10 @@ def scan_devin(root: Path, now: float) -> list[SessionState]:
 
 _GIT_TIMEOUT = 5.0
 
+# Bridge 추적 캐시 상한 — 장기 실행 시 _ended_sent/_ended_cache/_repo_cache가
+# 세션 수만큼 무한 성장하는 것을 막는다.
+_CACHE_MAX = 5000
+
 
 def _default_repo_roots() -> list[Path]:
     """project명(디렉터리 basename) → git repo 탐색 루트.
@@ -1096,6 +1165,14 @@ class Bridge:
         self._ended_cache: dict[tuple[str, str], tuple[str, list[str]]] = {}
         self._machine = _machine_name()
 
+    @staticmethod
+    def _cache_put(cache: dict[Any, Any], key: Any, value: Any, limit: int = _CACHE_MAX) -> None:
+        """캐시 크기 상한 — 초과 시 전체 비우고 재삽입 (오래된 항목부터 제거와
+        동등한 효과; 키 집합이 작아 clear 비용이 무시할 수준)."""
+        if len(cache) >= limit:
+            cache.clear()
+        cache[key] = value
+
     def _repo_for(self, project: str) -> Path | None:
         """project명(basename) → git repo 경로. 결과는 프로젝트별 캐시."""
         if not project:
@@ -1117,7 +1194,7 @@ class Bridge:
                     break
             if found is not None:
                 break
-        self._repo_cache[project] = found
+        self._cache_put(self._repo_cache, project, found)
         return found
 
     def _ended_artifacts(self, state: SessionState) -> tuple[str, list[str]]:
@@ -1132,7 +1209,7 @@ class Bridge:
                 result = _git_end_summary(repo)
             except Exception as e:
                 logger.debug("ended summary failed %s/%s: %s", state.tool, key[1], e)
-        self._ended_cache[key] = result
+        self._cache_put(self._ended_cache, key, result)
         return result
 
     def scan_all(self) -> dict[tuple[str, str], SessionState]:
@@ -1222,9 +1299,14 @@ class Bridge:
             ended.ended_summary, ended.artifacts = self._ended_artifacts(prev)
             if self._post(ended, post_client):
                 self._ended_sent.add(key)
+                if len(self._ended_sent) > _CACHE_MAX:
+                    self._ended_sent.clear()
                 counts["ended"] += 1
-            self._last.pop(key, None)
-            self._last_push.pop(key, None)
+                # push 성공 시에만 추적 제거 — 실패하면 _last/_last_push를
+                # 유지해 다음 스캔에서 ended를 재시도한다(영구 유실 방지).
+                # 재전송은 서버 upsert라 중복이어도 무해하다.
+                self._last.pop(key, None)
+                self._last_push.pop(key, None)
 
         for key, state in current.items():
             # 재등장한 세션은 ended 추적을 해제 — 다시 사라질 때 ended를 재전송해야 한다

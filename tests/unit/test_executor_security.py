@@ -96,6 +96,117 @@ def test_run_tests_env_extensible_prefixes(monkeypatch: pytest.MonkeyPatch) -> N
             _exe().call("run_tests", ["run_tests"], command=bad)
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # pytest — 리포트/임시 디렉터리/플러그인/설정 주입 옵션
+        "pytest --junitxml=out.xml",
+        "pytest --junitxml out.xml",
+        "pytest --basetemp=/tmp/evil",
+        "pytest --baselinetemp=/tmp/evil",
+        "pytest --rootdir=/etc",
+        "pytest --confcutdir=/tmp",
+        "pytest --noconftest",
+        "pytest -p no:cacheprovider",
+        "pytest -psomeplugin",
+        "pytest -c pytest.ini",
+        "pytest -o log_file=/tmp/pwn.log",
+        "pytest --cov-report=html",
+        "pytest --cov-config=/tmp/cov.ini",
+        "pytest --resultlog=/tmp/r.log",
+        # ruff/mypy — 출력 파일·설정 파일 지정
+        "ruff check --output-file=out.txt .",
+        "ruff check --config=evil.toml .",
+        "ruff format --config evil.toml .",
+        "mypy --config-file evil.ini src",
+        "python -m pytest --junitxml=x",
+        # argparse 유일접두사 축약 — `--junitx=`는 `--junitxml`로 해석된다
+        "pytest --junitx=out.xml",
+        "pytest --junitx out.xml",
+        "pytest --cov-rep=html",
+        "pytest --cov=pytest_cov",
+        "pytest --log-f=/tmp/x.log",
+        "pytest --html=x.html",
+        "pytest --self-contained-h",
+        "pytest --override-ini log_file=/tmp/x",
+        "pytest --baset=x",
+        "pytest --root=x",
+        "pytest --confcut=x",
+        "pytest --noconf",
+        "pytest --result=x",
+        "pytest --doctest-modules",
+        "pytest --pastebin=failed",
+        "pytest --import-mode=importlib",
+        "pytest -oaddopts=-p evil",
+        "pytest -cfoo.ini",
+        "pytest -- /etc/passwd",
+        "pytest ../outside",
+        "pytest /abs/path",
+        # ruff — format 서브커맨드/소스 수정 옵션 전면 차단
+        "ruff format src",
+        "ruff format --check src",
+        "ruff check --fix .",
+        "ruff check --fix-only .",
+        "ruff check --unsafe-fixes .",
+        "ruff check --add-noqa .",
+        "ruff check --config x.toml .",
+        "ruff check --cache-dir=/tmp/c .",
+        "ruff --version",
+        "ruff",
+        # mypy — 리포트/캐시/코드로드/인터프리터 옵션 차단
+        "mypy --html-r=out src",
+        "mypy --html-report out src",
+        "mypy --xml-report out src",
+        "mypy --txt-report out src",
+        "mypy --linecount-report out src",
+        "mypy --cobertura-report out.xml src",
+        "mypy --any-exprs-report out src",
+        "mypy --cache-dir=/tmp/mc src",
+        "mypy --install-types src",
+        "mypy --non-interactive src",
+        "mypy --config x.ini src",
+        "mypy --custom-typeshed-dir /tmp/ts src",
+        "mypy --shadow-file a.py:b.py src",
+        "mypy --python-executable /bin/evil src",
+        "mypy -p somepkg",
+        "mypy -c 'import os'",
+        "mypy --package somepkg",
+        "python -m ruff format .",
+        "python -m mypy --html-report out src",
+    ],
+)
+def test_run_tests_denies_dangerous_options(command: str) -> None:
+    """허용 접두사여도 파일 쓰기/코드 로드성 옵션은 차단된다."""
+    with pytest.raises(ToolDeniedError, match="not allowed"):
+        _exe().call("run_tests", ["run_tests"], command=command)
+
+
+def test_run_tests_allows_normal_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """일반적인 pytest/ruff/mypy 사용은 denylist에 걸리지 않는다."""
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    for command in (
+        "pytest -q tests/unit",
+        "pytest tests/unit -k foo --tb=short -x",
+        "pytest -q -v -s -m 'not slow' --maxfail=2 --disable-warnings tests/unit",
+        "pytest tests/unit --lf --ff --collect-only",
+        "ruff check src/jobmate",
+        "ruff check --statistics --diff src/jobmate",
+        "mypy src/jobmate",
+        "mypy src/jobmate --show-error-codes --ignore-missing-imports",
+        "python -m pytest -q",
+        "python -m ruff check src",
+        "python -m mypy src",
+    ):
+        out = _exe().call("run_tests", ["run_tests"], command=command)
+        assert out["exit_code"] == 0
+
+
 def test_run_tests_env_prefix_rejects_unsafe_patterns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -106,3 +217,53 @@ def test_run_tests_env_prefix_rejects_unsafe_patterns(
     prefixes = _allowed_test_prefixes()
     assert "safe-cmd" in prefixes
     assert not any(";" in p or "'" in p for p in prefixes)
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        ".env",
+        ".env.local",
+        ".envrc",
+        "config/.env",
+        "prod.env",
+        "certs/server.pem",
+        "keys/id_rsa",
+        "keys/id_ed25519",
+        "data/app.db",
+        "app.sqlite3",
+        "app.sqlite3-wal",
+        "secrets/api-secret.txt",
+        "aws_credentials.json",
+        "tokens/api_token.json",
+        "cert.p12",
+        "cert.pfx",
+        "store.jks",
+        ".git/config",
+        "nested/.git/HEAD",
+        "UPPER/.ENV",
+    ],
+)
+def test_read_file_denies_sensitive_paths(tmp_path, relpath: str) -> None:
+    """repo root 하위라도 시크릿/자격증명 경로는 read_file로 읽을 수 없다."""
+    p = tmp_path / relpath
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("SECRET", encoding="utf-8")
+    with pytest.raises(ToolDeniedError, match="sensitive"):
+        _exe_at(tmp_path).call("read_file", ["read_file"], path=relpath)
+
+
+def _exe_at(root) -> ToolExecutor:
+    return ToolExecutor(repo_root=str(root))
+
+
+def test_read_file_allows_normal_files(tmp_path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('ok')", encoding="utf-8")
+    (tmp_path / "README.md").write_text("docs", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "notes.txt").write_text("n", encoding="utf-8")
+    ex = _exe_at(tmp_path)
+    assert "print('ok')" in ex.call("read_file", ["read_file"], path="src/app.py")
+    assert ex.call("read_file", ["read_file"], path="README.md") == "docs"
+    assert ex.call("read_file", ["read_file"], path="data/notes.txt") == "n"

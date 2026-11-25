@@ -17,7 +17,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from ..llm.client import LLMClient
-from ..models import ModelConfig, RadarClassification, RadarSummary3, RadarVerify
+from ..models import ModelConfig, RadarClassification, RadarSummary3
 
 logger = logging.getLogger("jobmate.radar")
 
@@ -306,13 +306,21 @@ def _chat_json(
     *,
     prompt: str,
     schema: type[BaseModel] | None = None,
+    usage_acc: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
-    """chat/completions 1회 호출 + JSON 추출. 실패 시 None."""
+    """chat/completions 1회 호출 + JSON 추출. 실패 시 None.
+
+    ``usage_acc``가 주어지면 호출의 토큰 사용량을 누적한다 — function
+    단계의 LLM 사용량이 run budget에 반영되도록 하기 위함.
+    """
     try:
-        parsed, _usage = llm.complete(model=model, system="", user=prompt, schema=schema)
+        parsed, usage = llm.complete(model=model, system="", user=prompt, schema=schema)
     except Exception as exc:  # noqa: BLE001 - 항목별 예외 격리
         logger.warning("radar llm call failed model=%s: %s", model.model, str(exc)[:200])
         return None
+    if usage_acc is not None and usage:
+        usage_acc["tokens_in"] = usage_acc.get("tokens_in", 0) + int(usage.get("tokens_in") or 0)
+        usage_acc["tokens_out"] = usage_acc.get("tokens_out", 0) + int(usage.get("tokens_out") or 0)
     if isinstance(parsed, dict):
         return parsed
     if isinstance(parsed, BaseModel):
@@ -330,16 +338,27 @@ def classify_repo(
     description: str | None,
     topics: list[str],
     readme: str,
+    usage_acc: dict[str, int] | None = None,
 ) -> RadarClassification:
     """taxonomy 라벨+신뢰도 분류. 실패/무효 응답 시 ('other', 0.0)."""
     prompt = _CLASSIFY_PROMPT.format(
         labels=", ".join(TAXONOMY_LABELS),
         name=name,
-        description=(description or "(none)")[:500],
-        topics=", ".join(topics) or "(none)",
+        description=(
+            sanitize_readme(str(description) if description is not None else None, max_chars=500)
+            or "(none)"
+        ),
+        topics=", ".join(
+            s
+            for s in (
+                sanitize_readme(str(t) if t is not None else "", max_chars=100) for t in topics
+            )
+            if s
+        )
+        or "(none)",
         readme=sanitize_readme(readme, max_chars=2000) or "(empty)",
     )
-    data = _chat_json(llm, model, prompt=prompt, schema=RadarClassification)
+    data = _chat_json(llm, model, prompt=prompt, schema=RadarClassification, usage_acc=usage_acc)
     if data is None:
         return RadarClassification(label="other", confidence=0.0)
     label = data.get("label")
@@ -360,16 +379,23 @@ def verify_summary(
     *,
     readme: str,
     summary_lines: list[str],
+    usage_acc: dict[str, int] | None = None,
 ) -> bool:
-    """요약 각 줄이 README 근거에 있는지 judge 검증. 실패 시 True(통과 처리)."""
+    """요약 각 줄이 README 근거에 있는지 judge 검증.
+
+    fail-closed: judge 호출 실패/파싱 불가/`supported` 키 부재 시 False를
+    반환해 요약이 'unverified'로 표시되게 한다(검증 불가 요약을 통과시키지 않음).
+    """
     prompt = _VERIFY_PROMPT.format(
         summary_lines="\n".join(f"- {line}" for line in summary_lines),
         readme=sanitize_readme(readme, max_chars=2000) or "(empty)",
     )
-    data = _chat_json(llm, model, prompt=prompt, schema=RadarVerify)
-    if data is None:
-        return True
-    return bool(data.get("supported", True))
+    # schema 없이 호출 — RadarVerify.supported 기본값(True)이 검증 실패를
+    # fail-open으로 만들지 않도록 명시된 "supported" 키만 신뢰한다.
+    data = _chat_json(llm, model, prompt=prompt, usage_acc=usage_acc)
+    if data is None or not isinstance(data.get("supported"), bool):
+        return False
+    return bool(data["supported"])
 
 
 def summarize_repo(
@@ -380,6 +406,7 @@ def summarize_repo(
     full_name: str,
     description: str | None,
     readme: str,
+    usage_acc: dict[str, int] | None = None,
 ) -> tuple[RadarSummary3 | None, str]:
     """3개 언어 3줄 요약. 반환: (정규화 요약|None, status ok|failed).
 
@@ -388,10 +415,13 @@ def summarize_repo(
     prompt = _SUMMARY_PROMPT.format(
         platform=platform,
         name=full_name,
-        description=description or "(none)",
-        readme=(readme or "(empty)")[:3000],
+        description=(
+            sanitize_readme(str(description) if description is not None else None, max_chars=500)
+            or "(none)"
+        ),
+        readme=sanitize_readme(readme, max_chars=3000) or "(empty)",
     )
-    data = _chat_json(llm, model, prompt=prompt)
+    data = _chat_json(llm, model, prompt=prompt, usage_acc=usage_acc)
     if data is None:
         return None, "failed"
     normalized = normalize_summary(data)

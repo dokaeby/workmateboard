@@ -87,7 +87,9 @@
 .o-log.fresh { animation: o-log-in .6s ease-out; }
 @keyframes o-log-in { from { opacity: 0; transform: translateY(-6px); background: #E6F6EC; } to { opacity: 1; transform: none; } }
 
-@media (max-width: 1180px) { #jmo-side { width: 280px; } }
+/* 사이드 패널 폭 — index.html 기본값(clamp 240–360px, 26%)보다 살짝 좁게,
+   태블릿 이하에서는 canvas가 더 넓어지도록 비례 축소 */
+@media (max-width: 1180px) { #jmo-side { width: clamp(220px, 22%, 300px); } }
 
 /* 좁은 화면 — 패널을 캔버스 아래로 내린다(숨기지 않는다). 페이지가 세로로 스크롤된다. */
 @media (max-width: 899px) {

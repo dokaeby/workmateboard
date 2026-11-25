@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -346,6 +347,49 @@ def _sync_workflow_registry(store: Store) -> int:
         WORKFLOWS[spec.key] = spec
         _CUSTOM_WF_KEYS.add(spec.key)
     return len(_CUSTOM_WF_KEYS)
+
+
+# 외부 부수효과(실제 캘린더/알림 쓰기, 외부 명령 실행)가 있는 function stage —
+# 커스텀 워크플로가 이 이름을 쓰면 member 실행을 막고 lead 게이트를 적용한다.
+_SIDE_EFFECT_FUNCTIONS = frozenset(
+    {"gmail_register", "gmail_notify", "radar_publish", "auto_checks"}
+)
+
+
+def _workflow_needs_lead(key: str) -> bool:
+    """POST /runs 실행에 lead 이상이 필요한 워크플로인지 판정.
+
+    - gmail_calendar: 실제 Google Calendar에 일정을 쓰는 유일한 내장 워크플로
+      (human 승인 stage 없음) → lead 전용.
+    - 커스텀 워크플로: spec의 function stage가 외부 부수효과 함수
+      (_SIDE_EFFECT_FUNCTIONS)이거나 레지스트리에 없는 이름이면 lead 전용.
+      레지스트리 import 실패 시 보수적으로 lead 요구.
+    - 그 외 내장(dev_review* 등)과 읽기성 커스텀은 member 허용."""
+    if key == "gmail_calendar":
+        return True
+    if key in _BUILTIN_WF_KEYS and key not in _CUSTOM_WF_KEYS:
+        return False
+    spec = WORKFLOWS.get(key)
+    if spec is None:
+        return True
+    _fn_registry: dict[str, Any] | None = None
+    try:
+        from ..engine.functions import FUNCTIONS
+
+        _fn_registry = FUNCTIONS
+    except Exception:
+        _fn_registry = None
+    for st in getattr(spec, "stages", []) or []:
+        if getattr(st, "kind", None) != "function":
+            continue
+        fn = str(getattr(st, "function", "") or "")
+        if fn in _SIDE_EFFECT_FUNCTIONS:
+            return True
+        if _fn_registry is None or fn not in _fn_registry:
+            # 알 수 없는 function 이름은 실행 시 실패하지만, 레지스트리를
+            # 확인할 수 없는 환경에서는 보수적으로 lead를 요구한다.
+            return True
+    return False
 
 
 # ---------- connector config 비밀값 암호화 ----------
@@ -948,6 +992,81 @@ def create_app(
             return {"id": "local", "email": "", "role": "admin"}
         return None
 
+    def _lead_gate(request: Request) -> JSONResponse | None:
+        """lead 이상이 아니면 403 응답, 아니면 None — 라우트 첫 줄에서 호출."""
+        if _lead_user(request) is None:
+            return err(403, "forbidden", "lead role required", request)
+        return None
+
+    def _admin_gate(request: Request) -> JSONResponse | None:
+        """admin이 아니면 403 응답, 아니면 None — 라우트 첫 줄에서 호출."""
+        if _admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
+        return None
+
+    # ---- 인메모리 레이트리밋 공통 ----
+    # 주의: create_app() 호출마다 초기화되는 인메모리 카운터 — 프로세스/
+    # 인스턴스 단위 제한이며 수평 확장 시에는 외부 저장소가 필요하다.
+    _RATE_MAX_KEYS = 10_000
+
+    def _rate_hit(bucket: dict[str, list[float]], key: str, window_s: float, max_hits: int) -> bool:
+        """슬라이딩 윈도우 카운터. True면 제한 초과."""
+        now = time.time()
+        hits = [t for t in bucket.get(key, []) if now - t < window_s]
+        if len(hits) >= max_hits:
+            bucket[key] = hits
+            return True
+        hits.append(now)
+        bucket[key] = hits
+        if len(bucket) > _RATE_MAX_KEYS:
+            # 상한 초과 시 만료 항목 정리, 그래도 크면 전체 클리어(메모리 보호)
+            for k in [k for k, v in bucket.items() if not v or now - v[-1] >= window_s]:
+                bucket.pop(k, None)
+            if len(bucket) > _RATE_MAX_KEYS:
+                bucket.clear()
+        return False
+
+    _run_burst: dict[str, list[float]] = {}
+
+    def _run_rate_limited(actor: str) -> bool:
+        """POST /runs 버스트 제한 — actor(이메일/API 키/local)당 분당 10회."""
+        return _rate_hit(_run_burst, actor or "-", 60.0, 10)
+
+    _digest_daily: dict[str, tuple[str, int]] = {}
+    _DIGEST_DAILY_LIMIT = 30
+
+    def _digest_rate_limited(request: Request) -> bool:
+        """POST /gmail/digest — _ask_daily와 같은 사용자/IP당 일일 상한."""
+        user = _session_user(request)
+        key = (
+            f"u:{user['id']}"
+            if user and user.get("id")
+            else (f"ip:{request.client.host if request.client else '-'}")
+        )
+        today = datetime.now(UTC).date().isoformat()
+        day, count = _digest_daily.get(key, ("", 0))
+        if day != today:
+            day, count = today, 0
+        if count >= _DIGEST_DAILY_LIMIT:
+            _digest_daily[key] = (day, count)
+            return True
+        _digest_daily[key] = (day, count + 1)
+        if len(_digest_daily) > _RATE_MAX_KEYS:
+            _digest_daily.clear()
+        return False
+
+    _email_check_last = {"at": 0.0}
+    _EMAIL_CHECK_MIN_INTERVAL = 60.0
+
+    def _email_check_rate_limited() -> bool:
+        """POST /email/check — 외부 cron이 분당 수 회 이상 호출하지 못하게
+        최소 간격을 둔다(인메모리, 인스턴스 단위)."""
+        now = time.time()
+        if now - _email_check_last["at"] < _EMAIL_CHECK_MIN_INTERVAL:
+            return True
+        _email_check_last["at"] = now
+        return False
+
     @app.get("/")
     def index() -> HTMLResponse:
         # 로그인제가 도입되어 API 키는 더 이상 페이지에 주입하지 않는다.
@@ -965,17 +1084,22 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/api/v1/health/detail")
-    def health_detail() -> dict[str, Any]:
-        """헬스 상세 — /health와 동일하게 인증 예외 경로(공개 수준 유지)."""
+    def health_detail(request: Request) -> JSONResponse:
+        """헬스 상세 — DB 경로·머신명 등 내부 정보 포함이므로 admin 전용."""
+        gate = _admin_gate(request)
+        if gate is not None:
+            return gate
         started = float(getattr(app.state, "started_at", time.time()))
         bridge = store.agent_sessions_bridge_info()
-        return {
-            "api": {"uptime_s": round(time.time() - started, 1)},
-            "db": store.db_info(),
-            "bridge": bridge,
-            "cron": {"last_tick_at": _last_cron_tick_at()},
-            "version": "0.1.0",
-        }
+        return JSONResponse(
+            content={
+                "api": {"uptime_s": round(time.time() - started, 1)},
+                "db": store.db_info(),
+                "bridge": bridge,
+                "cron": {"last_tick_at": _last_cron_tick_at()},
+                "version": "0.1.0",
+            }
+        )
 
     @app.get("/api/v1/workflows")
     def list_workflows() -> list[dict[str, Any]]:
@@ -1002,8 +1126,18 @@ def create_app(
     def create_run(
         body: RunCreateRequest, request: Request, background_tasks: BackgroundTasks
     ) -> JSONResponse:
+        # 사용자/IP당 분당 버스트 제한 — LLM 비용이 큰 run 무한 생성 방지
+        if _run_rate_limited(_actor_label(request)):
+            return err(429, "rate_limited", "run 생성 요청이 너무 많습니다", request)
         if body.workflow not in WORKFLOWS:
             return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
+        # 사이드이펙트 워크플로(gmail_calendar의 실제 캘린더 쓰기, 커스텀 spec의
+        # 외부 부수효과 function stage)는 lead 이상만 실행 가능 — member는
+        # dev_review* 등 읽기/검토성 워크플로만.
+        if _workflow_needs_lead(body.workflow):
+            gate = _lead_gate(request)
+            if gate is not None:
+                return gate
         run = store.create_run(
             body.workflow,
             WORKFLOWS[body.workflow].version,
@@ -1178,13 +1312,42 @@ def create_app(
                 "status": 409,
                 "error": f"run status is {run.status.value}, not waiting_approval",
             }
-        runner = build_runner(
-            run.workflow_key, store=store, llm=llm, settings=settings, adapters=adapters
-        )
+        # 원자 claim — 동시 승인/거절(API+메신저 등)이 둘 다 resume하지 못하게
+        # status를 running으로 조건부 전이한다. rowcount 0이면 이미 처리 중.
+        if not store.claim_run_status(
+            run_id, RunStatus.WAITING_APPROVAL.value, RunStatus.RUNNING.value
+        ):
+            return {
+                "ok": False,
+                "status": 409,
+                "error": "run is already being resumed by another request",
+            }
         try:
-            runner.resume(run_id, {"decision": decision, "comment": comment})
+            # build_runner 실패도 claim을 running에 고착시키지 않도록 try 안에서 호출
+            runner = build_runner(
+                run.workflow_key,
+                store=store,
+                llm=llm,
+                settings=settings,
+                adapters=adapters,
+            )
+            # runner.resume()는 status==waiting_approval을 요구하지만 claim이 이미
+            # running으로 전이했으므로, 동등한 graph 재개를 직접 수행한다
+            # (claim 자체가 직렬화 지점 — resume()의 상태 재검사는 이중 방어).
+            from langgraph.types import Command
+
+            runner._graph.invoke(  # noqa: SLF001 — resume()의 claim-우회 경로
+                Command(resume={"decision": decision, "comment": comment}),
+                {"configurable": {"thread_id": run_id}},
+            )
         except Exception as e:
             logger.warning("run %s resume failed: %s", run_id, str(e)[:200])
+            # resume 실패 시 대기 상태로 복구 — claim이 running으로 바꿔둔 것을
+            # 되돌려 재시도/재승인이 가능하게 한다(이미 다른 상태면 그대로 둠).
+            store.claim_run_status(
+                run_id, RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value
+            )
+            store.audit(run_id, actor, "run_resume_error", run_id, {"error": str(e)[:300]})
             return {"ok": False, "status": 500, "error": str(e)[:300]}
         store.mark_inbox_read_dedupe(f"approval:{run_id}")
         store.audit(run_id, actor, f"run_{decision}", run_id, {"comment": comment[:200]})
@@ -1226,7 +1389,10 @@ def create_app(
 
     @app.get("/api/v1/runs/{run_id}/audit")
     def run_audit(run_id: str, request: Request) -> JSONResponse:
-        """run의 audit_events — 최신순, 최대 200건."""
+        """run의 audit_events — 최신순, 최대 200건 (lead 이상)."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if store.get_run(run_id) is None:
             return err(404, "not_found", "run not found", request)
         events = [
@@ -1244,7 +1410,10 @@ def create_app(
 
     @app.patch("/api/v1/runs/{run_id}")
     def patch_run(run_id: str, body: RunPatchRequest, request: Request) -> JSONResponse:
-        """run의 project 태그 설정/해제 (null/빈 문자열 → 해제)."""
+        """run의 project 태그 설정/해제 (null/빈 문자열 → 해제). lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         run = store.get_run(run_id)
         if run is None:
             return err(404, "not_found", "run not found", request)
@@ -1308,7 +1477,9 @@ def create_app(
 
     @app.get("/api/v1/notifications")
     def notifications(limit: int = 50) -> list[dict[str, Any]]:
-        return [n.model_dump(mode="json") for n in store.list_notifications(limit)]
+        return [
+            n.model_dump(mode="json") for n in store.list_notifications(min(max(limit, 1), 200))
+        ]
 
     # ---- 통합 인박스 (알림 센터) ----
     # notifications 테이블은 별도 유지 — GET /inbox 호출 시 dedupe_key=notif:{id}로
@@ -1334,8 +1505,9 @@ def create_app(
 
     # ---- 비용 대시보드 ----
     @app.get("/api/v1/usage/summary")
-    def usage_summary(days: int = 30) -> dict[str, Any]:
-        """llm_usage 기반 비용/토큰 요약 + 에이전트 세션 추정 비용 top + 월 예산."""
+    def usage_summary(request: Request, days: int = 30) -> JSONResponse:
+        """llm_usage 기반 비용/토큰 요약 + 에이전트 세션 추정 비용 top + 월 예산.
+        집계값만 반환 — member 인박스/모바일 요약 바가 사용하므로 읽기는 전체 인증 사용자."""
         days = max(1, min(days, 365))
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         rows = store.llm_usage_rows(cutoff)
@@ -1393,22 +1565,28 @@ def create_app(
             )
         budget_exceeded = budget is not None and mtd_cost > budget
 
-        return {
-            "total_cost_usd": round(total_cost, 6),
-            "total_tokens_in": total_in_i,
-            "total_tokens_out": total_out_i,
-            "by_model": [
-                {"model": m["model"], "cost_usd": round(m["cost_usd"], 6), "tokens": m["tokens"]}
-                for m in sorted(by_model.values(), key=lambda x: -x["cost_usd"])
-            ],
-            "by_day": [
-                {"date": d["date"], "cost_usd": round(d["cost_usd"], 6), "tokens": d["tokens"]}
-                for d in sorted(by_day.values(), key=lambda x: x["date"])
-            ],
-            "top_sessions": top_sessions[:10],
-            "budget_usd": budget,
-            "budget_exceeded": budget_exceeded,
-        }
+        return JSONResponse(
+            content={
+                "total_cost_usd": round(total_cost, 6),
+                "total_tokens_in": total_in_i,
+                "total_tokens_out": total_out_i,
+                "by_model": [
+                    {
+                        "model": m["model"],
+                        "cost_usd": round(m["cost_usd"], 6),
+                        "tokens": m["tokens"],
+                    }
+                    for m in sorted(by_model.values(), key=lambda x: -x["cost_usd"])
+                ],
+                "by_day": [
+                    {"date": d["date"], "cost_usd": round(d["cost_usd"], 6), "tokens": d["tokens"]}
+                    for d in sorted(by_day.values(), key=lambda x: x["date"])
+                ],
+                "top_sessions": top_sessions[:10],
+                "budget_usd": budget,
+                "budget_exceeded": budget_exceeded,
+            }
+        )
 
     # ---- 자연어 쿼리 (ask) ----
     _ask_daily: dict[str, tuple[str, int]] = {}
@@ -1644,8 +1822,14 @@ def create_app(
         return JSONResponse(content={"id": user_id, "role": new_role, "changed": True})
 
     @app.get("/api/v1/event-links")
-    def event_links(limit: int = 50) -> list[dict[str, Any]]:
-        return [x.model_dump(mode="json") for x in store.list_links(limit)]
+    def event_links(request: Request, limit: int = 50) -> JSONResponse:
+        """event_links 목록 — 멤버 뷰에서 쓰지 않으므로 lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(
+            content=[x.model_dump(mode="json") for x in store.list_links(min(max(limit, 1), 200))]
+        )
 
     # ---- agent-sessions: 로컬 에이전트 브릿지 push/pull ----
     _attention_ts: dict[str, float] = {}
@@ -1656,7 +1840,11 @@ def create_app(
         if now - _attention_ts.get(key, 0.0) < 600:
             return
         if len(_attention_ts) > 1000:
-            _attention_ts.clear()
+            # 만료 항목 먼저 정리, 그래도 크면 전체 클리어(메모리 보호)
+            for k in [k for k, t in _attention_ts.items() if now - t >= 600]:
+                _attention_ts.pop(k, None)
+            if len(_attention_ts) > 1000:
+                _attention_ts.clear()
         _attention_ts[key] = now
         from ..engine.functions import send_web_push_text
 
@@ -1958,6 +2146,7 @@ def create_app(
 
     @app.get("/api/v1/gmail-calendar")
     def gmail_status() -> dict[str, Any]:
+        # member 허용 — calendar 뷰 상태 표시용(민감 설정값 없음)
         auto = store.get_automation()
         return {
             "enabled": auto.get("enabled", False),
@@ -1966,14 +2155,22 @@ def create_app(
         }
 
     @app.post("/api/v1/gmail-calendar/toggle")
-    def gmail_toggle(body: dict[str, Any]) -> dict[str, Any]:
+    def gmail_toggle(body: dict[str, Any], request: Request) -> JSONResponse:
+        """자동 폴링 on/off — 자동화 설정 변경이므로 lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         auto = store.get_automation()
         auto["enabled"] = bool(body.get("enabled", not auto.get("enabled", False)))
         store.set_automation(auto)
-        return {"enabled": auto["enabled"]}
+        return JSONResponse(content={"enabled": auto["enabled"]})
 
     @app.post("/api/v1/gmail-calendar/poll")
     def gmail_poll(request: Request) -> JSONResponse:
+        """수동 gmail 폴링 — lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         gmail = adapters.get("gmail")
         if gmail is None:
             return JSONResponse(
@@ -2009,13 +2206,45 @@ def create_app(
             )
         return "\n".join(lines)
 
+    _slack_reply_warned = {"done": False}
+
     def _messenger_reply(provider: str, chat_id: str, text: str) -> None:
-        """수신 채널로 답장 — best-effort, 실패는 debug 로그만."""
+        """수신 채널로 답장 — best-effort, 실패는 debug 로그만.
+
+        Slack은 JOBMATE_SLACK_BOT_TOKEN+xoxb 채널 chat.postMessage를 우선 사용
+        (webhook은 채널 고정이라 임의 chat_id로 답장 불가). 봇 토큰이 없거나
+        실패하면 incoming webhook으로 폴백한다."""
         try:
             if provider == "slack":
+                bot_token = os.environ.get("JOBMATE_SLACK_BOT_TOKEN", "")
+                if bot_token and chat_id:
+                    try:
+                        import httpx as _httpx
+
+                        resp = _httpx.post(
+                            "https://slack.com/api/chat.postMessage",
+                            headers={"Authorization": f"Bearer {bot_token}"},
+                            json={"channel": chat_id, "text": text[:4000]},
+                            timeout=10,
+                        )
+                        data = resp.json() if resp.content else {}
+                        if data.get("ok"):
+                            return
+                        logger.warning(
+                            "slack chat.postMessage failed: %s",
+                            str(data.get("error") or resp.status_code)[:120],
+                        )
+                    except Exception as e:
+                        logger.warning("slack bot reply failed: %s", type(e).__name__)
                 url = os.environ.get("JOBMATE_SLACK_WEBHOOK_URL", "")
                 if url:
                     messenger.send_slack(url, text)
+                elif not _slack_reply_warned["done"]:
+                    _slack_reply_warned["done"] = True
+                    logger.warning(
+                        "slack reply undeliverable: set JOBMATE_SLACK_BOT_TOKEN "
+                        "or JOBMATE_SLACK_WEBHOOK_URL"
+                    )
             elif provider == "telegram":
                 token = os.environ.get("JOBMATE_TELEGRAM_BOT_TOKEN", "")
                 if token:
@@ -2023,17 +2252,39 @@ def create_app(
         except Exception:
             logger.debug("messenger reply failed provider=%s", provider, exc_info=True)
 
+    def _messenger_user_allowed(sender_id: str, action: str) -> bool:
+        """JOBMATE_MESSENGER_ALLOWED_USERS per-user allowlist.
+
+        쉼표 구분 Slack user ID(U…)/Telegram user ID. 설정 시 승인/시작
+        같은 상태 변경 커맨드의 실행자 ID가 목록에 없으면 거부한다.
+        미설정 시 채널 allowlist(settings.slack_channel_ids 등)만 적용
+        (하위호환). help/status는 읽기 전용이라 제한하지 않는다."""
+        if action not in ("approve", "start"):
+            return True
+        raw = os.environ.get("JOBMATE_MESSENGER_ALLOWED_USERS", "")
+        allowed = {s.strip() for s in raw.split(",") if s.strip()}
+        if not allowed:
+            return True
+        if sender_id and sender_id in allowed:
+            return True
+        logger.warning("messenger %s denied: sender not in JOBMATE_MESSENGER_ALLOWED_USERS", action)
+        return False
+
     def _messenger_handle(
         provider: str,
         chat_id: str,
         text: str,
         background_tasks: BackgroundTasks,
+        sender_id: str = "",
     ) -> bool:
         """수신 텍스트를 커맨드로 파싱·실행 후 답장. 인식 못 하면 False."""
         cmd = messenger.parse_command(text)
         if cmd is None:
             return False
         action = str(cmd.get("action") or "")
+        if not _messenger_user_allowed(sender_id, action):
+            _messenger_reply(provider, chat_id, "이 커맨드를 실행할 권한이 없습니다.")
+            return True
         if action == "help":
             _messenger_reply(provider, chat_id, messenger.HELP_TEXT)
         elif action == "status":
@@ -2107,7 +2358,9 @@ def create_app(
         source_id = f"{team}:{channel}:{ts}"
         text = event.get("text", "")
         # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
-        if _messenger_handle("slack", channel, text, background_tasks):
+        if _messenger_handle(
+            "slack", channel, text, background_tasks, sender_id=str(event.get("user") or "")
+        ):
             return JSONResponse(content={"status": "command"})
         created = store.save_message_extraction(
             "slack", source_id, event.get("thread_ts") or ts, {}, "pending", source_text=text[:8000]
@@ -2138,7 +2391,13 @@ def create_app(
             return JSONResponse(content={"status": "ignored"})
         source_id = f"{chat_id}:{msg.get('message_id', '')}"
         # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
-        if _messenger_handle("telegram", chat_id, text, background_tasks):
+        if _messenger_handle(
+            "telegram",
+            chat_id,
+            text,
+            background_tasks,
+            sender_id=str((msg.get("from") or {}).get("id") or ""),
+        ):
             return JSONResponse(content={"status": "command"})
         created = store.save_message_extraction(
             "telegram",
@@ -2171,9 +2430,20 @@ def create_app(
         return {"messages": msgs}
 
     @app.post("/api/v1/gmail/digest")
-    def gmail_digest(body: dict[str, Any] | None = None) -> JSONResponse:
-        """최근 Gmail 메시지들을 LLM으로 요약. 실패 시 빈 summary + error."""
-        limit = int((body or {}).get("limit", 20))
+    def gmail_digest(request: Request, body: dict[str, Any] | None = None) -> JSONResponse:
+        """최근 Gmail 메시지들을 LLM으로 요약. 실패 시 빈 summary + error.
+        LLM 비용이 드는 요약 생성이므로 lead 이상 + 사용자/IP당 일일 상한."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        if _digest_rate_limited(request):
+            return err(429, "rate_limited", "daily digest limit reached", request)
+        raw_limit = (body or {}).get("limit", 20)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return err(422, "validation_error", "limit must be an integer", request)
+        limit = max(1, min(limit, 100))
         msgs = [
             m
             for m in store.list_message_extractions("gmail", limit)
@@ -2209,10 +2479,19 @@ def create_app(
         if os.environ.get("VERCEL"):
             valid = bool(secret) and request.headers.get("authorization") == f"Bearer {secret}"
         else:
+            # 인증 엣지 정리: CRON_SECRET·JOBMATE_API_KEY가 모두 없고
+            # allowed_emails만 설정된 환경에서는 authorized()가 항상 False라
+            # secret도 key도 없는 호출자가 tick을 실행할 수 없었다.
+            # 이 경우에 한해 admin 세션 사용자(_admin_user)도 허용해 관리자
+            # 수동 트리거 경로를 남긴다. CRON_SECRET/API 키가 설정된 환경에서는
+            # 적용하지 않는다 — 로컬 개발 폴백(local admin)이 시크릿을
+            # 무력화하면 안 되기 때문. 완전 무인증 개발 모드(모두 미설정)는
+            # authorized()가 True를 반환하므로 기존대로 통과한다.
             valid = (
                 (bool(secret) and request.headers.get("authorization") == f"Bearer {secret}")
                 or (not secret and authorized(request))
                 or (bool(api_key()) and authorized(request))
+                or (not secret and not api_key() and _admin_user(request) is not None)
             )
         if not valid:
             logger.warning("cron tick rejected: invalid credentials")
@@ -2239,10 +2518,9 @@ def create_app(
         secret = os.environ.get("CRON_SECRET") or os.environ.get("JOBMATE_CRON_SECRET", "")
         if not secret:
             return True
-        if (
-            request.headers.get("authorization") == f"Bearer {secret}"
-            or request.query_params.get("secret") == secret
-        ):
+        # 쿼리스트링 ?secret= 은 제거 — URL이 로그/프록시/브라우저 히스토리에
+        # 남아 유출되므로 Authorization: Bearer 헤더만 허용한다.
+        if request.headers.get("authorization") == f"Bearer {secret}":
             return True
         # cron-job.org 등 API 키 인증 경로 — 미들웨어에서 이미 검증된 키만 도달
         from ..security import authorized
@@ -2277,15 +2555,33 @@ def create_app(
     @app.post("/api/v1/email/check")
     def email_check(request: Request, body: dict[str, Any] | None = None) -> JSONResponse:
         """Gmail 최근 메일을 읽어 3줄 요약 카드를 생성·저장.
-        cron-job.org 등 외부 스케줄러가 30분마다 POST로 호출."""
-        if not _cron_authorized(request):
-            logger.warning("email check rejected: invalid cron secret")
-            return err(401, "unauthorized", "invalid cron secret", request)
+        cron-job.org 등 외부 스케줄러가 30분마다 POST로 호출.
+
+        인증: cron secret Bearer 또는 lead 이상(세션/API 키). 둘 다 없으면 거부.
+        _cron_authorized 단독으로는 secret 미설정+allowed_emails만 있는
+        환경에서 인증이 무력화되므로 lead 검사를 병행한다."""
+        cron_secret = os.environ.get("CRON_SECRET") or os.environ.get("JOBMATE_CRON_SECRET", "")
+        secret_ok = bool(cron_secret) and (
+            request.headers.get("authorization") == f"Bearer {cron_secret}"
+        )
+        if not secret_ok:
+            if _lead_user(request) is None:
+                logger.warning("email check rejected: lead role or cron secret required")
+                return err(403, "forbidden", "lead role or cron secret required", request)
+            if not _cron_authorized(request):
+                logger.warning("email check rejected: invalid cron secret")
+                return err(401, "unauthorized", "invalid cron secret", request)
+        if _email_check_rate_limited():
+            return err(429, "rate_limited", "email check min interval not reached", request)
         gmail = adapters.get("gmail")
         if gmail is None:
             return err(503, "no_gmail_adapter", "gmail adapter not configured", request)
         payload = body or {}
-        limit = min(int(payload.get("limit", 5)), 20)
+        try:
+            limit = int(payload.get("limit", 5))
+        except (TypeError, ValueError):
+            return err(422, "validation_error", "limit must be an integer", request)
+        limit = max(1, min(limit, 20))
         query = str(payload.get("query", "in:inbox"))
         cards: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -2336,14 +2632,17 @@ def create_app(
 
     @app.get("/api/v1/email/summaries")
     def email_summaries(limit: int = 30) -> dict[str, Any]:
-        cards = store.list_email_summaries("gmail", min(limit, 100))
+        cards = store.list_email_summaries("gmail", min(max(limit, 1), 100))
         for c in cards:
             c["url"] = f"https://mail.google.com/mail/u/0/#all/{c['source_id']}"
         return {"cards": cards}
 
     @app.post("/api/v1/email/purge-undecryptable")
     def purge_undecryptable(request: Request) -> JSONResponse:
-        """복호화 불가한 email_summaries 행 삭제 (키 로테이션 복구용)."""
+        """복호화 불가한 email_summaries 행 삭제 (키 로테이션 복구용). lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         removed = store.purge_undecryptable_email_summaries("gmail")
         logger.info("purged %d undecryptable email_summaries rows", removed)
         store.audit("", "api", "email_purge_undecryptable", "", {"removed": removed})
@@ -2458,6 +2757,10 @@ def create_app(
 
     @app.post("/api/v1/messages/{provider}/{source_id}/retry")
     def retry_message(provider: str, source_id: str, request: Request) -> JSONResponse:
+        """메시지 재처리 큐잉 — 파이프라인 재실행을 유발하므로 lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if provider not in ("gmail", "slack", "telegram"):
             return err(400, "bad_provider", "unknown provider", request)
         if not store.has_message(provider, source_id):
@@ -2478,32 +2781,43 @@ def create_app(
 
     @app.get("/api/v1/events")
     def list_events(status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        return store.list_scheduled_events(status, limit)
+        return store.list_scheduled_events(status, min(max(limit, 1), 500))
 
     @app.get("/api/v1/notification-jobs")
     def notification_jobs(limit: int = 50) -> list[dict[str, Any]]:
-        return store.list_notification_jobs(limit)
+        return store.list_notification_jobs(min(max(limit, 1), 200))
 
     @app.post("/api/v1/events/{event_id}/review")
     def review_event(event_id: str, body: EventReviewRequest, request: Request) -> JSONResponse:
         """needs_review/needs_confirmation/candidate 일정의 사람 검토.
 
         approve: 필드 수정분을 반영해 재검증 → Calendar 등록까지 수행.
-        reject: 상태만 rejected로 전이.
-        """
+        reject: 상태만 rejected로 전이. 외부 Calendar 쓰기 부수효과가 있으므로
+        lead 이상."""
         from ..models import ExtractedEvent
         from ..sensors.event_validation import validate_event
 
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         ev_row = store.get_scheduled_event(event_id)
         if ev_row is None:
             return err(404, "not_found", "scheduled event not found", request)
-        if ev_row["status"] not in ("needs_review", "needs_confirmation", "candidate"):
+        reviewable = ("needs_review", "needs_confirmation", "candidate")
+        if ev_row["status"] not in reviewable:
             return err(
                 409,
                 "invalid_state",
                 f"event status is {ev_row['status']}, not reviewable",
                 request,
             )
+        # 원자 claim — 동시 승인 요청이 find_by_marker→create_event 사이에서
+        # 경합해 캘린더 이벤트를 중복 생성하지 못하게 status를 'registering'으로
+        # 전이한다. 실패/예외 시 아래에서 원래 상태로 복구한다.
+        prev_status = str(ev_row["status"])
+        stale_before = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+        if not store.claim_event_review(event_id, stale_before):
+            return err(409, "invalid_state", "event is already being reviewed", request)
         if body.action == "reject":
             store.update_scheduled_event(event_id, status="rejected", reason="rejected_by_user")
             store.audit("", "api", "event_reject", event_id)
@@ -2524,6 +2838,7 @@ def create_app(
         try:
             cand = ExtractedEvent.model_validate(merged)
         except Exception as e:
+            store.update_scheduled_event(event_id, status=prev_status, reason="")
             return err(422, "validation", f"invalid event fields: {str(e)[:200]}", request)
         ok, reason = validate_event(cand)
         if not ok:
@@ -2534,12 +2849,14 @@ def create_app(
                 end_at=cand.end_at,
                 timezone=cand.timezone,
                 location=cand.location,
+                status=prev_status,
                 reason=reason,
             )
             return err(422, "validation", f"still invalid: {reason}", request)
 
         cal = adapters.get("calendar")
         if cal is None or not hasattr(cal, "create_event"):
+            store.update_scheduled_event(event_id, status=prev_status, reason="")
             return err(503, "no_adapter", "calendar adapter not configured", request)
         marker = f"review:{event_id}"
         try:
@@ -2556,6 +2873,8 @@ def create_app(
                     marker=marker,
                 )
         except Exception as e:
+            # 캘린더 실패 — claim 해제(원래 검토 상태로 복구) 후 에러 반환
+            store.update_scheduled_event(event_id, status=prev_status, reason="")
             store.audit("", "api", "event_approve_error", event_id, {"error": str(e)[:200]})
             logger.warning("scheduled event %s approve failed: %s", event_id, str(e)[:200])
             return err(502, "calendar_error", str(e)[:300], request)
@@ -2825,13 +3144,39 @@ def create_app(
         request: Request,
         body: dict[str, Any] | None = None,
     ) -> JSONResponse:
+        """platforms 수집 run 생성 — LLM/GitHub 호출을 유발하므로 lead 이상.
+
+        platforms는 list여야 하고, 길이는 settings.radar_platforms 이하이며,
+        각 원소는 radar_platforms 화이트리스트 값이어야 한다."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         body = body or {}
-        platforms = body.get("platforms") or settings.radar_platforms
+        raw_platforms = body.get("platforms")
+        allowed = set(settings.radar_platforms)
+        if raw_platforms is None:
+            platforms = list(settings.radar_platforms)
+        else:
+            if not isinstance(raw_platforms, list):
+                return err(422, "validation", "platforms must be a list", request)
+            if len(raw_platforms) > len(allowed):
+                return err(
+                    422,
+                    "validation",
+                    f"platforms must have at most {len(allowed)} items",
+                    request,
+                )
+            bad = [p for p in raw_platforms if p not in allowed]
+            if bad:
+                return err(
+                    422,
+                    "validation",
+                    f"unknown platforms: {bad} (allowed: {sorted(allowed)})",
+                    request,
+                )
+            platforms = [str(p) for p in raw_platforms]
         force = bool(body.get("force", True))
         auto_approve = bool(body.get("auto_approve", False))
-        # 사람 승인 단계 우회(auto_approve)는 lead 이상만 — member는 무시
-        if auto_approve and _lead_user(request) is None:
-            auto_approve = False
         jobs: list = []
         ids = []
         for p in platforms:
@@ -2871,16 +3216,19 @@ def create_app(
         return {"status": "unsubscribed"}
 
     @app.post("/api/v1/push/test")
-    def push_test() -> dict[str, Any]:
-        """구독된 모든 디바이스로 테스트 푸시 발송 — 연결 검증용."""
+    def push_test(request: Request) -> JSONResponse:
+        """구독된 모든 디바이스로 테스트 푸시 발송 — 연결 검증용. lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         subs = store.list_push_subscriptions()
         if not subs:
-            return {"status": "no_subscriptions", "sent": 0}
+            return JSONResponse(content={"status": "no_subscriptions", "sent": 0})
         from ..engine.functions import send_web_push_text
 
         send_web_push_text(adapters, "jobMate 테스트 알림", "Web Push 연결이 정상입니다.", "/")
         logger.info("push test sent: subs=%d", len(subs))
-        return {"status": "sent", "sent": len(subs)}
+        return JSONResponse(content={"status": "sent", "sent": len(subs)})
 
     # ---- 계정 인증 (이메일+비밀번호 / Google OAuth) ----
     from urllib.parse import urlencode
@@ -2915,10 +3263,12 @@ def create_app(
         }
 
     def _maybe_first_user_admin(user: dict[str, Any]) -> None:
-        """첫 번째 가입 사용자는 자동 admin — 이후 관리자는 role/env로 지정."""
+        """첫 번째 가입 사용자는 자동 admin — 이후 관리자는 role/env로 지정.
+
+        count 조회 후 판정하는 비원자 경로는 동시 가입 레이스에서 둘 다
+        admin이 될 수 있다 — store의 조건부 단일 UPDATE로 원자화한다."""
         try:
-            if len(store.list_users()) == 1:
-                store.set_user_role(user["id"], "admin")
+            if store.promote_to_admin_if_first(user["id"]):
                 user["role"] = "admin"  # 응답용 dict도 동기화 (조회 시점 이후 승격)
                 store.audit(
                     "",
@@ -2930,6 +3280,20 @@ def create_app(
         except Exception as e:
             logger.warning("first-user admin promotion failed: %s", str(e)[:200])
 
+    def _cookie_secure(request: Request) -> bool:
+        """세션 쿠키 Secure 판정.
+
+        request.url.scheme만 보면 프록시(Vercel 등) 뒤에서 http로 보여
+        Secure가 꺼진다. VERCEL 배포이거나 x-forwarded-proto/직접 scheme이
+        https일 때만 Secure를 켠다 — plain http에 Secure를 붙이면 브라우저가
+        쿠키를 저장하지 않아 로그인이 깨진다."""
+        if os.environ.get("VERCEL"):
+            return True
+        if request.url.scheme == "https":
+            return True
+        proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+        return proto == "https"
+
     def _set_session(response: Any, request: Request, user_id: str) -> None:
         token = new_session_token()
         store.create_session(user_id, hash_token(token), SESSION_TTL_DAYS)
@@ -2939,7 +3303,7 @@ def create_app(
             max_age=SESSION_TTL_DAYS * 86400,
             httponly=True,
             samesite="lax",
-            secure=request.url.scheme == "https",
+            secure=_cookie_secure(request),
             path="/",
         )
 
@@ -2947,10 +3311,21 @@ def create_app(
         ip = request.client.host if request.client else "-"
         return f"{ip}:{email.strip().lower()}"
 
+    def _prune_fail_bucket(bucket: dict[str, list[float]], window_s: float) -> None:
+        """인메모리 실패 카운터 정리 — 만료 버킷 삭제 + 상한 초과 시 클리어."""
+        now = time.time()
+        for k in [k for k, v in bucket.items() if not v or now - v[-1] >= window_s]:
+            bucket.pop(k, None)
+        if len(bucket) > _RATE_MAX_KEYS:
+            bucket.clear()
+
     def _login_throttled(key: str) -> bool:
         now = time.time()
         fails = [t for t in _login_fails.get(key, []) if now - t < _LOGIN_WINDOW]
-        _login_fails[key] = fails
+        if fails:
+            _login_fails[key] = fails
+        else:
+            _login_fails.pop(key, None)  # 만료 항목은 삭제해 dict가 무한 성장하지 않게
         return len(fails) >= _LOGIN_MAX_FAILS
 
     def _login_record(key: str, ok: bool) -> None:
@@ -2958,6 +3333,8 @@ def create_app(
             _login_fails.pop(key, None)
         else:
             _login_fails.setdefault(key, []).append(time.time())
+            if len(_login_fails) > _RATE_MAX_KEYS:
+                _prune_fail_bucket(_login_fails, _LOGIN_WINDOW)
 
     # signup은 login과 카운터를 공유하지 않는 별도 IP 기반 throttle
     _signup_attempts: dict[str, list[float]] = {}
@@ -2967,11 +3344,16 @@ def create_app(
     def _signup_throttled(ip: str) -> bool:
         now = time.time()
         attempts = [t for t in _signup_attempts.get(ip, []) if now - t < _SIGNUP_WINDOW]
-        _signup_attempts[ip] = attempts
+        if attempts:
+            _signup_attempts[ip] = attempts
+        else:
+            _signup_attempts.pop(ip, None)
         return len(attempts) >= _SIGNUP_MAX_ATTEMPTS
 
     def _signup_record(ip: str) -> None:
         _signup_attempts.setdefault(ip, []).append(time.time())
+        if len(_signup_attempts) > _RATE_MAX_KEYS:
+            _prune_fail_bucket(_signup_attempts, _SIGNUP_WINDOW)
 
     # ---- 이메일 인증 (비밀번호 가입) ----
     _VERIFY_RESEND_MIN_INTERVAL = 600.0  # 같은 이메일 재발송 10분에 1회
@@ -2986,8 +3368,29 @@ def create_app(
         base = (settings.public_base_url or str(request.base_url)).rstrip("/")
         return f"{base}/api/v1/auth/verify?token={token}"
 
+    def _public_host_allowed(request: Request) -> bool:
+        """JOBMATE_PUBLIC_HOSTS(쉼표 구분 허용 호스트) 설정 시 요청 Host가
+        목록에 없으면 인증 링크 발송을 거부한다 — Host 헤더 인젝션으로
+        공격자 도메인의 피싱 인증 링크가 발송되는 것을 막는다.
+        미설정 시 기존 동작(request.base_url 사용)을 유지한다."""
+        raw = os.environ.get("JOBMATE_PUBLIC_HOSTS", "")
+        allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
+        if not allowed:
+            return True
+        host = (request.url.hostname or "").lower()
+        # "example.com:8443" 형태 방어 — hostname은 이미 포트 제외
+        return host in allowed
+
     def _send_verification(request: Request, email: str) -> bool:
         """인증 토큰 발급 + 메일 발송. 발송 실패해도 예외 없이 bool 반환."""
+        if not _public_host_allowed(request):
+            # 허용 목록에 없는 Host로의 요청 — 링크가 공격자 도메인을 가리키게 된다
+            logger.warning("verification email refused: host not in JOBMATE_PUBLIC_HOSTS")
+            try:
+                store.audit("", email, "auth_verify_send_blocked", "", {})
+            except Exception:
+                logger.debug("verify-send-blocked audit failed", exc_info=True)
+            return False
         try:
             token = store.create_email_verification(email)
             return mailer.send_verification_email(
@@ -3083,7 +3486,11 @@ padding:32px;max-width:360px;text-align:center">
                 429, "too_many_attempts", "시도 횟수 초과 — 잠시 후 다시 시도하세요", request
             )
         row = store.get_user_password_hash(email)
-        if row is None or not row[1] or not verify_password(password, row[1]):
+        # 미가입/Google-only 계정도 동일 비용의 scrypt 검증을 1회 수행 —
+        # 응답 시간으로 계정 유형(미가입 vs 비밀번호 계정)을 열거하지 못하게 한다.
+        stored_hash = row[1] if row and row[1] else _dummy_password_hash()
+        password_ok = verify_password(password, stored_hash)
+        if row is None or not row[1] or not password_ok:
             _login_record(key, ok=False)
             store.audit("", email or "-", "auth_login_failed", "", {})
             logger.info("login failed: %s", email)
@@ -3140,11 +3547,23 @@ padding:32px;max-width:360px;text-align:center">
         logger.info("verification resend: user=%s sent=%s", user["id"], sent)
         return JSONResponse({"sent": sent})
 
+    _dummy_pw_hash: dict[str, str] = {}
+
+    def _dummy_password_hash() -> str:
+        """타이밍 오라클 방지용 고정 scrypt 해시 — 실제 계정 검증에 쓰이지 않는다.
+        첫 호출 시 1회만 생성해 scrypt 비용을 캐시한다."""
+        if "h" not in _dummy_pw_hash:
+            _dummy_pw_hash["h"] = hash_password("jobmate-dummy-timing-oracle")
+        return _dummy_pw_hash["h"]
+
     @app.get("/api/v1/auth/verify")
     def auth_verify(request: Request, token: str = "") -> HTMLResponse:
-        """인증 링크 — 유효 토큰이면 email_verified=1 + 세션 쿠키 발급."""
+        """인증 링크 — 유효 토큰이면 email_verified=1 + 세션 쿠키 발급.
+
+        consume은 UPDATE ... WHERE used_at IS NULL AND expires_at>? 의 원자적
+        rowcount 판정 — 동시 요청이 같은 토큰을 둘 다 유효하다고 보지 않는다."""
         token_hash = hash_token(token) if token else ""
-        email = store.get_valid_verification(token_hash) if token_hash else None
+        email = store.consume_email_verification(token_hash) if token_hash else None
         if email is None:
             # 토큰 원문은 기록하지 않는다 — 실패 시도만 감사 로그에 남긴다
             store.audit("", "-", "auth_email_verify_failed", "", {"reason": "invalid_or_expired"})
@@ -3152,11 +3571,9 @@ padding:32px;max-width:360px;text-align:center">
             return HTMLResponse(_VERIFY_FAIL_HTML, status_code=400)
         user = store.get_user_by_email(email)
         if user is None:
-            store.mark_verification_used(token_hash)
             store.audit("", email, "auth_email_verify_failed", "", {"reason": "user_missing"})
             return HTMLResponse(_VERIFY_FAIL_HTML, status_code=400)
         store.set_user_email_verified(user["id"])
-        store.mark_verification_used(token_hash)
         store.audit("", email, "auth_email_verified", user["id"], {})
         logger.info("email verified: user=%s", user["id"])
         resp = HTMLResponse(_VERIFY_OK_HTML)
@@ -3171,6 +3588,79 @@ padding:32px;max-width:360px;text-align:center">
             store.revoke_session(hash_token(token))
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
+
+    @app.post("/api/v1/auth/password")
+    def auth_change_password(body: dict[str, Any], request: Request) -> JSONResponse:
+        """비밀번호 변경 — 현재 비밀번호 확인 후 새 해시 저장 + 전체 세션 revoke.
+
+        세션 탈취 상황에서 공격자가 비밀번호를 바꿔 소유자를 밀어내는 것을 막기 위해
+        현재 비밀번호를 요구하고, 변경 성공 시 모든 세션(현재 포함)을 폐기한다 —
+        호출자는 다시 로그인해야 한다."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        current = str(body.get("current_password", ""))
+        new_password = str(body.get("new_password", ""))
+        if len(new_password) < 8:
+            return err(400, "weak_password", "새 비밀번호는 8자 이상이어야 합니다", request)
+        row = store.get_user_password_hash(str(user.get("email") or ""))
+        # Google-only 계정(password_hash 빈 값)은 현재 비밀번호가 없어 변경 불가 —
+        # 명시적 연결 플로우가 생기기 전까지 지원하지 않는다.
+        if row is None or not row[1] or not verify_password(current, row[1]):
+            store.audit(
+                "",
+                str(user.get("email") or "-"),
+                "auth_password_change_failed",
+                user["id"],
+                {},
+            )
+            logger.info("password change failed: user=%s", user["id"])
+            return err(403, "invalid_credentials", "현재 비밀번호가 올바르지 않습니다", request)
+        store.set_user_password(user["id"], hash_password(new_password))
+        revoked = store.revoke_user_sessions(user["id"])
+        store.audit(
+            "",
+            str(user.get("email") or "-"),
+            "auth_password_change",
+            user["id"],
+            {"sessions_revoked": revoked},
+        )
+        logger.info("password changed: user=%s sessions_revoked=%s", user["id"], revoked)
+        resp = JSONResponse({"status": "ok", "sessions_revoked": revoked})
+        resp.delete_cookie(SESSION_COOKIE, path="/")
+        return resp
+
+    @app.get("/api/v1/auth/sessions")
+    def auth_sessions(request: Request) -> JSONResponse:
+        """현재 사용자의 유효 세션 목록 — 현재 세션은 current=true로 표시."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        current_hash = hash_token(request.cookies.get(SESSION_COOKIE, ""))
+        sessions = [
+            {
+                "id": s["id"],
+                "created_at": s["created_at"],
+                "expires_at": s["expires_at"],
+                "current": s["id"] == current_hash,
+            }
+            for s in store.list_user_sessions(user["id"])
+        ]
+        return JSONResponse({"sessions": sessions})
+
+    @app.delete("/api/v1/auth/sessions/{session_id}")
+    def auth_revoke_session(session_id: str, request: Request) -> JSONResponse:
+        """특정 세션 폐기 — 본인 소유 세션만 가능(타인 세션 id는 404)."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        owned = any(s["id"] == session_id for s in store.list_user_sessions(user["id"]))
+        if not owned:
+            return err(404, "not_found", "session not found", request)
+        store.revoke_session(session_id)
+        store.audit("", str(user.get("email") or "-"), "auth_session_revoke", session_id[:12], {})
+        logger.info("session revoked: user=%s", user["id"])
+        return JSONResponse({"status": "revoked"})
 
     def _google_oauth_env(suffix: str) -> str:
         """Google 로그인 OAuth 설정 — GOOGLE_OAUTH_<suffix> 우선,
@@ -3189,6 +3679,20 @@ padding:32px;max-width:360px;text-align:center">
     def auth_me(request: Request) -> JSONResponse:
         user = _session_user(request)
         if user is None:
+            # 세션 없지만 API 키/로컬 오픈 모드 — 백엔드 권한(_admin_user)과
+            # 동일한 role을 반환해 UI 메뉴 게이팅이 실제 권한과 일치하게 한다
+            pseudo = _admin_user(request)
+            if pseudo is not None:
+                return JSONResponse(
+                    {
+                        "user": {
+                            "id": pseudo.get("id", ""),
+                            "email": pseudo.get("email", ""),
+                            "display_name": pseudo.get("display_name", ""),
+                            "role": pseudo.get("role", "admin"),
+                        }
+                    }
+                )
             return err(401, "unauthorized", "로그인이 필요합니다", request)
         return JSONResponse({"user": _pub_user(user)})
 
@@ -3220,7 +3724,7 @@ padding:32px;max-width:360px;text-align:center">
             max_age=600,
             httponly=True,
             samesite="lax",
-            secure=request.url.scheme == "https",
+            secure=_cookie_secure(request),
             path="/",
         )
         return resp
@@ -3235,7 +3739,7 @@ padding:32px;max-width:360px;text-align:center">
         if error:
             return back("google_denied")
         expected = request.cookies.get(OAUTH_STATE_COOKIE, "")
-        if not state or not expected or state != expected:
+        if not state or not expected or not hmac.compare_digest(state, expected):
             logger.warning("google oauth state mismatch")
             return err(400, "bad_state", "OAuth state 불일치", request)
         client_id = _google_oauth_env("CLIENT_ID")
@@ -3283,6 +3787,24 @@ padding:32px;max-width:360px;text-align:center">
             if user is not None and user.get("google_sub") not in ("", gsub):
                 return back("google_account_mismatch")
             if user is not None and not user.get("google_sub"):
+                # Pre-hijacking 방지: 비밀번호(자격증명)가 설정된 계정에 Google
+                # sub를 자동 연결하면, 공격자가 피해자 이메일로 비밀번호 가입을
+                # 선점해둔 상태에서 피해자의 Google 로그인이 공격자 계정에
+                # 연결되어 계정을 탈취할 수 있다. 자동 연결은 password_hash가
+                # 비어 있는 Google-only 계정(기존 Google 로그인 계정)에만 허용.
+                cred = store.get_user_password_hash(email)
+                if cred is not None and cred[1]:
+                    store.audit(
+                        "",
+                        email,
+                        "auth_google_link_refused",
+                        user["id"],
+                        {"reason": "password_account"},
+                    )
+                    logger.warning(
+                        "google login refused: password account exists user=%s", user["id"]
+                    )
+                    return back("google_account_conflict")
                 store.link_google_sub(user["id"], gsub)
         if user is None:
             # Google이 이메일 소유권을 증명했으므로 인증 완료로 간주
@@ -3310,26 +3832,44 @@ padding:32px;max-width:360px;text-align:center">
     )
 
     @app.get("/api/v1/insights")
-    def insights(days: int = 30) -> dict[str, Any]:
-        """인사이트 뷰 — 세션/런/비용/실패 집계 (최대 365일)."""
-        return insights_summary(store, sorted(WORKFLOWS), max(1, min(days, 365)))
+    def insights(request: Request, days: int = 30) -> JSONResponse:
+        """인사이트 뷰 — 세션/런/비용/실패 집계 (최대 365일). lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(
+            content=insights_summary(store, sorted(WORKFLOWS), max(1, min(days, 365)))
+        )
 
     @app.get("/api/v1/automation/overview")
-    def automation_overview_endpoint() -> dict[str, Any]:
-        """자동화 허브 뷰 — 스케줄/알림 규칙/cron/메신저/리포트 상태."""
-        return automation_overview(store, _prefs().get("notify_rules", []), _last_cron_tick_at())
+    def automation_overview_endpoint(request: Request) -> JSONResponse:
+        """자동화 허브 뷰 — 스케줄/알림 규칙/cron/메신저/리포트 상태. admin 전용."""
+        gate = _admin_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(
+            content=automation_overview(
+                store, _prefs().get("notify_rules", []), _last_cron_tick_at()
+            )
+        )
 
     @app.get("/api/v1/archive")
     def archive(request: Request, q: str = "", kind: str = "", limit: int = 50) -> Any:
-        """지식/아카이브 검색 — 리포트·run·종료 세션 통합."""
+        """지식/아카이브 검색 — 리포트·run·종료 세션 통합. lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if kind and kind not in ("report", "run", "session"):
             return err(422, "validation_error", "kind must be report|run|session", request)
-        return archive_search(store, q, kind, limit)
+        return archive_search(store, q, kind, max(1, min(limit, 200)))
 
     @app.get("/api/v1/developer/status")
-    def developer_status_endpoint() -> dict[str, Any]:
-        """개발자 뷰 — 연동/인증 구성 상태 (값이 아닌 bool/노트만)."""
-        return developer_status(store, settings, adapters)
+    def developer_status_endpoint(request: Request) -> JSONResponse:
+        """개발자 뷰 — 연동/인증 구성 상태 (값이 아닌 bool/노트만). admin 전용."""
+        gate = _admin_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content=developer_status(store, settings, adapters))
 
     # ==================== 대시보드 확장 기능 (playbooks/comments/connectors/
     # custom workflows/triggers/team/audit/export/share/cards) ====================
@@ -3354,13 +3894,19 @@ padding:32px;max-width:360px;text-align:center">
         except Exception:
             logger.debug("audit emit failed action=%s", action, exc_info=True)
 
-    # ---- 1. PLAYBOOKS ----
+    # ---- 1. PLAYBOOKS (플레이북 뷰는 lead 전용 — 목록 포함 전체 lead) ----
     @app.get("/api/v1/playbooks")
-    def list_playbooks() -> dict[str, Any]:
-        return {"items": store.list_playbooks()}
+    def list_playbooks(request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content={"items": store.list_playbooks()})
 
     @app.post("/api/v1/playbooks", status_code=201)
     def create_playbook(body: PlaybookCreateRequest, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if body.workflow not in WORKFLOWS:
             return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
         name = body.name.strip()
@@ -3375,6 +3921,9 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.delete("/api/v1/playbooks/{playbook_id}")
     def delete_playbook(playbook_id: str, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if not store.delete_playbook(playbook_id):
             return err(404, "not_found", "playbook not found", request)
         _audit_api(request, "playbook_delete", playbook_id, {})
@@ -3386,6 +3935,9 @@ padding:32px;max-width:360px;text-align:center">
         playbook_id: str, request: Request, background_tasks: BackgroundTasks
     ) -> JSONResponse:
         """플레이북 input으로 run 생성 — POST /runs와 동일한 생성/실행 경로."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         pb = store.get_playbook(playbook_id)
         if pb is None:
             return err(404, "not_found", "playbook not found", request)
@@ -3436,15 +3988,21 @@ padding:32px;max-width:360px;text-align:center">
         logger.info("run comment added run=%s", run_id)
         return JSONResponse(status_code=201, content=item)
 
-    # ---- 3. CONNECTORS ----
+    # ---- 3. CONNECTORS (커넥터 뷰는 lead 전용 — config에 비밀값 포함) ----
     _CONNECTOR_TYPES = {"github", "jira", "notion", "linear", "webhook", "json"}
 
     @app.get("/api/v1/connectors")
-    def list_connectors() -> dict[str, Any]:
-        return {"items": store.list_connectors()}
+    def list_connectors(request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content={"items": store.list_connectors()})
 
     @app.post("/api/v1/connectors", status_code=201)
     def create_connector(body: ConnectorCreateRequest, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         ctype = body.type.strip().lower()
         if ctype not in _CONNECTOR_TYPES:
             return err(
@@ -3477,6 +4035,9 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.delete("/api/v1/connectors/{connector_id}")
     def delete_connector(connector_id: str, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if not store.delete_connector(connector_id):
             return err(404, "not_found", "connector not found", request)
         _CONNECTOR_CACHE.pop(connector_id, None)
@@ -3488,6 +4049,9 @@ padding:32px;max-width:360px;text-align:center">
     def toggle_connector(
         connector_id: str, body: ScheduleToggleRequest, request: Request
     ) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         conn = store.set_connector_enabled(connector_id, body.enabled)
         if conn is None:
             return err(404, "not_found", "connector not found", request)
@@ -3498,7 +4062,10 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.get("/api/v1/connectors/{connector_id}/items")
     def connector_items(connector_id: str, request: Request, limit: int = 50) -> JSONResponse:
-        """외부 API에서 live fetch (60초 인메모리 캐시)."""
+        """외부 API에서 live fetch (60초 인메모리 캐시). lead 이상 — SSRF 표면."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         conn = store.get_connector(connector_id)
         if conn is None:
             return err(404, "not_found", "connector not found", request)
@@ -3528,15 +4095,25 @@ padding:32px;max-width:360px;text-align:center">
             _CONNECTOR_CACHE.clear()
         return JSONResponse(content={"items": items, "cached": False})
 
-    # ---- 4. CUSTOM WORKFLOWS ----
+    # ---- 4. CUSTOM WORKFLOWS (빌더 뷰 lead 전용) ----
     @app.get("/api/v1/workflows/custom")
-    def list_custom_workflows() -> dict[str, Any]:
-        return {
-            "items": [{"name": r["name"], "spec": r["spec"]} for r in store.list_custom_workflows()]
-        }
+    def list_custom_workflows(request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(
+            content={
+                "items": [
+                    {"name": r["name"], "spec": r["spec"]} for r in store.list_custom_workflows()
+                ]
+            }
+        )
 
     @app.post("/api/v1/workflows/custom", status_code=201)
     def create_custom_workflow(body: CustomWorkflowRequest, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         name = body.name
         if name in _BUILTIN_WF_KEYS:
             return err(409, "conflict", f"'{name}' is a builtin workflow", request)
@@ -3566,6 +4143,9 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.delete("/api/v1/workflows/custom/{name}")
     def delete_custom_workflow(name: str, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if name in _BUILTIN_WF_KEYS:
             return err(400, "validation", "cannot delete a builtin workflow", request)
         if not store.delete_custom_workflow(name):
@@ -3575,7 +4155,7 @@ padding:32px;max-width:360px;text-align:center">
         logger.info("custom workflow deleted name=%s", name)
         return JSONResponse(content={"ok": True})
 
-    # ---- 5. TRIGGERS ----
+    # ---- 5. TRIGGERS (트리거 뷰 lead 전용 — run 자동 발사 설정) ----
     _TRIGGER_MATCH_KEYS = {"tool", "project", "state"}
     _TRIGGER_STATES = {"working", "decision", "rest", "ended"}
     _TRIGGER_ACTION_TYPES = {"run_workflow", "run_playbook", "report"}
@@ -3626,11 +4206,17 @@ padding:32px;max-width:360px;text-align:center">
         return None
 
     @app.get("/api/v1/triggers")
-    def list_triggers() -> dict[str, Any]:
-        return {"items": store.list_triggers()}
+    def list_triggers(request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content={"items": store.list_triggers()})
 
     @app.post("/api/v1/triggers", status_code=201)
     def create_trigger(body: TriggerCreateRequest, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         bad = _validate_trigger(body, request)
         if bad is not None:
             return bad
@@ -3646,6 +4232,9 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.delete("/api/v1/triggers/{trigger_id}")
     def delete_trigger(trigger_id: str, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if not store.delete_trigger(trigger_id):
             return err(404, "not_found", "trigger not found", request)
         _audit_api(request, "trigger_delete", trigger_id, {})
@@ -3656,6 +4245,9 @@ padding:32px;max-width:360px;text-align:center">
     def toggle_trigger(
         trigger_id: str, body: ScheduleToggleRequest, request: Request
     ) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         trig = store.set_trigger_enabled(trigger_id, body.enabled)
         if trig is None:
             return err(404, "not_found", "trigger not found", request)
@@ -3663,10 +4255,13 @@ padding:32px;max-width:360px;text-align:center">
         logger.info("trigger %s toggled enabled=%s", trigger_id, body.enabled)
         return JSONResponse(content=trig)
 
-    # ---- 6. TEAM VIEW ----
+    # ---- 6. TEAM VIEW (팀 뷰 lead 전용) ----
     @app.get("/api/v1/team")
-    def team_view() -> dict[str, Any]:
-        return {"items": store.team_activity()}
+    def team_view(request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content={"items": store.team_activity()})
 
     # ---- 7. AUDIT LOG VIEW (admin only) ----
     @app.get("/api/v1/audit")
@@ -3682,7 +4277,7 @@ padding:32px;max-width:360px;text-align:center">
                 "detail": e["detail"],
                 "run_id": e["run_id"],
             }
-            for e in store.list_audit(limit)
+            for e in store.list_audit(min(max(limit, 1), 500))
         ]
         return JSONResponse(content={"items": items})
 
@@ -3691,9 +4286,12 @@ padding:32px;max-width:360px;text-align:center">
     def export_data(
         request: Request, kind: str = "runs", format: str = "json", days: int = 30
     ) -> Any:
-        """runs|sessions|usage|reports × csv|json 다운로드."""
+        """runs|sessions|usage|reports × csv|json 다운로드. lead 이상."""
         from fastapi.responses import Response
 
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if kind not in ("runs", "sessions", "usage", "reports"):
             return err(422, "validation", "kind must be runs|sessions|usage|reports", request)
         if format not in ("csv", "json"):
@@ -3724,6 +4322,12 @@ padding:32px;max-width:360px;text-align:center">
         import csv
         import io
 
+        def _csv_safe(v: Any) -> Any:
+            """스프레드시트 수식 인젝션 방지 — =,+,-,@,tab,CR로 시작하는 문자열에 ' 접두."""
+            if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+                return "'" + v
+            return v
+
         cols: list[str] = []
         for r in rows:
             for k in r:
@@ -3735,7 +4339,7 @@ padding:32px;max-width:360px;text-align:center">
         for r in rows:
             writer.writerow(
                 {
-                    k: (
+                    k: _csv_safe(
                         json.dumps(v, ensure_ascii=False, default=str)
                         if isinstance(v, (dict, list))
                         else v
@@ -3751,7 +4355,10 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.post("/api/v1/share", status_code=201)
     def share_create(body: ShareCreateRequest, request: Request) -> JSONResponse:
-        """run/report/insights 스냅샷을 토큰 링크로 공유 (+30일 만료)."""
+        """run/report/insights 스냅샷을 토큰 링크로 공유 (+30일 만료). lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         kind = body.kind
         ref = body.ref_id.strip()
         if kind == "run":
@@ -3804,13 +4411,17 @@ padding:32px;max-width:360px;text-align:center">
         """POST /share 응답의 /share/<token> URL → API 엔드포인트로 리다이렉트."""
         return RedirectResponse(f"/api/v1/share/{token}", status_code=302)
 
-    # ---- 9. CUSTOM DASHBOARD CARDS ----
+    # ---- 9. CUSTOM DASHBOARD CARDS (inbox 뷰에서 조회하므로 GET은 무인증, 쓰기는 lead) ----
     @app.get("/api/v1/cards")
-    def list_cards() -> dict[str, Any]:
-        return {"items": store.list_cards()}
+    def list_cards() -> JSONResponse:
+        # inbox 뷰 위젯 — 읽기는 전체 인증 사용자, 생성/수정/삭제는 lead
+        return JSONResponse(content={"items": store.list_cards()})
 
     @app.post("/api/v1/cards", status_code=201)
     def create_card(body: CardCreateRequest, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         url = body.url.strip()
         if not webutil.is_safe_fetch_url(url):
             return err(422, "url_not_allowed", "http(s) 공인 URL만 허용됩니다", request)
@@ -3823,6 +4434,9 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.delete("/api/v1/cards/{card_id}")
     def delete_card(card_id: str, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         if not store.delete_card(card_id):
             return err(404, "not_found", "card not found", request)
         _audit_api(request, "card_delete", card_id, {})
@@ -3831,6 +4445,9 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.post("/api/v1/cards/{card_id}/toggle")
     def toggle_card(card_id: str, body: ScheduleToggleRequest, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         card = store.set_card_enabled(card_id, body.enabled)
         if card is None:
             return err(404, "not_found", "card not found", request)
@@ -3840,7 +4457,8 @@ padding:32px;max-width:360px;text-align:center">
 
     @app.get("/api/v1/cards/{card_id}/data")
     def card_data(card_id: str, request: Request) -> JSONResponse:
-        """카드 URL을 서버에서 fetch(8s/256KB) 후 json_path로 값 추출."""
+        """카드 URL을 서버에서 fetch(8s/256KB) 후 json_path로 값 추출.
+        inbox 위젯 표시용 읽기 — 카드 생성은 lead 전용이라 URL은 이미 검증됨."""
         card = store.get_card(card_id)
         if card is None:
             return err(404, "not_found", "card not found", request)
@@ -3919,9 +4537,15 @@ def _process_due_schedules(
             interval = max(int(sched.get("interval_minutes") or 0), 1)
             fired = datetime.now(UTC)
             nxt = fired + timedelta(minutes=interval)
+            expected_next = str(sched.get("next_run_at") or "")
+            # 원자 claim — next_run_at compare-and-swap으로 automation loop과
+            # cron tick(또는 다중 인스턴스)의 중복 발사를 막는다
+            if not store.claim_schedule_fire(
+                sid, expected_next, fired.isoformat(), nxt.isoformat()
+            ):
+                continue
             if workflow not in WORKFLOWS:
                 worker_logger.warning("schedule %s skipped: unknown workflow %s", sid, workflow)
-                store.mark_schedule_fired(sid, fired.isoformat(), nxt.isoformat())
                 continue
             payload = dict(sched.get("input") or {})
             payload.setdefault("task", f"scheduled {workflow}")
@@ -3932,7 +4556,6 @@ def _process_due_schedules(
                 trace_id=uuid.uuid4().hex,
                 created_by=f"schedule:{sid}",
             )
-            store.mark_schedule_fired(sid, fired.isoformat(), nxt.isoformat())
             store.audit(
                 run.id,
                 "system",
@@ -4198,53 +4821,77 @@ def _automation_loop(
 def _process_pending_messages(
     store: Store, settings: Settings, llm: Any, adapters: dict[str, Any]
 ) -> None:
+    """pending 메시지를 claim한 뒤 메시지당 worker thread로 디스패치.
+
+    _create_and_run은 runner.invoke가 끝날 때까지 블로킹하므로 automation
+    loop/cron tick에서 동기 호출하면 루프 전체가 메시지 1건 처리 시간만큼
+    멈춘다. claim은 루프에서 원자적으로 수행하고 실제 처리는 스레드로 넘겨
+    다른 메시지/스케줄/폴링이 계속 진행되게 한다. 실패 시 기존
+    attempts/backoff(finish_message pending+retry_at) 의미는 그대로 유지."""
     for row in store.pending_messages():
         provider = row["source_provider"]
         source_id = row["source_id"]
-        attempts = int(row.get("attempts", 0)) + 1
-        try:
-            if attempts > 5:
-                store.finish_message(
-                    provider, source_id, "failed", "max attempts", attempts=attempts
-                )
-                worker_logger.warning(
-                    "message %s:%s failed permanently after %s attempts",
-                    provider,
-                    source_id,
-                    attempts,
-                )
-                continue
-            ctx = {
-                "source_provider": provider,
-                "source_id": source_id,
-                "thread_id": row.get("thread_id", ""),
-                "message_text": row.get("source_text", ""),
-            }
-            if provider == "gmail":
-                ctx["gmail_message_id"] = source_id
-            run_id = _create_and_run(
-                store, settings, llm, adapters, "gmail_calendar", "message intake", ctx
-            )
-            store.finish_message(
-                provider, source_id, "processed", f"run:{run_id}", attempts=attempts
-            )
-        except Exception as e:
+        # 원자 claim — automation loop과 cron tick이 같은 메시지를 동시에
+        # 처리해 run을 중복 생성하는 것을 막는다 (리스 만료 시 재claim 가능)
+        if not store.claim_message(provider, source_id):
+            continue
+        threading.Thread(
+            target=_process_message_job,
+            args=(store, settings, llm, adapters, dict(row)),
+            daemon=True,
+        ).start()
+
+
+def _process_message_job(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    row: dict[str, Any],
+) -> None:
+    """claim된 메시지 1건의 intake run 실행 — worker thread에서 호출."""
+    provider = row["source_provider"]
+    source_id = row["source_id"]
+    attempts = int(row.get("attempts", 0)) + 1
+    try:
+        if attempts > 5:
+            store.finish_message(provider, source_id, "failed", "max attempts", attempts=attempts)
             worker_logger.warning(
-                "message %s:%s processing failed (attempt %s): %s",
+                "message %s:%s failed permanently after %s attempts",
                 provider,
                 source_id,
                 attempts,
-                str(e)[:200],
             )
-            retry_at = datetime.now(UTC) + timedelta(seconds=min(300, 2**attempts))
-            store.finish_message(
-                provider,
-                source_id,
-                "pending",
-                str(e)[:200],
-                retry_at=retry_at.isoformat(),
-                attempts=attempts,
-            )
+            return
+        ctx = {
+            "source_provider": provider,
+            "source_id": source_id,
+            "thread_id": row.get("thread_id", ""),
+            "message_text": row.get("source_text", ""),
+        }
+        if provider == "gmail":
+            ctx["gmail_message_id"] = source_id
+        run_id = _create_and_run(
+            store, settings, llm, adapters, "gmail_calendar", "message intake", ctx
+        )
+        store.finish_message(provider, source_id, "processed", f"run:{run_id}", attempts=attempts)
+    except Exception as e:
+        worker_logger.warning(
+            "message %s:%s processing failed (attempt %s): %s",
+            provider,
+            source_id,
+            attempts,
+            str(e)[:200],
+        )
+        retry_at = datetime.now(UTC) + timedelta(seconds=min(300, 2**attempts))
+        store.finish_message(
+            provider,
+            source_id,
+            "pending",
+            str(e)[:200],
+            retry_at=retry_at.isoformat(),
+            attempts=attempts,
+        )
 
 
 def _create_and_run(
@@ -4263,8 +4910,18 @@ def _create_and_run(
         trace_id=uuid.uuid4().hex,
         created_by="system:intake",
     )
-    runner = build_runner(workflow, store=store, llm=llm, settings=settings, adapters=adapters)
-    runner.invoke(run.id, {"task": task}, gmail_ctx=ctx)
+    try:
+        # build_runner 실패도 run을 pending/running에 고착시키지 않도록 try 안에서 호출
+        runner = build_runner(workflow, store=store, llm=llm, settings=settings, adapters=adapters)
+        runner.invoke(run.id, {"task": task}, gmail_ctx=ctx)
+    except Exception as e:
+        # invoke가 예외로 죽으면 run이 running에 영구 고착된다 — FAILED로 마감 후 재전파
+        try:
+            store.update_run(run.id, status=RunStatus.FAILED, error=str(e)[:500])
+        except Exception:
+            logger.warning("run %s FAILED 마킹 실패", run.id, exc_info=True)
+        logger.warning("run %s invoke failed: %s", run.id, str(e)[:200])
+        raise
     done = store.get_run(run.id)
     logger.info("run %s finished status=%s", run.id, getattr(done, "status", "?"))
     return run.id
@@ -4320,6 +4977,14 @@ def _maybe_poll_gmail(store: Store, settings: Settings, adapters: dict[str, Any]
                 return
         except ValueError:
             pass
+    # 연속 실패 시 지수 백오프 — 실패할 때마다 매 틱 재시도해 Gmail API를 두드리는 것 방지
+    backoff_until = str(auto.get("gmail_backoff_until") or "")
+    if backoff_until:
+        try:
+            if datetime.now(UTC) < datetime.fromisoformat(backoff_until):
+                return
+        except ValueError:
+            pass
     gmail = adapters.get("gmail")
     if gmail is None:
         return
@@ -4328,11 +4993,23 @@ def _maybe_poll_gmail(store: Store, settings: Settings, adapters: dict[str, Any]
         auto["last_gmail_poll_at"] = datetime.now(UTC).isoformat()
         auto["last_poll_result"] = f"ingested:{ingested}"
         auto["last_gmail_error"] = ""
+        auto["gmail_fail_count"] = 0
+        auto["gmail_backoff_until"] = ""
         if ingested:
             logger.info("gmail poll ingested %d new messages", ingested)
     except Exception as e:
         auto["last_gmail_error"] = type(e).__name__
-        worker_logger.warning("gmail poll failed: %s", type(e).__name__)
+        fails = int(auto.get("gmail_fail_count") or 0) + 1
+        auto["gmail_fail_count"] = fails
+        delay = min(interval_secs * (2 ** min(fails, 4)), 3600)
+        auto["gmail_backoff_until"] = (datetime.now(UTC) + timedelta(seconds=delay)).isoformat()
+        auto["last_gmail_poll_at"] = datetime.now(UTC).isoformat()
+        worker_logger.warning(
+            "gmail poll failed (attempt %s, backoff %ss): %s",
+            fails,
+            delay,
+            type(e).__name__,
+        )
     store.set_automation(auto)
 
 

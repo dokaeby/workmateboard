@@ -99,11 +99,12 @@ def test_google_callback_creates_user_and_session(clean_oauth_env):
 
 
 def test_google_callback_existing_user_no_duplicate(clean_oauth_env):
+    """Google-only 계정(password_hash 빈 값)은 Google sub 자동 연결 허용."""
     clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
     clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "sec")
     _mock_google(clean_oauth_env, sub="gsub-9", email="existing@example.com")
     client, store = _client()
-    store.create_user("existing@example.com", "scrypt$hash", "Existing")
+    store.create_user("existing@example.com", "", "Existing")  # Google-only 계정
     before = len(store.list_users())
     client.cookies.set("jobmate_oauth_state", "state")
     r = client.get("/api/v1/auth/google/callback?code=c&state=state", follow_redirects=False)
@@ -111,6 +112,28 @@ def test_google_callback_existing_user_no_duplicate(clean_oauth_env):
     assert len(store.list_users()) == before
     user = store.get_user_by_email("existing@example.com")
     assert user["google_sub"] == "gsub-9"  # 기존 계정에 sub 연결
+
+
+def test_google_callback_password_account_link_refused(clean_oauth_env):
+    """Pre-hijacking 방지: 비밀번호 계정에는 Google sub 자동 연결 거부.
+
+    공격자가 피해자 이메일로 비밀번호 가입을 선점해두면 피해자의 Google
+    로그인이 공격자 계정에 연결되어 탈취될 수 있다 — password_hash가 있는
+    계정은 명시적 연결 플로우 전까지 google_account_conflict로 거부."""
+    clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
+    clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "sec")
+    _mock_google(clean_oauth_env, sub="gsub-evil", email="victim@example.com")
+    client, store = _client()
+    store.create_user("victim@example.com", "scrypt$hash", "Victim")
+    client.cookies.set("jobmate_oauth_state", "state")
+    r = client.get("/api/v1/auth/google/callback?code=c&state=state", follow_redirects=False)
+    assert r.status_code == 302
+    assert "auth_error=google_account_conflict" in r.headers["location"]
+    assert "jobmate_session" not in r.headers.get("set-cookie", "")
+    user = store.get_user_by_email("victim@example.com")
+    assert user["google_sub"] in ("", None)  # sub 미연결
+    # 별도 계정도 생성되지 않음
+    assert len(store.list_users()) == 1
 
 
 def test_google_callback_state_mismatch(clean_oauth_env):

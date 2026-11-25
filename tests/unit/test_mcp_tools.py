@@ -104,7 +104,9 @@ def test_mcp_tool_entries_format() -> None:
     assert e["name"] == "mcp_fs_read_file"
     assert e["server"] == "fs"
     assert e["tool"] == "read_file"
-    assert e["description"] == "read a file"
+    # 외부 MCP description은 untrusted 경고가 앞에 붙는다
+    assert e["description"].endswith("read a file")
+    assert "UNTRUSTED" in e["description"]
     assert e["parameters"] == schema
     assert callable(e["call"])
     assert e["call"]({"path": "tmp/x"}) == "ok"

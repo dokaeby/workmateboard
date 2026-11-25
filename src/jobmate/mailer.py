@@ -22,6 +22,7 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger("jobmate.mailer")
 
@@ -33,6 +34,28 @@ def _env(name: str, default: str = "") -> str:
 def smtp_configured() -> bool:
     """SMTP_HOST가 설정됐는지 — 미설정이면 발송 시도 없이 False."""
     return bool(_env("JOBMATE_SMTP_HOST"))
+
+
+_SENSITIVE_QUERY_KEYS = {"token", "code", "key", "secret", "password", "sig", "signature"}
+
+
+def _log_safe_url(url: str) -> str:
+    """로깅용 URL — 토큰/시크릿류 쿼리 값을 마스킹한다.
+
+    로컬 개발에서 인증 링크를 로그로 확인하는 편의는 유지하되,
+    token=... 원문이 로그에 남지 않도록 쿼리 값만 ***로 치환한다.
+    """
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return "(unparseable-url)"
+    if not p.query:
+        return urlunparse((p.scheme, p.netloc, p.path, "", "", ""))
+    masked = []
+    for pair in p.query.split("&"):
+        k, _, _v = pair.partition("=")
+        masked.append(f"{k}=***" if k.lower() in _SENSITIVE_QUERY_KEYS else pair)
+    return urlunparse((p.scheme, p.netloc, p.path, "", "&".join(masked), ""))
 
 
 def _verification_body(verify_url: str) -> tuple[str, str]:
@@ -70,8 +93,13 @@ def send_verification_email(to: str, verify_url: str, gmail: Any | None = None) 
         if os.environ.get("VERCEL"):
             logger.warning("no mail backend configured: verification email cannot be sent")
         else:
-            # 로컬 개발 편의 — 인증 링크를 로그에서 바로 확인할 수 있게 info로 출력
-            logger.info("mail backend not configured; verification url for %s: %s", to, verify_url)
+            # 로컬 개발 편의 — 인증 링크를 로그에서 바로 확인할 수 있게 info로 출력.
+            # 토큰 등 민감 쿼리 값은 마스킹한다(로그에 토큰 원문 금지 원칙).
+            logger.info(
+                "mail backend not configured; verification url for %s: %s",
+                to,
+                _log_safe_url(verify_url),
+            )
         return False
 
     host = _env("JOBMATE_SMTP_HOST")

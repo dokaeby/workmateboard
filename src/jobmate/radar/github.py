@@ -63,18 +63,24 @@ class GitHubAPI:
         self._max_retries = max_retries
         self._backoff = backoff
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, token: str | None = None) -> dict[str, str]:
         h = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self._token:
-            h["Authorization"] = f"Bearer {self._token}"
+        tok = self._token if token is None else token
+        if tok:
+            h["Authorization"] = f"Bearer {tok}"
         return h
 
     def _get_json(self, url: str, params: dict | None = None) -> dict | None:
         delay = self._backoff
         path = url.split("?", 1)[0]
+        # 401 시 토큰을 영구 클리어하지 않는다 — 일시적 401(전파 지연,
+        # GitHub 측 blip)로 유효한 토큰을 잃는 것을 막기 위해 이 호출
+        # 안에서만 토큰 없이 1회 재시도한다. 실제로 만료된 토큰이면
+        # 다음 호출에서도 동일하게 재시도되지만 성공 경로는 유지된다.
+        token = self._token
         for attempt in range(self._max_retries + 1):
             try:
-                resp = self._client.get(url, params=params, headers=self._headers())
+                resp = self._client.get(url, params=params, headers=self._headers(token))
             except httpx.HTTPError as e:
                 if attempt == self._max_retries:
                     logger.warning(
@@ -90,10 +96,11 @@ class GitHubAPI:
                 continue
             if resp.status_code == 200:
                 return resp.json()
-            if resp.status_code == 401 and self._token:
-                # 토큰 만료/무효 — 토큰 없이 1회 재시도 (레이트리밋만 낮아짐)
+            if resp.status_code == 401 and token:
+                # 토큰 거부 — 이 요청에 한해 토큰 없이 1회 재시도.
+                # self._token은 유지한다(비영구화 — 일시적 401 오인 방지).
                 logger.warning("github api 401 — token rejected, retrying unauthenticated")
-                self._token = ""
+                token = ""
                 continue
             if resp.status_code in (403, 429, 500, 502, 503):
                 if attempt == self._max_retries:
@@ -105,7 +112,12 @@ class GitHubAPI:
                     )
                     return None
                 ra = resp.headers.get("Retry-After")
-                time.sleep(min(float(ra) if ra else delay, 60.0))
+                try:
+                    wait = min(float(ra), 60.0) if ra else delay
+                except ValueError:
+                    # Retry-After가 HTTP-date 등 비숫자면 기본 백오프로.
+                    wait = delay
+                time.sleep(wait)
                 delay *= 2
                 continue
             logger.warning("github api error path=%s status=%s", path, resp.status_code)

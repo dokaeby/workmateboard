@@ -1,7 +1,7 @@
 """skillRadar 포팅 기능 테스트 — collect/dedupe/sanitize/classify/summarize/verify/rank/publish."""
 
 from jobmate.adapters.fakes import FakeGitHub, FakeNotifier
-from jobmate.models import RadarClassification, RadarVerify
+from jobmate.models import RadarClassification
 from jobmate.workflows.registry_builder import build_runner
 
 from .helpers import make_env, scripted_llm
@@ -23,22 +23,25 @@ def _repo(name, stars=100, **kw):
     return r
 
 
-def _summary_dict(i=0):
+def _summary_dict(i=0, supported=True):
+    # verify_summary는 schema 없이 호출되므로 summarize와 같은 "" 큐를 공유한다.
+    # "supported" 키를 함께 넣어 verify 판정이 가능하게 한다
+    # (normalize_summary는 summary_* 키만 읽으므로 무시된다).
     return {
         "summary_en": [f"en {i} a", f"en {i} b", f"en {i} c"],
         "summary_zh": [f"zh {i} a", f"zh {i} b", f"zh {i} c"],
         "summary_ko": [f"ko 요약 {i}a", f"ko 요약 {i}b", f"ko 요약 {i}c"],
+        "supported": supported,
     }
 
 
 def _radar_llm(n=10, supported=True):
-    """schema 이름별 큐: classify=RadarClassification, summarize=None(""), verify=RadarVerify."""
+    """schema 이름별 큐: classify=RadarClassification, summarize/verify="" (dict)."""
     return {
         "RadarClassification": [
             RadarClassification(label="skills", confidence=0.9) for _ in range(n)
         ],
-        "": [_summary_dict(i) for i in range(n)],
-        "RadarVerify": [RadarVerify(supported=supported) for _ in range(n)],
+        "": [_summary_dict(i, supported=supported) for i in range(n)],
     }
 
 

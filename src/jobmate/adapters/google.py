@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import re
 import time
 import urllib.parse
@@ -426,10 +427,17 @@ def issue_token(
     print(f"다음 URL을 브라우저에서 여세요:\n{auth_url}")
     webbrowser.open(auth_url)
 
-    server.timeout = timeout
+    # handle_request()는 server.timeout 동안 1회 select 대기할 뿐이라
+    # 요청이 없으면 while이 사실상 영구 반복된다 — 전체 deadline을 별도로 둔다.
+    deadline = time.time() + timeout
+    server.timeout = min(1.0, max(timeout, 0.05))
     while "code" not in result and "error" not in result:
+        if time.time() >= deadline:
+            break
         server.handle_request()
     server.server_close()
+    if "code" not in result and "error" not in result:
+        raise GoogleAuthError(f"oauth timeout — no callback within {timeout}s")
     if "error" in result:
         raise GoogleAuthError(f"oauth error: {result['error']}")
     if result.get("state") != state:
@@ -455,7 +463,10 @@ def issue_token(
     path.parent.mkdir(parents=True, exist_ok=True)
     # google-auth Credentials.to_json()과 동일 필드를 포함해
     # calendar-agent의 token_*.json도 그대로 읽을 수 있게 한다
-    path.write_text(
+    # 원자적 쓰기 — 임시파일에 쓴 뒤 os.replace. write_text 직접 쓰기는
+    # 중간에 프로세스가 죽으면 토큰 파일이 깨진 채 남을 수 있다.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
         json.dumps(
             {
                 "client_id": client_id,
@@ -467,7 +478,8 @@ def issue_token(
             indent=2,
         )
     )
-    path.chmod(0o600)
+    tmp.chmod(0o600)
+    os.replace(tmp, path)
     return path
 
 

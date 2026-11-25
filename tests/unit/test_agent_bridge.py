@@ -872,3 +872,85 @@ def test_scan_all_isolates_scanner_failure() -> None:
 
 def test_status_values() -> None:
     assert set(ab._STATUS_VALUES) == {"working", "decision", "rest", "ended"}
+
+
+# ---------------------------------------------------------------------------
+# 보안/견고성 회귀 — ended 재시도, devin lock 부재, transcript 크기, read_edges
+# ---------------------------------------------------------------------------
+
+
+def test_bridge_ended_push_failure_retries() -> None:
+    """ended push 실패 시 _last를 유지해 다음 스캔에서 재시도한다
+    (실패해도 추적이 삭제돼 ended가 영구 유실되던 회귀)."""
+    st = _fake_state("claude", "s1")
+    fail = {"on": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if fail["on"] and body.get("status") == "ended":
+            return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    bridge = ab.Bridge(
+        "http://testserver",
+        scanners={"fake": _FakeScanner([st])},
+        roots={"fake": Path("/data")},
+        client=client,
+    )
+    assert bridge.push()["pushed"] == 1
+
+    bridge._scanners["fake"] = _FakeScanner([])  # noqa: SLF001
+    c = bridge.push()
+    assert c["ended"] == 0
+    # 실패 — 추적 유지 → 다음 push에서 재시도 가능
+    assert ("claude", "s1") in bridge._last  # noqa: SLF001
+    assert ("claude", "s1") not in bridge._ended_sent  # noqa: SLF001
+
+    fail["on"] = False
+    c = bridge.push()
+    assert c["ended"] == 1
+    assert ("claude", "s1") not in bridge._last  # noqa: SLF001
+    assert ("claude", "s1") in bridge._ended_sent  # noqa: SLF001
+
+
+def test_scan_devin_missing_lock_dir_treats_transcripts_ended(tmp_path: Path) -> None:
+    """session_locks/ 디렉터리 자체가 없으면 transcript를 활성으로
+    처리하지 않는다 — 종료 세션이 계속 살아있는 것처럼 보이는 것을 막는다."""
+    root = tmp_path / "cli"
+    (root / "transcripts").mkdir(parents=True)
+    # session_locks/ 미생성
+    t = root / "transcripts" / "camp-seat.json"
+    t.write_text(json.dumps({"steps": [{"source": "user", "message": "hi"}]}))
+    _touch(t, 5)
+    assert ab.scan_devin(root, NOW) == []
+
+
+def test_scan_devin_oversized_transcript_skipped(tmp_path: Path, monkeypatch) -> None:
+    """비정상적으로 큰 transcript는 파싱하지 않고 스킵한다."""
+    monkeypatch.setattr(ab, "_DEVIN_MAX_TRANSCRIPT_BYTES", 10)
+    root = _devin_root(tmp_path)
+    t = root / "transcripts" / "big.json"
+    (root / "session_locks" / "big.lock").write_text("1")
+    t.write_text(json.dumps({"steps": [{"source": "user", "message": "hi"}]}))
+    _touch(t, 5)
+    assert ab.scan_devin(root, NOW) == []
+
+
+def test_read_edges_mid_size_covers_gap(tmp_path: Path) -> None:
+    """head+tail 합산 크기보다 큰 중간 파일은 head 이후~EOF가 tail로
+    반환되어 중간 구간이 유실되지 않는다."""
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"x" * 250)
+    # size(250) > head(100) 이고 <= head+tail(300) → 중간 크기 분기
+    head, tail = ab._read_edges(p, 100, 200)
+    assert head == b"x" * 100
+    assert tail == b"x" * 150  # head_bytes 이후 ~ EOF 전체
+
+
+def test_read_edges_large_file_head_tail_only(tmp_path: Path) -> None:
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"y" * 1000)
+    head, tail = ab._read_edges(p, 100, 100)
+    assert head == b"y" * 100
+    assert tail == b"y" * 100
