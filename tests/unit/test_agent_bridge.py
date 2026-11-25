@@ -928,7 +928,7 @@ def test_scan_devin_missing_lock_dir_treats_transcripts_ended(tmp_path: Path) ->
 
 def test_scan_devin_oversized_transcript_skipped(tmp_path: Path, monkeypatch) -> None:
     """비정상적으로 큰 transcript는 파싱하지 않고 스킵한다."""
-    monkeypatch.setattr(ab, "_DEVIN_MAX_TRANSCRIPT_BYTES", 10)
+    monkeypatch.setattr("jobmate.bridge_devin._DEVIN_MAX_TRANSCRIPT_BYTES", 10)
     root = _devin_root(tmp_path)
     t = root / "transcripts" / "big.json"
     (root / "session_locks" / "big.lock").write_text("1")

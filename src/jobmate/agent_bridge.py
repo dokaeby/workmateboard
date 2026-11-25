@@ -4,1051 +4,138 @@ claude / codex / gemini / devin CLI의 세션 파일을 스캔해 상태를 계�
 jobMate API(`POST /api/v1/agent-sessions`)로 push한다.
 
 외부 의존성: stdlib + httpx + zstd CLI 서브프로세스만 사용한다.
+
+스캐너/공통 헬퍼는 bridge_common / bridge_claude / bridge_codex /
+bridge_gemini / bridge_devin 모듈로 분리됐다 — 이 모듈은 repo 헬퍼와
+Bridge만 유지하며, 기존 공개 API를 위해 이동된 이름을 모두 재수출한다.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 import shutil
-import socket
-import sqlite3
 import subprocess
 import time
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+# 스캐너/공통 헬퍼 재수출 — 기존 `from jobmate import agent_bridge as ab`
+# 사용처가 ab.scan_claude / ab.SessionState / ab._read_edges 등을 그대로 쓸 수 있도록.
+from .bridge_claude import (
+    _claude_entries,
+    _claude_slug_project,
+    _claude_title,
+    _claude_tokens,
+    scan_claude,
+)
+from .bridge_codex import (
+    _CODEX_UUID_RE,
+    _codex_catalog_sessions,
+    _codex_entries,
+    _codex_session_key,
+    _codex_text,
+    _codex_title_entry,
+    _codex_tokens,
+    _payload,
+    _zstd_edges,
+    scan_codex,
+)
+from .bridge_common import (
+    _CLAUDE_HEAD_BYTES,
+    _CLAUDE_TAIL_BYTES,
+    _CODEX_HEAD_BYTES,
+    _CODEX_TAIL_BYTES,
+    _DECISION_TOOLS,
+    _STATUS_VALUES,
+    ENDED_SECONDS,
+    HEARTBEAT_SECONDS,
+    HTTP_TIMEOUT,
+    IDLE_SECONDS,
+    SUBAGENT_BUSY_SECONDS,
+    SessionState,
+    _alive,
+    _base_status,
+    _blocks,
+    _clip,
+    _has_tool_result,
+    _is_decision_tool,
+    _iso,
+    _iter_jsonl,
+    _machine_name,
+    _mtime,
+    _read_edges,
+    _text_of_content,
+    _tool_use_names,
+    _usage_int,
+)
+from .bridge_devin import (
+    _DEVIN_MAX_TRANSCRIPT_BYTES,
+    _devin_lock_warned,
+    _devin_subagent_titles,
+    scan_devin,
+)
+from .bridge_gemini import _blob_snippet, scan_gemini
+
 logger = logging.getLogger("jobmate.agent_bridge")
 
-IDLE_SECONDS = 45.0
-ENDED_SECONDS = 600.0
-HEARTBEAT_SECONDS = 60.0
-HTTP_TIMEOUT = 10.0
-SUBAGENT_BUSY_SECONDS = 180.0
-
-_CLAUDE_TAIL_BYTES = 512 * 1024
-_CLAUDE_HEAD_BYTES = 128 * 1024
-_CODEX_TAIL_BYTES = 256 * 1024
-_CODEX_HEAD_BYTES = 64 * 1024
-
-_STATUS_VALUES = ("working", "decision", "rest", "ended")
-
-
-@dataclass
-class SessionState:
-    tool: str
-    session_key: str
-    project: str
-    title: str
-    status: str  # working | decision | rest | ended
-    doing: str
-    ask: str
-    event_at: str  # ISO timestamp (파일 mtime 기준)
-    path: str
-    ended_summary: str = ""  # 종료 시 수집한 repo 요약 (ended push 전용)
-    artifacts: list[str] | None = None  # 종료 시 수집한 산출물 짧은 문자열 목록
-    tokens_in: int | None = None  # 누적 입력 토큰 (수집 가능 시)
-    tokens_out: int | None = None  # 누적 출력 토큰
-
-
-def _machine_name() -> str:
-    """짧은 호스트명 (서버 측 machine 필터용). 실패 시 'unknown'."""
-    try:
-        return socket.gethostname().split(".")[0][:128] or "unknown"
-    except Exception:
-        return "unknown"
-
-
-# ---------------------------------------------------------------------------
-# 공통 헬퍼
-# ---------------------------------------------------------------------------
-
-
-def _clip(text: str | None, limit: int) -> str:
-    if not text:
-        return ""
-    return " ".join(text.split())[:limit].strip()
-
-
-def _iso(ts: float) -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + f".{int((ts % 1) * 1000):03d}Z"
-
-
-def _mtime(path: Path) -> float:
-    try:
-        return path.stat().st_mtime
-    except OSError:
-        return 0.0
-
-
-def _alive(mtime: float, now: float) -> bool:
-    """ENDED_SECONDS 이내 파일만 세션으로 취급."""
-    return 0.0 < mtime and (now - mtime) <= ENDED_SECONDS
-
-
-def _base_status(mtime: float, now: float) -> str:
-    return "working" if (now - mtime) < IDLE_SECONDS else "rest"
-
-
-_DECISION_TOOLS = frozenset({"ask_user_question", "request_user_input"})
-
-
-def _is_decision_tool(name: str) -> bool:
-    return name.rsplit(".", 1)[-1].lower() in _DECISION_TOOLS
-
-
-def _read_edges(path: Path, head_bytes: int, tail_bytes: int) -> tuple[bytes, bytes]:
-    """파일 앞/뒤 일부만 읽는다. 작은 파일은 전체를 head로 반환."""
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as f:
-            head = f.read(min(head_bytes, size))
-            if size <= head_bytes:
-                return head, b""
-            if size <= head_bytes + tail_bytes:
-                # 중간 크기 파일 — head 이후~EOF를 tail로 읽어 중간 구간 유실 방지
-                f.seek(head_bytes)
-                return head, f.read()
-            f.seek(size - tail_bytes)
-            tail = f.read(tail_bytes)
-            return head, tail
-    except OSError as e:
-        logger.debug("read failed %s: %s", path, e)
-        return b"", b""
-
-
-def _iter_jsonl(data: bytes) -> Iterable[dict]:
-    for line in data.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        if isinstance(obj, dict):
-            yield obj
-
-
-def _text_of_content(content: object) -> str:
-    """message.content(str | list[block])에서 텍스트를 추출."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text" and isinstance(block.get("text"), str):
-                parts.append(block["text"])
-            elif block.get("type") == "output_text" and isinstance(block.get("text"), str):
-                parts.append(block["text"])
-        return "\n".join(parts)
-    return ""
-
-
-def _blocks(content: object) -> list[dict]:
-    if isinstance(content, list):
-        return [b for b in content if isinstance(b, dict)]
-    return []
-
-
-def _tool_use_names(content: object) -> list[str]:
-    return [
-        str(b.get("name") or "tool")
-        for b in _blocks(content)
-        if b.get("type") in ("tool_use", "tool_call", "function_call")
-    ]
-
-
-def _has_tool_result(content: object) -> bool:
-    return any(b.get("type") == "tool_result" for b in _blocks(content))
-
-
-# ---------------------------------------------------------------------------
-# Claude Code: ~/.claude/projects/<slug>/*.jsonl
-# ---------------------------------------------------------------------------
-
-
-def _claude_entries(head: bytes, tail: bytes) -> tuple[list[dict], list[dict]]:
-    """(head_entries, tail_entries) — title 용 head, 상태 용 tail."""
-    head_entries = list(_iter_jsonl(head))
-    if tail:
-        # tail 첫 라인은 잘린 라인일 수 있으므로 첫 줄을 버린다.
-        tail = tail.split(b"\n", 1)[1] if b"\n" in tail else b""
-        return head_entries, list(_iter_jsonl(tail))
-    return head_entries, []
-
-
-def _claude_title(entries: Iterable[dict]) -> str:
-    for e in entries:
-        if e.get("type") != "user" or e.get("isMeta"):
-            continue
-        text = _text_of_content((e.get("message") or {}).get("content"))
-        text = text.strip()
-        # <command-...>, <local-command-...> 같은 메타 프롬프트 제외
-        if text and not text.startswith("<"):
-            return _clip(text, 60)
-    return ""
-
-
-def _claude_slug_project(slug: str) -> str:
-    """'-Users-sec-Documents-foo' → 'foo' (basename).
-
-    한계: Claude Code는 프로젝트 디렉터리명을 만들어 slug로 쓸 때
-    경로 구분자뿐 아니라 일부 특수문자도 '-'로 치환한다. 원래 이름에
-    '-'나 치환 대상 문자가 있으면 구분이 모호해지므로 이 값은
-    best-effort다 — 정확한 프로젝트명은 transcript의 cwd 메타데이터가
-    우선 사용되어야 한다(scan_claude 참조)."""
-    decoded = slug.lstrip("-").replace("-", "/")
-    return decoded.rsplit("/", 1)[-1] if decoded else slug
-
-
-def _usage_int(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-
-def _claude_tokens(entries: Iterable[dict]) -> tuple[int | None, int | None]:
-    """assistant 메시지의 usage 합산 (head+tail 스캔 범위 내 best-effort)."""
-    tin = tout = 0
-    seen = False
-    for e in entries:
-        if e.get("type") != "assistant":
-            continue
-        msg = e.get("message")
-        usage = msg.get("usage") if isinstance(msg, dict) else None
-        if not isinstance(usage, dict):
-            continue
-        i = _usage_int(usage.get("input_tokens"))
-        o = _usage_int(usage.get("output_tokens"))
-        if i is None and o is None:
-            continue
-        tin += i or 0
-        tout += o or 0
-        seen = True
-    return (tin, tout) if seen else (None, None)
-
-
-def scan_claude(root: Path, now: float) -> list[SessionState]:
-    """root = ~/.claude/projects 디렉터리."""
-    states: list[SessionState] = []
-    if not root.is_dir():
-        return states
-    for path in sorted(root.glob("*/*.jsonl")):
-        if path.name == "memory.jsonl" or not path.is_file():
-            continue
-        mtime = _mtime(path)
-        if not _alive(mtime, now):
-            continue
-        head, tail = _read_edges(path, _CLAUDE_HEAD_BYTES, _CLAUDE_TAIL_BYTES)
-        head_entries, tail_entries = _claude_entries(head, tail)
-        # head+tail을 모두 사용 — 중간 크기 파일에서 tail만 쓰면
-        # head 구간의 초기 엔트리(session_meta, 첫 user 메시지 등)가 누락된다.
-        # 큰 파일은 tail 첫 라인이 잘려 있을 수 있으나 _claude_entries가 처리.
-        entries = head_entries + tail_entries
-
-        title = _claude_title(head_entries) or _claude_title(entries)
-        project = ""
-        cwd = ""
-        for e in reversed(entries):
-            c = e.get("cwd")
-            if isinstance(c, str) and c:
-                cwd = c
-                break
-        if cwd:
-            project = Path(cwd).name
-        if not project:
-            project = _claude_slug_project(path.parent.name)
-
-        # 마지막 assistant 이후 미해결 tool_use → decision
-        pending: list[str] = []
-        doing = ""
-        for e in entries:
-            if e.get("isSidechain"):
-                continue
-            etype = e.get("type")
-            content = (e.get("message") or {}).get("content")
-            if etype == "assistant":
-                names = _tool_use_names(content)
-                if names:
-                    pending.extend(names)
-                text = _text_of_content(content)
-                if _clip(text, 1):
-                    doing = _clip(text, 80)
-            elif etype == "user" and _has_tool_result(content):
-                # tool_result 도착 → 대기 해소 (id 매칭 없이 순서 기반)
-                pending.clear()
-        decision = bool(pending)
-
-        tokens_in = tokens_out = None
-        try:
-            tokens_in, tokens_out = _claude_tokens(head_entries + tail_entries)
-        except Exception as e:
-            logger.debug("claude token scan failed %s: %s", path, e)
-
-        status = "decision" if decision else _base_status(mtime, now)
-        states.append(
-            SessionState(
-                tool="claude",
-                session_key=path.stem,
-                project=project,
-                title=title,
-                status=status,
-                doing=doing or (pending[-1] if pending else ""),
-                ask=pending[-1] if pending else "",
-                event_at=_iso(mtime),
-                path=str(path),
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-            )
-        )
-
-    # ~/.claude/sessions/*.json — 실행 중 세션의 sessionId+mtime.
-    # 긴 도구 실행으로 transcript jsonl이 멈춰도 세션 파일이 최신이면
-    # working을 유지한다 (devin sessions.db / codex catalog와 동일 패턴).
-    by_key = {s.session_key: s for s in states}
-    sdir = root.parent / "sessions"
-    mtimes = {s.session_key: _mtime(Path(s.path)) for s in states}
-    if sdir.is_dir():
-        for sf in sorted(sdir.glob("*.json")):
-            sm = _mtime(sf)
-            if not _alive(sm, now):
-                continue
-            try:
-                meta = json.loads(sf.read_text(encoding="utf-8", errors="replace"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(meta, dict):
-                continue
-            sid = str(meta.get("sessionId") or meta.get("session_id") or "")
-            existing = by_key.get(sid)
-            if existing is None or sm <= mtimes.get(sid, 0.0):
-                continue
-            mtimes[sid] = sm
-            if existing.status != "decision":
-                existing.status = _base_status(sm, now)
-            existing.event_at = _iso(sm)
-    return states
-
-
-# ---------------------------------------------------------------------------
-# Codex CLI: ~/.codex/sessions/**/*.jsonl(.zst)
-# ---------------------------------------------------------------------------
-
-_CODEX_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-
-
-def _codex_session_key(name: str) -> str:
-    m = _CODEX_UUID_RE.search(name)
-    return m.group(0) if m else name
-
-
-def _zstd_edges(path: Path, head_bytes: int, tail_bytes: int) -> tuple[bytes, bytes]:
-    """`zstd -dc` 출력을 앞/뒤 일부만 메모리에 유지하며 스트리밍."""
-    try:
-        zstd = shutil.which("zstd")
-        if not zstd:
-            logger.debug("zstd not found; skip %s", path)
-            return b"", b""
-        proc = subprocess.Popen(  # noqa: S603 - 고정 argv, 로컬 파일 경로만 전달
-            [zstd, "-dc", str(path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as e:
-        logger.debug("zstd spawn failed for %s: %s", path, e)
-        return b"", b""
-    assert proc.stdout is not None
-    head = bytearray()
-    tail = bytearray()
-    head_done = False
-    chunk_size = 1024 * 1024
-    timed_out = False
-    try:
-        while True:
-            chunk = proc.stdout.read(chunk_size)
-            if not chunk:
-                break
-            if not head_done:
-                need = head_bytes - len(head)
-                if len(chunk) <= need:
-                    head.extend(chunk)
-                    continue
-                head.extend(chunk[:need])
-                chunk = chunk[need:]
-                head_done = True
-            tail.extend(chunk)
-            if len(tail) > tail_bytes:
-                del tail[: len(tail) - tail_bytes]
-    finally:
-        proc.stdout.close()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            # zstd가 행업 상태로 남지 않도록 kill — 부분 결과는 버린다.
-            proc.kill()
-            proc.wait()
-            timed_out = True
-            logger.warning("zstd decompress timed out for %s", path)
-    if timed_out:
-        return b"", b""
-    return bytes(head), bytes(tail)
-
-
-def _codex_entries(head: bytes, tail: bytes) -> tuple[list[dict], list[dict]]:
-    head_entries = list(_iter_jsonl(head))
-    if tail:
-        tail = tail.split(b"\n", 1)[1] if b"\n" in tail else b""
-        return head_entries, list(_iter_jsonl(tail))
-    return head_entries, []
-
-
-def _payload(entry: dict) -> dict:
-    p = entry.get("payload")
-    return p if isinstance(p, dict) else {}
-
-
-def _codex_text(payload: dict) -> str:
-    content = payload.get("content")
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict) and isinstance(block.get("text"), str):
-                parts.append(block["text"])
-        return "\n".join(parts)
-    if isinstance(content, str):
-        return content
-    return ""
-
-
-def scan_codex(root: Path, now: float) -> list[SessionState]:
-    """root = ~/.codex/sessions 디렉터리."""
-    states: list[SessionState] = []
-    key_mtimes: dict[str, float] = {}  # session_key → 파일 mtime (catalog 병합용)
-    if not root.is_dir():
-        return states
-    paths = sorted(
-        p
-        for p in root.rglob("*")
-        if p.is_file() and (p.name.endswith(".jsonl") or p.name.endswith(".jsonl.zst"))
-    )
-    for path in paths:
-        mtime = _mtime(path)
-        if not _alive(mtime, now):
-            continue
-        if path.name.endswith(".zst"):
-            head, tail = _zstd_edges(path, _CODEX_HEAD_BYTES, _CODEX_TAIL_BYTES)
-        else:
-            head, tail = _read_edges(path, _CODEX_HEAD_BYTES, _CODEX_TAIL_BYTES)
-        head_entries, tail_entries = _codex_entries(head, tail)
-        # claude와 동일 — head+tail 모두 사용해 중간 구간 엔트리 누락 방지.
-        entries = head_entries + tail_entries
-
-        project = ""
-        title = ""
-        for e in head_entries:
-            p = _payload(e)
-            if e.get("type") == "session_meta":
-                cwd = p.get("cwd")
-                if isinstance(cwd, str) and cwd:
-                    project = Path(cwd).name
-            if not title:
-                title = _codex_title_entry(e)
-        if not project:
-            # sessions/YYYY/MM/DD 구조 — 날짜 디렉터리를 건너뛰고
-            # 프로젝트명에 가까운 조상을 사용 (없으면 "")
-            for anc in path.parents:
-                n = anc.name
-                if not n or n.startswith(".") or n == "sessions":
-                    break
-                if re.fullmatch(r"\d{4}|\d{2}", n):
-                    continue
-                project = n
-                break
-
-        # 마지막 의미 payload 기준 상태 판정
-        # (name, call_id) — output은 call_id가 일치하는 call만 제거한다.
-        # call_id 없는 output은 가장 최근 call과 짝지어 제거 (FIFO 가정).
-        pending_calls: list[tuple[str, str]] = []
-        doing = ""
-        saw_task_complete = False
-        last_signal = ""  # assistant | call | output | task_complete
-        for e in entries:
-            etype = e.get("type")
-            p = _payload(e)
-            ptype = p.get("type")
-            if etype == "event_msg" and ptype == "task_complete":
-                saw_task_complete = True
-                last_signal = "task_complete"
-                continue
-            if etype != "response_item":
-                continue
-            if ptype == "message":
-                role = p.get("role")
-                text = _clip(_codex_text(p), 80)
-                if role == "assistant" and text:
-                    doing = text
-                    last_signal = "assistant"
-                elif role == "user" and not title:
-                    title = _clip(text, 60)
-            elif ptype in ("function_call", "custom_tool_call", "local_shell_call"):
-                pending_calls.append((str(p.get("name") or "tool"), str(p.get("call_id") or "")))
-                last_signal = "call"
-            elif isinstance(ptype, str) and ptype.endswith("_output"):
-                cid = str(p.get("call_id") or "")
-                if cid:
-                    pending_calls = [c for c in pending_calls if c[1] != cid]
-                elif pending_calls:
-                    pending_calls.pop()
-                last_signal = "output"
-
-        pending_call = pending_calls[-1][0] if pending_calls else ""
-        decision = bool(pending_call) and _is_decision_tool(pending_call) and last_signal == "call"
-        if decision:
-            status = "decision"
-        elif saw_task_complete and last_signal == "task_complete":
-            status = "rest"
-        else:
-            status = _base_status(mtime, now)
-
-        tokens_in = tokens_out = None
-        try:
-            tokens_in, tokens_out = _codex_tokens(head_entries + tail_entries)
-        except Exception as e:
-            logger.debug("codex token scan failed %s: %s", path, e)
-
-        skey = _codex_session_key(path.name)
-        key_mtimes[skey] = mtime
-        states.append(
-            SessionState(
-                tool="codex",
-                session_key=skey,
-                project=project,
-                title=title,
-                status=status,
-                doing=doing or pending_call,
-                ask=pending_call if decision else "",
-                event_at=_iso(mtime),
-                path=str(path),
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-            )
-        )
-
-    # 데스크톱/앱 서버 스레드 — ~/.codex/sqlite/codex.db (local_thread_catalog)
-    # rollout jsonl과 thread_id가 같으면 rollout 쪽을 우선한다.
-    by_key = {s.session_key: s for s in states}
-    db_path = root.parent / "sqlite" / "codex.db"
-    states.extend(_codex_catalog_sessions(db_path, by_key, key_mtimes, now))
-    return states
-
-
-def _codex_catalog_sessions(
-    db_path: Path,
-    by_key: dict[str, SessionState],
-    key_mtimes: dict[str, float],
-    now: float,
-) -> list[SessionState]:
-    """codex.db local_thread_catalog — Codex 데스크톱/IDE(chatgpt, vscode) 스레드.
-
-    rollout과 thread_id가 겹치면 상태만 갱신한다 — catalog의
-    source_recency_at이 rollout mtime보다 최신이면 recency를 끌어올려
-    긴 도구 실행 중 rest로 떨어지는 것을 막는다."""
-    states: list[SessionState] = []
-    if not db_path.is_file():
-        return states
-    try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
-        try:
-            tables = {
-                r[0]
-                for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            }
-            if "local_thread_catalog" not in tables:
-                return states
-            rows = con.execute(
-                "SELECT thread_id, display_title, cwd, source_kind,"
-                " source_recency_at FROM local_thread_catalog"
-                " WHERE missing_candidate = 0"
-                " ORDER BY source_recency_at DESC LIMIT 50"
-            ).fetchall()
-        finally:
-            con.close()
-    except sqlite3.Error as e:
-        logger.debug("codex catalog read failed %s: %s", db_path, e)
-        return states
-
-    for thread_id, title, cwd, source_kind, recency in rows:
-        if not thread_id:
-            continue
-        try:
-            recency_f = float(recency or 0)
-        except (TypeError, ValueError):
-            continue
-        existing = by_key.get(thread_id)
-        if existing is not None:
-            # rollout 세션 — catalog recency가 더 최신이면 상태만 끌어올린다
-            if recency_f > key_mtimes.get(thread_id, 0.0):
-                key_mtimes[thread_id] = recency_f
-                if existing.status != "decision":
-                    existing.status = _base_status(recency_f, now)
-                existing.event_at = _iso(recency_f)
-            continue
-        if recency_f <= 0 or (now - recency_f) > ENDED_SECONDS:
-            continue
-        project = Path(cwd).name if isinstance(cwd, str) and cwd else str(source_kind or "")
-        states.append(
-            SessionState(
-                tool="codex",
-                session_key=thread_id,
-                project=project,
-                title=_clip(str(title or ""), 60),
-                status=_base_status(recency_f, now),
-                doing="",
-                ask="",
-                event_at=_iso(recency_f),
-                path=str(db_path),
-            )
-        )
-    return states
-
-
-def _codex_title_entry(entry: dict) -> str:
-    if entry.get("type") != "response_item":
-        return ""
-    p = _payload(entry)
-    if p.get("type") == "message" and p.get("role") == "user":
-        return _clip(_codex_text(p), 60)
-    return ""
-
-
-def _codex_tokens(entries: Iterable[dict]) -> tuple[int | None, int | None]:
-    """event_msg/token_count의 total_token_usage — 누적값이라 마지막 것을 취한다.
-
-    head+tail을 시간순으로 넘기면 tail의 최신 이벤트가 마지막에 온다."""
-    tokens_in = tokens_out = None
-    for e in entries:
-        if e.get("type") != "event_msg":
-            continue
-        p = _payload(e)
-        if p.get("type") != "token_count":
-            continue
-        info = p.get("info")
-        total = info.get("total_token_usage") if isinstance(info, dict) else None
-        if not isinstance(total, dict):
-            continue
-        i = _usage_int(total.get("input_tokens"))
-        o = _usage_int(total.get("output_tokens"))
-        if i is not None:
-            tokens_in = i
-        if o is not None:
-            tokens_out = o
-    return tokens_in, tokens_out
-
-
-# ---------------------------------------------------------------------------
-# Gemini (antigravity-cli): ~/.gemini/antigravity-cli/conversations/*.db
-# ---------------------------------------------------------------------------
-
-
-def _blob_snippet(blob: object, limit: int = 80) -> str:
-    """protobuf blob에서 읽을 수 있는 문자열 조각을 추출 (best-effort)."""
-    if not isinstance(blob, (bytes, bytearray)) or not blob:
-        return ""
-    text = bytes(blob).decode("utf-8", errors="ignore")
-    # 길이 있는 printable run 중 가장 긴 것을 사용
-    runs = re.findall(r"[\w가-힣][\w가-힣 .,:;_\-/()\[\]{}<>#%'\"+=!?]{7,}", text)
-    if not runs:
-        return ""
-    return _clip(max(runs, key=len), limit)
-
-
-def scan_gemini(root: Path, now: float) -> list[SessionState]:
-    """root = ~/.gemini/antigravity-cli/conversations 디렉터리.
-
-    주의: steps 테이블은 protobuf blob 기반이라 스키마가 불안정하다.
-    최신 step의 payload에서 텍스트 조각을 best-effort로 추출하고,
-    실패하면 mtime 기반 working/rest + doing='gemini session'으로 degrade한다.
-    """
-    states: list[SessionState] = []
-    mtimes: dict[str, float] = {}  # session_key → db 파일 mtime (lock 병합용)
-    if not root.is_dir():
-        return states
-    for path in sorted(root.glob("*.db")):
-        if not path.is_file():
-            continue
-        mtime = _mtime(path)
-        if not _alive(mtime, now):
-            continue
-        mtimes[path.stem] = mtime
-        doing = "gemini session"
-        try:
-            con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
-            try:
-                tables = {
-                    r[0]
-                    for r in con.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    ).fetchall()
-                }
-                if "steps" in tables:
-                    row = con.execute(
-                        "SELECT step_payload FROM steps ORDER BY idx DESC LIMIT 1"
-                    ).fetchone()
-                    if row:
-                        doing = _blob_snippet(row[0]) or doing
-            finally:
-                con.close()
-        except sqlite3.Error as e:
-            logger.debug("gemini db read failed %s: %s", path, e)
-
-        states.append(
-            SessionState(
-                tool="gemini",
-                session_key=path.stem,
-                project="",
-                title="",
-                status=_base_status(mtime, now),
-                doing=doing,
-                ask="",
-                event_at=_iso(mtime),
-                path=str(path),
-            )
-        )
-
-    # presence/*.lock — 대화 db 파일이 오래돼도 lock이 최근이면 활성 세션.
-    # lock stem = conversations/*.db stem 이므로 같은 session_key로 병합한다.
-    by_key = {s.session_key: s for s in states}
-    pdir = root.parent / "presence"
-    if pdir.is_dir():
-        for lock in sorted(pdir.glob("*.lock")):
-            lm = _mtime(lock)
-            if not _alive(lm, now):
-                continue
-            existing = by_key.get(lock.stem)
-            if existing is not None:
-                # lock이 db mtime보다 최신일 때만 끌어올린다 — 오래된 lock이
-                # working을 rest로 다운그레이드하는 것을 방지 (다른 스캐너와 동일 규칙)
-                if lm <= mtimes.get(lock.stem, 0.0):
-                    continue
-                mtimes[lock.stem] = lm
-                existing.status = _base_status(lm, now)
-                existing.event_at = _iso(lm)
-            else:
-                st = SessionState(
-                    tool="gemini",
-                    session_key=lock.stem,
-                    project="",
-                    title="",
-                    status=_base_status(lm, now),
-                    doing="gemini session",
-                    ask="",
-                    event_at=_iso(lm),
-                    path=str(lock),
-                )
-                states.append(st)
-                by_key[lock.stem] = st
-    return states
-
-
-def _devin_subagent_titles(
-    con: sqlite3.Connection, session_ids: list[str]
-) -> dict[str, dict[str, str]]:
-    """sessions.db에서 session_id -> {agent_id: title} 맵을 만든다.
-
-    subagent_heads에는 제목이 없으므로, message_nodes의 spawn 결과
-    ("subagent started with agent_id=…", tool_call_id 포함)를 tool_call_state의
-    rawInput.title과 조인해 복원한다. 테이블/컬럼이 없는 구버전 DB는 빈 맵."""
-    out: dict[str, dict[str, str]] = {}
-    if not session_ids:
-        return out
-    # 세션별 개별 쿼리(N+1) 대신 IN 절 단일 쿼리 + LIMIT.
-    # sid 수가 비정상적으로 크면 쿼리가 비대해지므로 상한을 둔다.
-    sids = list(dict.fromkeys(session_ids))[:500]
-    try:
-        ph = ",".join("?" * len(sids))
-        rows = con.execute(
-            "SELECT session_id, chat_message FROM message_nodes"  # noqa: S608 - placeholder만 생성, 값은 바인딩
-            f" WHERE session_id IN ({ph})"
-            " AND chat_message LIKE '%subagent started with agent_id=%'"
-            " LIMIT 2000",
-            tuple(sids),
-        ).fetchall()
-    except sqlite3.Error:
-        return out
-    pending: list[tuple[str, str, str]] = []  # (session_id, agent_id, tool_call_id)
-    for sid, msg in rows:
-        if not isinstance(msg, str):
-            continue
-        m = re.search(r"subagent started with agent_id=([0-9a-f]{8})", msg)
-        t = re.search(r'"tool_call_id"\s*:\s*"(call_[^"]+)"', msg)
-        if m and t:
-            pending.append((sid, m.group(1), t.group(1)))
-    if not pending:
-        return out
-    # tool_call_state 조회도 (session_id, tool_call_id) 쌍 단위 배치 —
-    # pending 건별 개별 쿼리(N+1) 대신 IN 절 2개로 한 번에 가져온다.
-    pair_sids = sorted({str(s) for s, _, _ in pending})
-    call_ids = sorted({c for _, _, c in pending})
-    lookup: dict[tuple[str, str], Any] = {}
-    try:
-        ph_s = ",".join("?" * len(pair_sids))
-        ph_c = ",".join("?" * len(call_ids))
-        tc_rows = con.execute(
-            "SELECT session_id, tool_call_id, tool_call_json FROM tool_call_state"  # noqa: S608 - placeholder만 생성, 값은 바인딩
-            f" WHERE session_id IN ({ph_s}) AND tool_call_id IN ({ph_c})"
-            " LIMIT 2000",
-            tuple(pair_sids) + tuple(call_ids),
-        ).fetchall()
-        for s, c, j in tc_rows:
-            lookup[(str(s), str(c))] = j
-    except sqlite3.Error:
-        pass
-    for sid, agent_id, call_id in pending:
-        title = ""
-        raw = lookup.get((str(sid), call_id))
-        if raw:
-            try:
-                tj = json.loads(raw)
-                title = str((tj.get("rawInput") or {}).get("title") or "")
-            except (json.JSONDecodeError, AttributeError, TypeError):
-                title = ""
-        out.setdefault(str(sid), {})[agent_id] = _clip(title, 60)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Devin CLI: ~/.local/share/devin/cli (transcripts/*.json + session_locks/)
-# ---------------------------------------------------------------------------
-
-
-# ATIF transcript는 단일 JSON — head/tail 부분 파싱이 불가하므로
-# 비정상적으로 큰 파일은 로드 자체를 포기한다(스캔 지연·메모리 보호).
-_DEVIN_MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024
-_devin_lock_warned = False
-
-
-def scan_devin(root: Path, now: float) -> list[SessionState]:
-    """root = ~/.local/share/devin/cli 디렉터리.
-
-    transcripts/*.json (ATIF) + session_locks/<stem>.lock 존재 여부로
-    활성 세션을 판별한다. lock이 없는 transcript는 ended이므로 반환하지 않는다
-    (Bridge가 이전 스캔 대비 사라진 세션을 ended로 push한다).
-
-    session_locks/ 디렉터리 자체가 없으면 lock 기능을 지원하지 않는
-    버전으로 간주한다 — 이 경우 transcript를 전부 활성으로 처리하면
-    종료된 세션이 계속 살아있는 것처럼 보이므로, transcript는 수집하지
-    않는다(ended로 수렴). sessions.db 기반 세션은 영향 없음.
-    """
-    global _devin_lock_warned
-    states: list[SessionState] = []
-    tdir = root / "transcripts"
-    ldir = root / "session_locks"
-    mtimes: dict[str, float] = {}  # session_key → 가장 최신 활동 시각
-    if not tdir.is_dir():
-        return states
-    lock_supported = ldir.is_dir()
-    if not lock_supported and tdir.is_dir() and not _devin_lock_warned:
-        _devin_lock_warned = True
-        logger.info(
-            "devin session_locks dir missing at %s — transcripts treated as ended",
-            ldir,
-        )
-    for path in sorted(tdir.glob("*.json")):
-        if not path.is_file():
-            continue
-        mtime = _mtime(path)
-        if not _alive(mtime, now):
-            continue
-        if not lock_supported or not (ldir / f"{path.stem}.lock").exists():
-            continue
-        try:
-            if path.stat().st_size > _DEVIN_MAX_TRANSCRIPT_BYTES:
-                logger.warning(
-                    "devin transcript too large (%d bytes > %d), skipping %s",
-                    path.stat().st_size,
-                    _DEVIN_MAX_TRANSCRIPT_BYTES,
-                    path,
-                )
-                continue
-        except OSError:
-            continue
-        mtimes[path.stem] = mtime
-        try:
-            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError) as e:
-            logger.debug("devin transcript parse failed %s: %s", path, e)
-            continue
-        steps = data.get("steps") if isinstance(data, dict) else None
-        if not isinstance(steps, list):
-            continue
-
-        title = ""
-        doing = ""
-        pending_tool = ""
-        for s in steps:
-            if not isinstance(s, dict):
-                continue
-            src = s.get("source")
-            msg = s.get("message") if isinstance(s.get("message"), str) else ""
-            if src == "user" and not title:
-                title = _clip(msg, 60)
-            if src == "agent":
-                calls = s.get("tool_calls")
-                observation = s.get("observation")
-                # 빈 dict/list는 결과 없음과 동일하게 취급
-                has_result = observation is not None and observation not in ("", {}, [])
-                if isinstance(calls, list) and calls and not has_result:
-                    # step에 tool call이 여러 개면 decision 도구가 먼저 와도 잡는다
-                    fns = [
-                        str(c.get("function_name") or "tool") for c in calls if isinstance(c, dict)
-                    ]
-                    pending_tool = next(
-                        (f for f in fns if _is_decision_tool(f)), fns[0] if fns else "tool"
-                    )
-                else:
-                    pending_tool = ""
-                doing = _clip(msg, 80) or doing
-
-        decision = _is_decision_tool(pending_tool)
-        states.append(
-            SessionState(
-                tool="devin",
-                session_key=path.stem,
-                project="",
-                title=title,
-                status="decision" if decision else _base_status(mtime, now),
-                doing=doing or pending_tool,
-                ask=pending_tool if decision else "",
-                event_at=_iso(mtime),
-                path=str(path),
-            )
-        )
-
-    # sessions.db — Devin 데스크톱/클라우드 세션 목록. transcript가 없어도
-    # 최근 활동이 있는 세션을 잡고, transcript가 있으면 project/title을 채운다.
-    by_key = {s.session_key: s for s in states}
-    db_path = root / "sessions.db"
-    sub_heads: list[tuple[Any, ...]] = []
-    sub_titles: dict[str, dict[str, str]] = {}
-    if db_path.is_file():
-        try:
-            con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
-            try:
-                tables = {
-                    r[0]
-                    for r in con.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    ).fetchall()
-                }
-                if "sessions" in tables:
-                    rows = con.execute(
-                        "SELECT id, title, working_directory, last_activity_at"
-                        " FROM sessions WHERE hidden = 0"
-                        " ORDER BY last_activity_at DESC LIMIT 50"
-                    ).fetchall()
-                else:
-                    rows = []
-                if "subagent_heads" in tables:
-                    sub_heads = con.execute(
-                        "SELECT session_id, agent_id, updated_at FROM subagent_heads"
-                    ).fetchall()
-                    head_sids = sorted({str(h[0]) for h in sub_heads if h[0]})
-                    if head_sids:
-                        sub_titles = _devin_subagent_titles(con, head_sids)
-            finally:
-                con.close()
-        except sqlite3.Error as e:
-            logger.debug("devin sessions.db read failed %s: %s", db_path, e)
-            rows = []
-        for sid, title, wd, activity in rows:
-            if not sid:
-                continue
-            try:
-                act = float(activity or 0)
-            except (TypeError, ValueError):
-                continue
-            if act <= 0 or (now - act) > ENDED_SECONDS:
-                continue
-            project = Path(wd).name if isinstance(wd, str) and wd else ""
-            existing = by_key.get(sid)
-            if existing is not None:
-                if not existing.project:
-                    existing.project = project
-                if not existing.title and title:
-                    existing.title = _clip(str(title), 60)
-                # sessions.db last_activity_at 이 transcript mtime 보다 최신이면
-                # recency를 끌어올린다 — 긴 도구 실행 중 transcript가 멈춰도
-                # working이 유지되도록 (decision 상태는 더 강한 신호라 유지)
-                if act > mtimes.get(sid, 0.0):
-                    mtimes[sid] = act
-                    if existing.status != "decision":
-                        existing.status = _base_status(act, now)
-                    existing.event_at = _iso(act)
-                continue
-            st = SessionState(
-                tool="devin",
-                session_key=sid,
-                project=project,
-                title=_clip(str(title or ""), 60),
-                status=_base_status(act, now),
-                doing="",
-                ask="",
-                event_at=_iso(act),
-                path=str(db_path),
-            )
-            states.append(st)
-            by_key[sid] = st
-
-    # subagent_heads — 백그라운드 서브에이전트를 가상 세션으로 노출하고,
-    # 활동 중인 서브에이전트가 있으면 부모 세션을 working으로 승격한다.
-    # session_key는 "<session>:sub:<agent_id>" — path param 안전 문자만 사용.
-    active_by_parent: dict[str, int] = {}
-    emitted: set[str] = set()
-    for h in sub_heads:
-        sid, agent_id, upd = h[0], h[1], h[2]
-        if not sid or not agent_id:
-            continue
-        try:
-            upd_f = float(upd or 0)
-        except (TypeError, ValueError):
-            continue
-        if upd_f <= 0 or (now - upd_f) > ENDED_SECONDS:
-            continue
-        parent = by_key.get(str(sid))
-        if parent is None:
-            continue
-        busy = (now - upd_f) <= SUBAGENT_BUSY_SECONDS
-        if busy:
-            active_by_parent[str(sid)] = active_by_parent.get(str(sid), 0) + 1
-        vkey = f"{sid}:sub:{agent_id}"
-        if vkey in emitted:
-            continue
-        emitted.add(vkey)
-        states.append(
-            SessionState(
-                tool="devin",
-                session_key=vkey,
-                project=parent.project,
-                title=(sub_titles.get(str(sid)) or {}).get(str(agent_id), "")
-                or f"subagent {agent_id}",
-                status="working" if busy else "rest",
-                doing="",
-                ask="",
-                event_at=_iso(upd_f),
-                path=str(db_path),
-            )
-        )
-    for sid, n in active_by_parent.items():
-        parent = by_key.get(sid)
-        if parent is not None and parent.status == "rest":
-            parent.status = "working"
-            parent.doing = _clip(f"{parent.doing} · sub×{n}" if parent.doing else f"sub×{n}", 80)
-    return states
+# 이동된 이름들의 재수출 목록 — ruff F401(미사용 import) 면제용.
+__all__ = [
+    "Bridge",
+    "ENDED_SECONDS",
+    "HEARTBEAT_SECONDS",
+    "HTTP_TIMEOUT",
+    "IDLE_SECONDS",
+    "SUBAGENT_BUSY_SECONDS",
+    "SessionState",
+    "_CACHE_MAX",
+    "_CLAUDE_HEAD_BYTES",
+    "_CLAUDE_TAIL_BYTES",
+    "_CODEX_HEAD_BYTES",
+    "_CODEX_TAIL_BYTES",
+    "_CODEX_UUID_RE",
+    "_DECISION_TOOLS",
+    "_DEVIN_MAX_TRANSCRIPT_BYTES",
+    "_GIT_TIMEOUT",
+    "_STATUS_VALUES",
+    "_alive",
+    "_base_status",
+    "_blob_snippet",
+    "_blocks",
+    "_claude_entries",
+    "_claude_slug_project",
+    "_claude_title",
+    "_claude_tokens",
+    "_clip",
+    "_codex_catalog_sessions",
+    "_codex_entries",
+    "_codex_session_key",
+    "_codex_text",
+    "_codex_title_entry",
+    "_codex_tokens",
+    "_default_repo_roots",
+    "_devin_lock_warned",
+    "_devin_subagent_titles",
+    "_git",
+    "_git_end_summary",
+    "_has_tool_result",
+    "_is_decision_tool",
+    "_iso",
+    "_iter_jsonl",
+    "_machine_name",
+    "_mtime",
+    "_payload",
+    "_read_edges",
+    "_text_of_content",
+    "_tool_use_names",
+    "_usage_int",
+    "_zstd_edges",
+    "scan_claude",
+    "scan_codex",
+    "scan_devin",
+    "scan_gemini",
+]
 
 
 # ---------------------------------------------------------------------------
