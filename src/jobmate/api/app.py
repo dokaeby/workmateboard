@@ -1391,7 +1391,20 @@ def create_app(
     def llm_monitor_stats(days: int = 30) -> JSONResponse:
         """LLM 모니터 대시보드 — 지연시간 백분위/토큰/모델/프롬프트 버전/
         stage 호출·실패율/승인 백로그/일별 시계열/최근 실패 run + LangSmith 상태."""
-        data = store.llm_stats(max(1, min(days, 365)))
+        data = store.llm_stats(max(1, min(days, 365)), monthly_budget=settings.budget_max_tokens)
+        # 월 토큰 예산 80% 초과 시 인박스 알림 (dedupe_key로 중복 방지)
+        budget = data.get("budget")
+        if budget and budget.get("alert"):
+            store.upsert_inbox_item(
+                kind="budget_alert",
+                title=f"LLM 토큰 예산 {budget['used_pct']}% 사용 ({budget['month']})",
+                body=(
+                    f"이번 달 stage 토큰 {budget['monthly_tokens']:,}"
+                    f" / 예산 {budget['budget_max']:,}"
+                ),
+                link="?view=monitor",
+                dedupe_key=f"llm_budget_{budget['month']}",
+            )
         tracing = os.environ.get("LANGCHAIN_TRACING_V2") == "true" and bool(
             os.environ.get("LANGCHAIN_API_KEY")
         )

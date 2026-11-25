@@ -58,6 +58,36 @@ def test_llm_stats_aggregates():
     assert st["daily"] and len(st["daily"]) == 30
     assert len(st["recent_failures"]) == 1
     assert st["recent_failures"][0]["status"] == "failed"
+    # 신규 집계 필드
+    assert st["by_stage"] and st["by_stage"][0]["stage_key"] in {"analyze", "implement"}
+    assert st["by_workflow"][0]["workflow"] == "dev_review"
+    assert st["by_workflow"][0]["avg_tokens_per_run"] == 80.0  # 160토큰/2run
+    assert st["retry"]["calls"] == 0
+    assert st["retry"]["attempts_hist"] == {"1": 2}
+    assert st["tokens_ratio"]["input_pct"] == 68.8  # 110/160
+    assert st["stage_model_matrix"]
+    assert st["prompt_version_stats"][0]["version"] == "pv1"
+    assert st["approval_backlog"]["total_wait_s"] is None
+    assert st["budget"] is None  # monthly_budget 미전달
+
+
+def test_llm_stats_budget_and_retry():
+    _, store = _client()
+    r = store.create_run("dev_review", "v1", {}, "t")
+    # attempt 2 재시도 스테이지 (토큰 낭비 집계용)
+    store.start_stage(r.id, "analyze", 2, {}, model="m", prompt_version="pv")
+    sr = store.latest_stage(r.id, "analyze")
+    store.finish_stage(sr.id, status=StageStatus.SUCCEEDED, tokens_in=50, tokens_out=50)
+    store.update_run(r.id, status=RunStatus.WAITING_APPROVAL)
+    st = store.llm_stats(30, monthly_budget=1000)
+    assert st["budget"]["monthly_tokens"] == 100
+    assert st["budget"]["used_pct"] == 10.0
+    assert st["budget"]["alert"] is False
+    assert st["retry"]["calls"] == 1
+    assert st["retry"]["tokens"] == 100
+    assert st["retry"]["attempts_hist"] == {"2": 1}
+    assert st["approval_backlog"]["waiting"] == 1
+    assert st["approval_backlog"]["total_wait_s"] is not None
 
 
 def test_llm_monitor_endpoint():

@@ -3121,15 +3121,16 @@ class Store:
             "daily": out_daily,
         }
 
-    def llm_stats(self, days: int) -> dict[str, Any]:
-        """LLM 모니터 대시보드 집계 — run 지연시간 백분위, 토큰, 모델/프롬프트
-        버전, stage 호출 수, 오류율, 승인 백로그, 일별 시계열, 최근 실패 run.
+    def llm_stats(self, days: int, monthly_budget: int | None = None) -> dict[str, Any]:
+        """Agent Insights 대시보드 집계 — run 지연시간 백분위, 토큰, 모델/프롬프트
+        버전, stage 호출 수, 오류율, 승인 백로그, 일별 시계열, 최근 실패 run,
+        stage 병목·모델 라우팅·재시도 낭비·워크플로 단가·월 예산 사용량.
         (블로그 권고: p95 latency, avg tokens, tool call count, retrieval hit rate
         대체 지표로 stage call·실패율, eval pass rate 대체로 승인 대기 수)"""
         days = max(1, min(int(days), 365))
         cutoff = _iso(_now() - timedelta(days=days))
         run_rows = self._conn.execute(
-            "SELECT id,workflow_key,status,created_at,updated_at,error,project"
+            "SELECT id,workflow_key,status,created_at,updated_at,error,project,trace_id"
             " FROM runs WHERE created_at >= ?",
             (cutoff,),
         ).fetchall()
@@ -3147,13 +3148,26 @@ class Store:
         daily: dict[str, dict[str, int]] = {}
         recent_failures: list[dict[str, Any]] = []
         waiting: list[datetime] = []
+        run_workflow: dict[str, str] = {}
+        wf_stats: dict[str, dict[str, Any]] = {}
+        now_dt = _now()
         for row in run_rows:
             st = row["status"]
             by_status[st] = by_status.get(st, 0) + 1
+            wf_key = row["workflow_key"] or "(unknown)"
+            run_workflow[row["id"]] = wf_key
+            wfs = wf_stats.setdefault(
+                wf_key, {"workflow": wf_key, "runs": 0, "failed": 0, "durations": [], "tokens": 0}
+            )
+            wfs["runs"] += 1
             created = _dt(row["created_at"])
             updated = _dt(row["updated_at"])
             if st in self._STATS_TERMINAL and created and updated:
-                durations.append(max(0.0, (updated - created).total_seconds()))
+                dur = max(0.0, (updated - created).total_seconds())
+                durations.append(dur)
+                wfs["durations"].append(dur)
+            if st in self._STATS_FAILED:
+                wfs["failed"] += 1
             day = (row["created_at"] or "")[:10]
             if day:
                 daily.setdefault(day, {"runs": 0, "tokens": 0, "errors": 0})
@@ -3171,6 +3185,7 @@ class Store:
                         "project": row["project"],
                         "error": (row["error"] or "")[:300],
                         "updated_at": row["updated_at"],
+                        "trace_id": row["trace_id"],
                     }
                 )
         recent_failures.sort(key=lambda x: str(x["updated_at"]), reverse=True)
@@ -3188,28 +3203,88 @@ class Store:
         prompt_versions: set[str] = set()
         stage_durations: list[float] = []
         token_runs: set[str] = set()
+        month_key = now_dt.strftime("%Y-%m")
+        retry_calls = 0
+        retry_tokens = 0
+        failed_stage_tokens = 0
+        attempts_hist: dict[str, int] = {}
+        stage_agg: dict[str, dict[str, Any]] = {}
+        smodel_agg: dict[tuple[str, str], dict[str, Any]] = {}
+        pv_agg: dict[str, dict[str, Any]] = {}
         for row in stage_rows:
             tin = int(row["tokens_in"] or 0)
             tout = int(row["tokens_out"] or 0)
+            tok = tin + tout
             tokens_in += tin
             tokens_out += tout
             if tin or tout:
                 token_runs.add(row["run_id"])
             stage_calls += 1
-            if row["status"] == "failed":
+            attempt = int(row["attempt"] or 1)
+            attempts_hist[str(attempt)] = attempts_hist.get(str(attempt), 0) + 1
+            failed = row["status"] == "failed"
+            if failed:
                 stage_failures += 1
+                failed_stage_tokens += tok
+            if attempt > 1:
+                retry_calls += 1
+                retry_tokens += tok
+            wf = run_workflow.get(row["run_id"], "(unknown)")
+            wfs = wf_stats.setdefault(
+                wf, {"workflow": wf, "runs": 0, "failed": 0, "durations": [], "tokens": 0}
+            )
+            wfs["tokens"] += tok
             model = row["model"] or "(unknown)"
             m = models.setdefault(model, {"model": model, "calls": 0, "tokens": 0})
             m["calls"] += 1
-            m["tokens"] += tin + tout
-            if row["prompt_version"]:
-                prompt_versions.add(row["prompt_version"])
+            m["tokens"] += tok
+            skey = row["stage_key"] or "(unknown)"
+            sa = stage_agg.setdefault(
+                skey,
+                {
+                    "stage_key": skey,
+                    "calls": 0,
+                    "failures": 0,
+                    "tokens": 0,
+                    "durations": [],
+                    "models": {},
+                },
+            )
+            sa["calls"] += 1
+            sa["tokens"] += tok
+            if failed:
+                sa["failures"] += 1
+            sm = sa["models"].setdefault(
+                model, {"model": model, "calls": 0, "tokens": 0, "failures": 0}
+            )
+            sm["calls"] += 1
+            sm["tokens"] += tok
+            if failed:
+                sm["failures"] += 1
+            smk = (skey, model)
+            sma = smodel_agg.setdefault(
+                smk, {"stage_key": skey, "model": model, "calls": 0, "tokens": 0, "failures": 0}
+            )
+            sma["calls"] += 1
+            sma["tokens"] += tok
+            if failed:
+                sma["failures"] += 1
+            pv = row["prompt_version"] or ""
+            if pv:
+                prompt_versions.add(pv)
+                pa = pv_agg.setdefault(pv, {"version": pv, "calls": 0, "tokens": 0, "failures": 0})
+                pa["calls"] += 1
+                pa["tokens"] += tok
+                if failed:
+                    pa["failures"] += 1
             st, ft = _dt(row["started_at"]), _dt(row["finished_at"])
             if st and ft:
-                stage_durations.append(max(0.0, (ft - st).total_seconds()))
+                dur = max(0.0, (ft - st).total_seconds())
+                stage_durations.append(dur)
+                sa["durations"].append(dur)
             day = (row["started_at"] or "")[:10]
             if day and day in daily:
-                daily[day]["tokens"] += tin + tout
+                daily[day]["tokens"] += tok
 
         terminal = sum(by_status.get(s, 0) for s in self._STATS_TERMINAL)
         failed = sum(by_status.get(s, 0) for s in self._STATS_FAILED)
@@ -3230,6 +3305,67 @@ class Store:
         token_sum = sum(m["tokens"] for m in model_list)
         for m in model_list:
             m["share_pct"] = round(m["tokens"] / token_sum * 100, 1) if token_sum else 0
+
+        # 월 예산 — 윈도우와 무관하게 당월 전체 stage 토큰 합산
+        month_start = now_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        mrow = self._conn.execute(
+            "SELECT COALESCE(SUM(sr.tokens_in + sr.tokens_out),0) AS t"
+            " FROM stage_runs sr WHERE sr.started_at >= ?",
+            (_iso(month_start),),
+        ).fetchone()
+        month_tokens = int(mrow["t"] or 0) if mrow else 0
+        budget = None
+        if monthly_budget:
+            used_pct = round(month_tokens / monthly_budget * 100, 1)
+            budget = {
+                "month": month_key,
+                "monthly_tokens": month_tokens,
+                "budget_max": monthly_budget,
+                "used_pct": used_pct,
+                "alert": used_pct >= 80,
+            }
+
+        by_stage = []
+        for sa in stage_agg.values():
+            durs = sa.pop("durations")
+            models_by_stage = sorted(sa["models"].values(), key=lambda x: -x["tokens"])[:5]
+            by_stage.append(
+                {
+                    "stage_key": sa["stage_key"],
+                    "calls": sa["calls"],
+                    "failures": sa["failures"],
+                    "failure_rate_pct": round(sa["failures"] / sa["calls"] * 100, 1)
+                    if sa["calls"]
+                    else None,
+                    "tokens": sa["tokens"],
+                    "latency_s": {
+                        "p50": pct(durs, 50),
+                        "p95": pct(durs, 95),
+                        "avg": round(sum(durs) / len(durs), 1) if durs else None,
+                    },
+                    "models": models_by_stage,
+                }
+            )
+        by_stage.sort(key=lambda x: -(x["latency_s"]["p95"] or 0))
+
+        by_workflow = []
+        for w in wf_stats.values():
+            durs = w["durations"]
+            by_workflow.append(
+                {
+                    "workflow": w["workflow"],
+                    "runs": w["runs"],
+                    "failed": w["failed"],
+                    "avg_duration_s": round(sum(durs) / len(durs), 1) if durs else None,
+                    "total_tokens": w["tokens"],
+                    "avg_tokens_per_run": round(w["tokens"] / w["runs"], 1) if w["runs"] else None,
+                }
+            )
+        by_workflow.sort(key=lambda x: -x["total_tokens"])
+
+        waiting_total_s = (
+            round(sum((now_dt - w).total_seconds() for w in waiting), 0) if waiting else None
+        )
 
         return {
             "days": days,
@@ -3262,16 +3398,41 @@ class Store:
             },
             "models": model_list,
             "prompt_versions": sorted(prompt_versions),
+            "prompt_version_stats": sorted(pv_agg.values(), key=lambda x: -x["tokens"]),
+            "stage_model_matrix": [
+                {
+                    **v,
+                    "failure_rate_pct": round(v["failures"] / v["calls"] * 100, 1)
+                    if v["calls"]
+                    else None,
+                }
+                for v in sorted(smodel_agg.values(), key=lambda x: -x["tokens"])
+            ][:50],
+            "by_stage": by_stage,
+            "by_workflow": by_workflow,
             "stage_calls": stage_calls,
             "stage_failures": stage_failures,
             "stage_failure_rate_pct": round(stage_failures / stage_calls * 100, 1)
             if stage_calls
             else None,
+            "retry": {
+                "calls": retry_calls,
+                "tokens": retry_tokens,
+                "token_pct": round(retry_tokens / total_tokens * 100, 1) if total_tokens else None,
+                "failed_stage_tokens": failed_stage_tokens,
+                "attempts_hist": dict(sorted(attempts_hist.items(), key=lambda x: int(x[0]))),
+            },
+            "tokens_ratio": {
+                "input_pct": round(tokens_in / total_tokens * 100, 1) if total_tokens else None,
+                "output_pct": round(tokens_out / total_tokens * 100, 1) if total_tokens else None,
+            },
+            "budget": budget,
             "approval_backlog": {
                 "waiting": by_status.get("waiting_approval", 0),
-                "oldest_wait_s": round((_now() - min(waiting)).total_seconds(), 0)
+                "oldest_wait_s": round((now_dt - min(waiting)).total_seconds(), 0)
                 if waiting
                 else None,
+                "total_wait_s": waiting_total_s,
             },
             "daily": out_daily,
             "recent_failures": recent_failures[:10],
