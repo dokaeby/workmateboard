@@ -63,7 +63,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "app.privacy": "Privacy Policy",
     "app.terms": "Terms of Service",
     "common.language": "한국어",
-    "common.reload": "Reload",
+    "common.reload": "Refresh",
     "common.refresh": "Refresh",
     "nav.office": "Agent Office",
     "nav.monitor": "Agent Insights",

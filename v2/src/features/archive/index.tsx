@@ -7,6 +7,7 @@ import { useI18n, registerI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
+import { STR } from "./i18n";
 
 interface ArchiveItem {
   kind?: string;
@@ -18,78 +19,7 @@ interface ArchiveItem {
 }
 interface ArchiveResponse { items?: ArchiveItem[]; query?: string }
 
-registerI18n({
-  ko: {
-    "arch.title": "아카이브",
-    "arch.desc": "리포트·실행·종료 세션 통합 검색",
-    "arch.placeholder": "제목/내용 검색…",
-    "arch.allKinds": "전체 종류",
-    "arch.kindReport": "리포트",
-    "arch.kindRun": "실행",
-    "arch.kindSession": "세션",
-    "arch.search": "검색",
-    "arch.hint": "검색어를 입력하고 검색을 누르세요",
-    "arch.empty": "검색 결과가 없습니다",
-    "arch.noTitle": "(제목 없음)",
-    "arch.exportTitle": "내보내기",
-    "arch.expRuns": "실행",
-    "arch.expSessions": "세션",
-    "arch.expUsage": "사용량",
-    "arch.expReports": "리포트",
-    "arch.exporting": "내보내는 중…",
-    "arch.download": "다운로드",
-    "arch.exportFail": "내보내기 실패",
-    "arch.share": "공유 링크",
-    "arch.shareDesc": "공유 링크는 로그인 없이 열리는 읽기 전용 URL입니다 (30일 만료).",
-    "arch.shareKind": "종류",
-    "arch.shareRun": "실행",
-    "arch.shareReport": "리포트",
-    "arch.shareInsights": "인사이트",
-    "arch.shareRefId": "참조 ID (선택 — run id 등)",
-    "arch.shareRefPh": "비우면 최신 항목",
-    "arch.shareCreate": "링크 생성",
-    "arch.shareCreating": "생성 중…",
-    "arch.shareCopy": "복사",
-    "arch.shareCopied": "복사됨",
-    "arch.shareOpen": "열기",
-    "arch.shareExpires": "만료",
-  },
-  en: {
-    "arch.title": "Archive",
-    "arch.desc": "Unified search across reports, runs, and ended sessions",
-    "arch.placeholder": "Search title/content…",
-    "arch.allKinds": "All kinds",
-    "arch.kindReport": "Report",
-    "arch.kindRun": "Run",
-    "arch.kindSession": "Session",
-    "arch.search": "Search",
-    "arch.hint": "Enter a query and press search",
-    "arch.empty": "No results",
-    "arch.noTitle": "(no title)",
-    "arch.exportTitle": "Export",
-    "arch.expRuns": "Runs",
-    "arch.expSessions": "Sessions",
-    "arch.expUsage": "Usage",
-    "arch.expReports": "Reports",
-    "arch.exporting": "Exporting…",
-    "arch.download": "Download",
-    "arch.exportFail": "Export failed",
-    "arch.share": "Share link",
-    "arch.shareDesc": "Share links are read-only URLs that open without login (expires in 30 days).",
-    "arch.shareKind": "Kind",
-    "arch.shareRun": "Run",
-    "arch.shareReport": "Report",
-    "arch.shareInsights": "Insights",
-    "arch.shareRefId": "Reference ID (optional — run id etc.)",
-    "arch.shareRefPh": "Empty = latest",
-    "arch.shareCreate": "Create link",
-    "arch.shareCreating": "Creating…",
-    "arch.shareCopy": "Copy",
-    "arch.shareCopied": "Copied",
-    "arch.shareOpen": "Open",
-    "arch.shareExpires": "Expires",
-  },
-});
+registerI18n(STR);
 
 const KIND_LABEL_KEY: Record<string, string> = {
   report: "arch.kindReport", run: "arch.kindRun", session: "arch.kindSession",
