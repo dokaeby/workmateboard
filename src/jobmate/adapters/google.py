@@ -41,7 +41,11 @@ GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3/calendars/primary"
 
 SCOPES = {
-    "gmail": ["https://www.googleapis.com/auth/gmail.readonly"],
+    # gmail.send: 이메일 인증 메일 발송용 (mailer.py Gmail 백엔드)
+    "gmail": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
+    ],
     "calendar": ["https://www.googleapis.com/auth/calendar.events"],
 }
 
@@ -190,7 +194,7 @@ def _extract_body_text(payload: dict[str, Any]) -> str:
 
 
 class GoogleGmail:
-    """GmailClient — gmail.readonly scope. list/get만 사용."""
+    """GmailClient — gmail.readonly + gmail.send scope. list/get/send 사용."""
 
     name = "gmail"
 
@@ -224,6 +228,24 @@ class GoogleGmail:
             "internal_date": msg.get("internalDate", ""),
             "body_text": _extract_body_text(payload),
         }
+
+    def send_message(self, to: str, subject: str, body_text: str) -> str:
+        """RFC822 plain-text 메일 발송 (gmail.send scope). 발송된 메시지 id 반환."""
+        from email.message import EmailMessage
+
+        # Gmail API는 발신자를 토큰 계정으로 강제 — To/Subject/본문만 지정
+        msg = EmailMessage()
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.set_content(body_text)
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+        r = self._client.post(
+            f"{GMAIL_API}/messages/send",
+            json={"raw": raw},
+            headers=self._auth.headers(),
+        )
+        _raise_for_status(r, "gmail send_message")
+        return str(r.json().get("id", ""))
 
 
 class GoogleCalendar:

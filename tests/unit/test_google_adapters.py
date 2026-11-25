@@ -79,6 +79,27 @@ def test_gmail_list_and_get(tmp_path):
     assert msg["thread_id"] == "t1"
 
 
+def test_gmail_send_message(tmp_path):
+    sent = {}
+
+    def handler(request):
+        if request.url == TOKEN_URI:
+            return _token_resp(request)
+        if request.url.path == "/gmail/v1/users/me/messages/send":
+            sent.update(json.loads(request.content))
+            return httpx.Response(200, json={"id": "sent-1"})
+        return httpx.Response(404)
+
+    gmail = GoogleGmail(_token_file(tmp_path), client=_client(handler))
+    mid = gmail.send_message("user@example.com", "인증 메일", "링크: http://x/v?token=t")
+    assert mid == "sent-1"
+    # raw RFC822를 디코딩해 To/Subject/본문 확인
+    raw = base64.urlsafe_b64decode(sent["raw"]).decode()
+    assert "To: user@example.com" in raw
+    assert "Subject: =?utf-8?b?" in raw or "인증" in raw  # MIME encoded-word 허용
+    assert "http://x/v?token=t" in raw
+
+
 def test_calendar_create_find_search(tmp_path):
     created = {}
 

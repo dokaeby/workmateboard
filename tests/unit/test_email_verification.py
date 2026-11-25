@@ -34,7 +34,7 @@ def sent_mails(monkeypatch):
     """mailer.send_verification_email을 가로채 발송 URL을 수집."""
     mails: list[tuple[str, str]] = []
 
-    def fake_send(to: str, verify_url: str) -> bool:
+    def fake_send(to: str, verify_url: str, gmail=None) -> bool:
         mails.append((to, verify_url))
         return True
 
@@ -165,6 +165,53 @@ def test_signup_mail_failure_still_succeeds(monkeypatch):
 def test_mailer_unconfigured_returns_false(monkeypatch):
     monkeypatch.delenv("JOBMATE_SMTP_HOST", raising=False)
     assert mailer.send_verification_email("a@b.com", "http://x/verify?token=t") is False
+
+
+def test_mailer_gmail_backend(monkeypatch):
+    """SMTP 미설정 + gmail sender 주입 → Gmail API로 발송."""
+    monkeypatch.delenv("JOBMATE_SMTP_HOST", raising=False)
+    sent = []
+
+    class FakeGmail:
+        def send_message(self, to, subject, body):
+            sent.append((to, subject, body))
+            return "msg-1"
+
+    assert (
+        mailer.send_verification_email("a@b.com", "http://x/verify?token=t", gmail=FakeGmail())
+        is True
+    )
+    assert sent and sent[0][0] == "a@b.com" and "verify?token=t" in sent[0][2]
+
+
+def test_mailer_gmail_failure_returns_false(monkeypatch):
+    monkeypatch.delenv("JOBMATE_SMTP_HOST", raising=False)
+
+    class BoomGmail:
+        def send_message(self, to, subject, body):
+            raise RuntimeError("gmail api down")
+
+    assert (
+        mailer.send_verification_email("a@b.com", "http://x/verify?token=t", gmail=BoomGmail())
+        is False
+    )
+
+
+def test_mailer_smtp_takes_priority_over_gmail(monkeypatch):
+    """SMTP_HOST 설정 시 gmail 백엔드보다 SMTP 우선 — gmail은 호출되지 않음."""
+    monkeypatch.setenv("JOBMATE_SMTP_HOST", "smtp.invalid")
+    called = []
+
+    class FakeGmail:
+        def send_message(self, to, subject, body):
+            called.append(to)
+
+    # SMTP 연결 실패로 False지만 gmail fallback은 시도하지 않음
+    assert (
+        mailer.send_verification_email("a@b.com", "http://x/verify?token=t", gmail=FakeGmail())
+        is False
+    )
+    assert called == []
 
 
 def test_local_dev_mode_skips_verification():

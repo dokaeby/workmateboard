@@ -2972,7 +2972,9 @@ def create_app(
         """인증 토큰 발급 + 메일 발송. 발송 실패해도 예외 없이 bool 반환."""
         try:
             token = store.create_email_verification(email)
-            return mailer.send_verification_email(email, _verify_url(request, token))
+            return mailer.send_verification_email(
+                email, _verify_url(request, token), gmail=adapters.get("gmail")
+            )
         except Exception as e:
             logger.warning("verification email setup failed: %s", str(e)[:200])
             return False
