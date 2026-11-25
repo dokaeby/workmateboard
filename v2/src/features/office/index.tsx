@@ -1058,7 +1058,7 @@ export default function OfficePage() {
   }, [runs, selRunId]);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4">
+    <div className="w-full space-y-4 p-4">
       <PageHead title={t("office.title", "Agent-Office")} desc={t("office.desc", "dev_review 워크플로 진행 상황과 활성 에이전트 세션 — 자동 갱신")} />
 
       {/* 관제 모드 토글 — 레거시 #office-view-toggle (3D 보드 / 스프라이트 사무실) */}
@@ -1135,9 +1135,14 @@ export default function OfficePage() {
         </div>
       </div>
 
-      <SessionStatsCard />
-      <SessionsPanel />
-      <ScheduleCard />
+      {/* 하단 정보 — 세션 목록(넓게) | 통계+스케줄(세로 스택) 좌우 배치 */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+        <SessionsPanel />
+        <div className="space-y-4">
+          <SessionStatsCard />
+          <ScheduleCard />
+        </div>
+      </div>
     </div>
   );
 }
