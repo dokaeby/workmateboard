@@ -3439,7 +3439,8 @@ def create_app(
         force = bool(body.get("force", True))
         # radar는 승인 단계 없이 자동 발행 — daily 수집이 사람 승인을 기다리면
         # waiting_approval run이 쌓여 승인 대기 푸시가 반복된다.
-        auto_approve = bool(body.get("auto_approve", True))
+        # body 값과 무관하게 항상 auto_approve (수동 수집도 승인 불필요).
+        auto_approve = True
         jobs: list = []
         ids = []
         for p in platforms:
@@ -5446,6 +5447,10 @@ def _maybe_daily_radar(
     defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
 ) -> None:
     """KST 06:00 이후 최초 1회 radar 자동 수집 (자동화 플래그)."""
+    # radar는 항상 auto_approve — 과거 잔여 waiting_approval run/인박스 알림 정리
+    cleaned = store.cleanup_radar_waits()
+    if cleaned:
+        logger.info("radar stale waiting_approval cleaned: %d", cleaned)
     auto = store.get_automation()
     if not auto.get("radar_enabled"):
         return

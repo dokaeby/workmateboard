@@ -90,6 +90,30 @@ def test_llm_stats_budget_and_retry():
     assert st["approval_backlog"]["total_wait_s"] is not None
 
 
+def test_cleanup_radar_waits():
+    """skill_radar waiting_approval 잔여 run 취소 + 인박스 승인 알림 삭제."""
+    _, store = _client()
+    r = store.create_run("skill_radar", "v1", {"task": "radar collect claude"}, "t")
+    store.update_run(r.id, status=RunStatus.WAITING_APPROVAL)
+    store.upsert_inbox_item(
+        kind="approval",
+        title="승인 대기: skill_radar",
+        body="radar collect claude",
+        dedupe_key="appr_radar_1",
+    )
+    # 다른 워크플로 대기는 건드리지 않음
+    r2 = store.create_run("dev_review", "v1", {}, "t2")
+    store.update_run(r2.id, status=RunStatus.WAITING_APPROVAL)
+
+    assert store.cleanup_radar_waits() == 1
+    assert store.get_run(r.id).status == RunStatus.CANCELLED
+    assert store.get_run(r2.id).status == RunStatus.WAITING_APPROVAL
+    inbox = store.list_inbox()
+    assert not any("skill_radar" in (i["title"] or "") for i in inbox)
+    # 멱등 — 재실행 시 0
+    assert store.cleanup_radar_waits() == 0
+
+
 def test_llm_monitor_endpoint():
     client, store = _client()
     _seed(store)
