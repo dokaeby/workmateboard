@@ -175,9 +175,31 @@ function MobileBar() {
   );
 }
 
-/** 미인증 화면 — 레거시 index.html의 Google 로그인 링크(/api/v1/auth/google) 이식. */
+/** 미인증 화면 — Google 로그인 + API 키 입력 (레거시 index.html 인증 오버레이 이식). */
 function LoginOverlay({ authError }: { authError?: string | null }) {
   const { t } = useI18n();
+  const [key, setKey] = useState("");
+  const [keyErr, setKeyErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submitKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const k = key.trim();
+    if (!k || busy) return;
+    setBusy(true);
+    setKeyErr("");
+    localStorage.setItem("jobmate_api_key", k);
+    try {
+      // 키 검증 — /auth/me가 200이면 reload로 앱 진입
+      await apiGet<{ user?: unknown }>("/auth/me");
+      window.location.reload();
+    } catch {
+      localStorage.removeItem("jobmate_api_key");
+      setKeyErr(t("auth.keyFail", "API 키가 올바르지 않습니다"));
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="flex h-dvh items-center justify-center bg-bg p-4">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-8 text-center shadow-sm">
@@ -192,10 +214,34 @@ function LoginOverlay({ authError }: { authError?: string | null }) {
         )}
         <a
           href="/api/v1/auth/google"
-          className="block rounded-[10px] border border-border-strong bg-surface px-4 py-2.5 font-semibold text-ink no-underline transition-colors hover:bg-surface-hover"
+          className="mb-4 block rounded-[10px] border border-border-strong bg-surface px-4 py-2.5 font-semibold text-ink no-underline transition-colors hover:bg-surface-hover"
         >
           {t("auth.google", "Google로 계속하기")}
         </a>
+        <form onSubmit={submitKey} className="text-left">
+          <label className="mb-1 block text-xs font-medium text-muted" htmlFor="jm-api-key">
+            {t("auth.apiKey", "API 키")}
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="jm-api-key"
+              type="password"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder={t("auth.apiKeyPh", "JOBMATE_API_KEY")}
+              autoComplete="off"
+              className="min-w-0 flex-1 rounded-[10px] border border-border bg-bg px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+            />
+            <button
+              type="submit"
+              disabled={busy || !key.trim()}
+              className="shrink-0 rounded-[10px] border border-border-strong bg-surface px-3 py-2 text-sm font-semibold text-ink transition-colors hover:bg-surface-hover disabled:opacity-50"
+            >
+              {t("auth.login", "로그인")}
+            </button>
+          </div>
+          {keyErr && <p className="mt-2 text-xs text-err">{keyErr}</p>}
+        </form>
       </div>
     </div>
   );
