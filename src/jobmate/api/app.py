@@ -1242,7 +1242,9 @@ def create_app(
     def _legacy_index_html() -> HTMLResponse:
         # 로그인제가 도입되어 API 키는 더 이상 페이지에 주입하지 않는다.
         # ?key= 파라미터나 localStorage 키는 관리자/머신용 폴백으로 유지.
-        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        # static/legacy/ — v2 React 전환 후 유지보수 중인 레거시 UI.
+        # 신규 기능은 v2(v2/src/features)에만 추가하고, 이 파일은 제거 예정.
+        html = (STATIC_DIR / "legacy" / "index.html").read_text(encoding="utf-8")
         # no-cache — 배포 후 heuristic 캐시가 구버전 HTML을 붙잡지 않게
         return HTMLResponse(
             html.replace("__JOBMATE_API_KEY__", ""),

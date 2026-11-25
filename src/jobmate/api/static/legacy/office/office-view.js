@@ -69,7 +69,7 @@
       const img = new Image();
       img.onload = () => { if (--left === 0) { st.loaded = true; bar(); } };
       img.onerror = () => { st.failImg = true; bar(); };
-      img.src = `/static/office/${n}.webp`;
+      img.src = `/static/legacy/office/${n}.webp`;
       st.imgs[n] = img;
     }
   }

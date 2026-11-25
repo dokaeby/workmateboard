@@ -185,9 +185,9 @@ def test_runs_view_table(page: Page) -> None:
 
 
 def test_settings_button_navigates(page: Page) -> None:
-    """설정 버튼은 설정 다이얼로그가 아니라 /static/settings.html 로 이동한다."""
+    """설정 버튼은 설정 다이얼로그가 아니라 /static/legacy/settings.html 로 이동한다."""
     page.click("#settings-open")
-    page.wait_for_url("**/static/settings.html**", timeout=5000)
+    page.wait_for_url("**/static/legacy/settings.html**", timeout=5000)
 
 
 def test_push_toggle_without_vapid(page: Page) -> None:

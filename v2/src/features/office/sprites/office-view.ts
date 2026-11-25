@@ -73,7 +73,8 @@ interface ChairEnt {
 }
 
 export interface OfficeViewOpts {
-  /** 스프라이트 이미지 베이스 — 기본 "/static/office" (백엔드가 /static 마운트) */
+  /** 스프라이트 이미지 베이스 — 기본 "office" (v2/public/office, 상대 경로라
+   *  dev(/)와 prod(/app/) 양쪽에서 동작). 백엔드 static/legacy는 v2가 의존하지 않는다. */
   assetBase?: string;
   debug?: boolean;
   /** 고르기 해제 포함 토글 선택 콜백 — SpriteBoard 가 props.onSelect 로 연결 */
@@ -81,7 +82,7 @@ export interface OfficeViewOpts {
 }
 
 export function createOfficeView(life: Life, opts: OfficeViewOpts = {}) {
-  const assetBase = opts.assetBase ?? "/static/office";
+  const assetBase = opts.assetBase ?? "office";
   const debug = !!opts.debug;
   const L = life.L;
 

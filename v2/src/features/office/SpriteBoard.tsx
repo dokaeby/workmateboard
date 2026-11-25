@@ -22,7 +22,7 @@ export interface SpriteBoardProps {
   onEvents?: (events: LifeEvent[]) => void;
   /** 스프라이트 이미지 로드가 끝난 뒤 1회 호출 — failedImage 로 그림 로드 실패를 알린다 */
   onReady?: (info: { failedImage: boolean }) => void;
-  /** 스프라이트 이미지 베이스 — 기본 "/static/office" */
+  /** 스프라이트 이미지 베이스 — 기본 "office" (v2/public/office) */
   assetBase?: string;
   /** 지도·통로 디버그 오버레이 */
   debug?: boolean;

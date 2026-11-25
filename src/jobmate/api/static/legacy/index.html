@@ -1,3 +1,6 @@
+<!-- LEGACY UI (deprecated): v2 React 앱(v2/)이 정식 UI입니다.
+     이 페이지는 /legacy 폴백으로만 유지되며 신규 기능은 추가하지 않습니다.
+     관련 파일은 static/legacy/ 아래에 격리되어 있습니다. -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -2123,7 +2126,7 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
   <button type="button" data-mob="cost"><b id="mob-cost">–</b><span data-jm-i18n="mob.cost">월 비용</span></button>
 </nav>
 
-<script src="/static/i18n.js"></script>
+<script src="/static/legacy/i18n.js"></script>
 <script>
 const API = "/api/v1";
 // 서버(index 라우트)가 서빙 시 실제 키로 치환. 치환 안 된 플레이스홀더는 미주입으로 간주.
@@ -2132,7 +2135,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
-// ── i18n (ko/en) — /static/i18n.js 의 JM_I18N. 사전에 없는 키는 ko 원문/키로 fallback.
+// ── i18n (ko/en) — /static/legacy/i18n.js 의 JM_I18N. 사전에 없는 키는 ko 원문/키로 fallback.
 // JS 렌더 문자열용 T(key, fallback, ...args): 사전에 있으면 번역, 없으면 fallback.
 if (window.JM_I18N) JM_I18N.register({
   ko: {
@@ -3852,7 +3855,7 @@ $("#office-sched-card").addEventListener("toggle", (e) => {
 });
 
 /* ── Agent-Office 스프라이트 사무실 모드 ── */
-// claude-3d-frog-office(web/) 포팅 — /static/office/ 아래 classic script.
+// claude-3d-frog-office(web/) 포팅 — /static/legacy/office/ 아래 classic script.
 // 최초 '스프라이트 사무실' 선택 시 lazy 로드 후 JMOffice2D.start().
 const OFFICE2D_FILES = [
   "i18n.js", "office-world.js", "office-atlas.js", "office-path.js",
@@ -4350,7 +4353,7 @@ function office2dEnsure() {
   if (office2dState === "ready") { window.JMOffice2D.start(); return; }
   if (office2dState === "loading") return;
   office2dState = "loading";
-  const base = "/static/office/";
+  const base = "/static/legacy/office/";
   const link = document.createElement("link");
   link.rel = "stylesheet";
   link.href = base + "office.css";
@@ -5524,10 +5527,10 @@ $("#notify-rules-list")?.addEventListener("click", (e) => {
   }
 });
 
-// 설정은 별도 페이지(/static/settings.html)로 이동 — 아래 settings-dialog 마크업·핸들러는
+// 설정은 별도 페이지(/static/legacy/settings.html)로 이동 — 아래 settings-dialog 마크업·핸들러는
 // 레거시로 남겨 두되 이 버튼에서는 더 이상 열지 않는다.
 $("#settings-open").addEventListener("click", () => {
-  location.href = "/static/settings.html";
+  location.href = "/static/legacy/settings.html";
 });
 $("#settings-close").addEventListener("click", () => $("#settings-dialog").close());
 $("#settings-dialog").addEventListener("click", (e) => {

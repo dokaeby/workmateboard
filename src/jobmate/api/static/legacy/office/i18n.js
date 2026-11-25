@@ -237,7 +237,7 @@ const JMO_I18N = (() => {
     { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   // jobMate 메인 대시보드 언어(jobmate_lang)와 동기화 — 사용자가 헤더에서 고른 언어를 우선한다.
-  // ?lang= 쿼리가 있으면 그쪽이 우선. /static/i18n.js 가 dispatch 하는 jm-lang-change 도 받는다.
+  // ?lang= 쿼리가 있으면 그쪽이 우선. /static/legacy/i18n.js 가 dispatch 하는 jm-lang-change 도 받는다.
   try {
     const hasQ = new URLSearchParams(location.search).has("lang");
     const mainLang = localStorage.getItem("jobmate_lang");
