@@ -160,7 +160,7 @@ function inboxItemTitle(it: InboxItem, t: TFn): string {
   if ((m = title.match(/^승인 필요: (.+)$/))) return tx(t, "inbox.t.attention", { what: m[1] }, title);
   if (
     kind === "budget_alert" &&
-    (m = title.match(/^LLM 토큰 예산 (\d+)% 사용 \(([^)]+)\)$/))
+    (m = title.match(/^LLM 토큰 예산 (\d+(?:\.\d+)?)% 사용 \(([^)]+)\)$/))
   ) {
     return tx(t, "inbox.t.budget", { pct: m[1], month: m[2] }, title);
   }

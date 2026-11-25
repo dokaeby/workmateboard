@@ -150,7 +150,7 @@ function NewTriggerForm({ onDone }: { onDone: () => void }) {
             </select>
           )}
           {actionType === "run_playbook" && (
-            <select value={effectivePb} onChange={(e) => setPb(e.target.value)} className={selectCls} aria-label={t("pb.title", "플레이북")}>
+            <select value={effectivePb} onChange={(e) => setPb(e.target.value)} className={selectCls} aria-label={t("trg.pbTitle", "플레이북")}>
               {playbooks.map((p) => <option key={p.id} value={p.id}>{p.name || p.id}</option>)}
               {!playbooks.length && <option value="">{t("trg.noPlaybook", "플레이북 없음")}</option>}
             </select>

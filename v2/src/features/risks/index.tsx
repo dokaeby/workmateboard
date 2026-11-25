@@ -79,6 +79,7 @@ function sevLabel(sev: string, t: (k: string, f?: string) => string): string {
 }
 
 function fmtDurS(sec: number, en: boolean): string {
+  if (!Number.isFinite(sec)) return "-";
   const s = Math.max(0, Math.round(sec));
   if (en) {
     if (s < 60) return `${s}s`;

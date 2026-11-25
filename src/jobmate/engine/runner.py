@@ -320,26 +320,32 @@ class WorkflowRunner:
     def _run_human_stage(self, state: HarnessState, stage: StageSpec) -> dict[str, Any]:
         run_id = state["run_id"]
         summary = self._approval_summary(state)
-        self.store.update_run(run_id, status=RunStatus.WAITING_APPROVAL)
-        self.store.audit(
-            run_id, "system", "waiting_approval", stage.key, {"summary": summary[:500]}
-        )
         # resume 시 interrupt 이전 코드가 재실행되므로, 이미 RUNNING인
         # stage_run이 있으면 재사용해 고아 레코드를 만들지 않는다.
+        # 이 경우는 이전 실행이 실제로 interrupt()에서 멈췄다는 뜻 — resume다.
         prior = self.store.latest_stage(run_id, stage.key)
-        if prior is not None and prior.status == StageStatus.RUNNING:
+        is_resume = prior is not None and prior.status == StageStatus.RUNNING
+        if prior is not None and is_resume:
             stage_run_id = prior.id
         else:
             attempt = self._attempt(state, stage.key)
             stage_run_id = self.store.start_stage(
                 run_id, stage.key, attempt, {"summary": summary[:500]}
             ).id
-        if state.get("auto_approve") or state.get("workflow_key") in _AUTO_APPROVE_WORKFLOWS:
+        if state.get("auto_approve") or (
+            state.get("workflow_key") in _AUTO_APPROVE_WORKFLOWS and not is_resume
+        ):
             # cron 등 무인 수집 경로 — 승인 단계 없이 자동 approve하여 publish까지 진행.
             # skill_radar는 어떤 생성 경로(POST /runs, 스케줄, 트리거, 플레이북)로
             # 만들어져도 사람 승인이 필요 없으므로 workflow 단위로 강제한다.
+            # 단, resume(사람이 명시적으로 승인/거절한 Command)에는 개입하지 않는다.
             decision = {"decision": "approve", "comment": "auto_approve"}
         else:
+            if not is_resume:
+                self.store.update_run(run_id, status=RunStatus.WAITING_APPROVAL)
+                self.store.audit(
+                    run_id, "system", "waiting_approval", stage.key, {"summary": summary[:500]}
+                )
             decision = interrupt({"run_id": run_id, "stage": stage.key, "summary": summary})
         raw_dec = (decision or {}).get("decision", "reject")
         dec: Literal["approve", "reject"] = "approve" if raw_dec == "approve" else "reject"

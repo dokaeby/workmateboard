@@ -468,23 +468,28 @@ _SIDE_EFFECT_FUNCTIONS = frozenset(
     {"gmail_register", "gmail_notify", "radar_publish", "auto_checks"}
 )
 
+# 내장 워크플로 판정용 — auto_checks는 dev_review/code_pipelines의 핵심
+# 단계로 member 실행이 허용되어야 하므로 제외한다. 외부 쓰기·알림만 해당.
+_BUILTIN_SIDE_EFFECT_FUNCTIONS = frozenset({"gmail_register", "gmail_notify", "radar_publish"})
+
 
 def _workflow_needs_lead(key: str) -> bool:
     """POST /runs 실행에 lead 이상이 필요한 워크플로인지 판정.
 
     - gmail_calendar: 실제 Google Calendar에 일정을 쓰는 유일한 내장 워크플로
       (human 승인 stage 없음) → lead 전용.
-    - 커스텀 워크플로: spec의 function stage가 외부 부수효과 함수
-      (_SIDE_EFFECT_FUNCTIONS)이거나 레지스트리에 없는 이름이면 lead 전용.
+    - 사이드이펙트 함수 stage가 있는 워크플로(내장·커스텀 모두): lead 전용.
+      skill_radar의 radar_publish처럼 외부 쓰기/알림을 발생시키는 함수를
+      포함하면 member의 POST /runs 직접 실행을 막는다.
+    - 커스텀 워크플로: 레지스트리에 없는 function 이름이면 lead 전용.
       레지스트리 import 실패 시 보수적으로 lead 요구.
     - 그 외 내장(dev_review* 등)과 읽기성 커스텀은 member 허용."""
     if key == "gmail_calendar":
         return True
-    if key in _BUILTIN_WF_KEYS and key not in _CUSTOM_WF_KEYS:
-        return False
     spec = WORKFLOWS.get(key)
     if spec is None:
         return True
+    is_custom = key in _CUSTOM_WF_KEYS
     _fn_registry: dict[str, Any] | None = None
     try:
         from ..engine.functions import FUNCTIONS
@@ -496,9 +501,10 @@ def _workflow_needs_lead(key: str) -> bool:
         if getattr(st, "kind", None) != "function":
             continue
         fn = str(getattr(st, "function", "") or "")
-        if fn in _SIDE_EFFECT_FUNCTIONS:
+        side_fx = _SIDE_EFFECT_FUNCTIONS if is_custom else _BUILTIN_SIDE_EFFECT_FUNCTIONS
+        if fn in side_fx:
             return True
-        if _fn_registry is None or fn not in _fn_registry:
+        if is_custom and (_fn_registry is None or fn not in _fn_registry):
             # 알 수 없는 function 이름은 실행 시 실패하지만, 레지스트리를
             # 확인할 수 없는 환경에서는 보수적으로 lead를 요구한다.
             return True
@@ -1612,6 +1618,12 @@ def create_app(
 
     @app.post("/api/v1/runs/{run_id}/approve")
     def approve(run_id: str, body: ApprovalRequest, request: Request) -> JSONResponse:
+        # 승인/거절은 사이드이펙트를 재개하므로 승인 대기열(/approvals)과
+        # 동일하게 lead 이상만 허용한다. 메신저 커맨드 경로는 _do_approve를
+        # 직접 호출하므로 영향 없음.
+        gated = _lead_gate(request)
+        if gated is not None:
+            return gated
         result = _do_approve(run_id, body.decision, body.comment, actor=_actor_label(request))
         if not result["ok"]:
             code = (
