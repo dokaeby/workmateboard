@@ -21,9 +21,9 @@
 
 /* ---------- 보드+패널 배치 — 데스크톱은 가로, 모바일은 세로 ---------- */
 .jmo-main { display: flex; gap: 12px; align-items: stretch; min-height: 420px; height: 540px; }
-.jmo-stage { flex: 1; min-width: 0; position: relative; min-height: 0; }
+.jmo-stage { flex: 0 0 60%; min-width: 0; position: relative; min-height: 0; }
 .jmo-box { position: absolute; inset: 0; }
-.jmo-side { width: clamp(300px, 34%, 480px); flex-shrink: 0; display: flex; flex-direction: column;
+.jmo-side { flex: 0 0 40%; min-width: 240px; display: flex; flex-direction: column;
   border-left: 1px solid var(--line); padding-left: 12px; min-height: 0; }
 
 .jmo-side-head { display: flex; align-items: center; }
@@ -100,9 +100,9 @@
 /* 좁은 화면 — 패널을 캔버스 아래로 내린다(숨기지 않는다). 페이지가 세로로 스크롤된다. */
 @media (max-width: 899px) {
   .jmo-main { flex-direction: column; min-height: 0; height: auto; }
-  .jmo-stage { height: auto; aspect-ratio: 1496 / 994; min-height: 300px; max-height: 560px; }
+  .jmo-stage { flex: none; height: auto; aspect-ratio: 1496 / 994; min-height: 300px; max-height: 560px; }
   .jmo-box { position: relative; inset: auto; width: 100%; height: 100%; }
-  .jmo-side { width: auto; border-left: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
+  .jmo-side { flex: none; width: auto; border-left: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
   .jmo-people { max-height: 50vh; flex: none; }
   .jmo-log { max-height: 60vh; flex: none; }
 }
