@@ -15,7 +15,7 @@ import uuid
 from typing import Any
 
 from . import budget_scope
-from .models import Run, RunStatus
+from .models import Run, RunStatus, canonical_agent_status
 from .store.db import Store
 from .store.util import _iso, _now
 
@@ -464,11 +464,14 @@ def on_run_finished(
             is not None
         ):
             continue
-        # defer 이후 대상 에이전트가 archived됐으면 promote하지 않는다 —
-        # POST /runs의 archived 거부와 동일 규칙을 promote 경로에도 적용.
+        # defer 이후 대상 에이전트가 terminal(archived/terminated)이면
+        # promote하지 않는다 — POST /runs의 terminal 거부와 동일 규칙.
         if w_agent_id:
             w_agent = store.get_agent(w_agent_id)
-            if w_agent is not None and str(w_agent.get("status") or "") == "archived":
+            if (
+                w_agent is not None
+                and canonical_agent_status(w_agent.get("status")) == "terminated"
+            ):
                 store.fail_wakeup(str(w["id"]))
                 logger.warning(
                     "deferred wakeup %s failed: agent %s archived workflow=%s",

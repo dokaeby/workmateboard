@@ -242,3 +242,119 @@ class BudgetIncidentResolveRequest(BaseModel):
     action: Literal["keep_paused", "raise_budget_and_resume", "dismiss"]
     amount_usd: float | None = Field(default=None, allow_inf_nan=False)
     note: str = Field(default="", max_length=500)
+
+
+# ---------- agent-management 1차 (/api/v1/management) ----------
+
+
+class ManagementAgentCreateRequest(BaseModel):
+    """POST /management/agents — name/adapter_type 필수.
+
+    status는 신규 7값 어휘, kind는 workflow|external 실행 모델,
+    adapter_config는 provider별 JSON(secret 키는 응답에서 마스킹)."""
+
+    name: str = Field(min_length=1, max_length=200)
+    adapter_type: str = Field(min_length=1, max_length=32)
+    kind: str | None = Field(default=None, max_length=20)
+    adapter_config: dict[str, Any] | None = None
+    role: str | None = Field(default=None, max_length=100)
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    capabilities: list[Annotated[str, Field(max_length=100)]] | None = Field(
+        default=None, max_length=50
+    )
+    reports_to: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
+    monthly_budget_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    # 저장 전용 예산 컬럼 — 집행은 2차 비용 원장에서 수행 예정.
+    # 현재 evaluate_admission이 참조하는 것은 monthly_budget_usd뿐이다.
+    monthly_budget_microusd: int | None = Field(
+        default=None, ge=0, description="stored-only; not yet enforced"
+    )
+
+
+class ManagementAgentPatchRequest(BaseModel):
+    """PATCH /management/agents/{id} — status는 transition 규칙을 거친다."""
+
+    name: str | None = Field(default=None, max_length=200)
+    adapter_type: str | None = Field(default=None, max_length=32)
+    kind: str | None = Field(default=None, max_length=20)
+    adapter_config: dict[str, Any] | None = None
+    role: str | None = Field(default=None, max_length=100)
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    capabilities: list[Annotated[str, Field(max_length=100)]] | None = Field(
+        default=None, max_length=50
+    )
+    reports_to: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
+    monthly_budget_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    # 저장 전용 예산 컬럼 — 집행은 2차 비용 원장에서 수행 예정.
+    monthly_budget_microusd: int | None = Field(
+        default=None, ge=0, description="stored-only; not yet enforced"
+    )
+
+
+class AgentTransitionRequest(BaseModel):
+    status: str = Field(min_length=1, max_length=20)
+
+
+class AgentWakeRequest(BaseModel):
+    """POST /management/agents/{id}/wake — Idempotency-Key 헤더 또는
+    body.idempotency_key 필수. workflow kind는 task_id 필수."""
+
+    task_id: str = Field(default="", max_length=64)
+    # 150자 상한 — 서비스가 "wake:{agent_id}:{key}" 복합키를 만들고
+    # 저장 계층은 200자로 자르므로, 사용자 키에 여유분을 남긴다(M1).
+    idempotency_key: str = Field(default="", max_length=150)
+
+
+class AgentHeartbeatRequest(BaseModel):
+    """POST /management/agents/{id}/heartbeat — 머신 전용(API key).
+
+    status 어휘: working|idle|rest|paused|decision|error|failed|running.
+    task_id/task_status로 checkout task의 상태도 함께 갱신할 수 있다."""
+
+    status: str = Field(default="", max_length=20)
+    task_id: str = Field(default="", max_length=64)
+    task_status: str = Field(default="", max_length=20)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class ManagementTaskCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=8000)
+    status: str | None = Field(default=None, max_length=20)
+    priority: str | None = Field(default=None, max_length=20)
+    assignee_agent_id: str | None = Field(default=None, max_length=64)
+    reviewer_agent_id: str | None = Field(default=None, max_length=64)
+    parent_id: str | None = Field(default=None, max_length=64)
+
+
+class ManagementTaskPatchRequest(BaseModel):
+    """PATCH /management/tasks/{id} — model_fields_set 필드만 부분 갱신.
+    status 전이는 allowlist 검증을 거치고, terminal task는 409."""
+
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=8000)
+    status: str | None = Field(default=None, max_length=20)
+    priority: str | None = Field(default=None, max_length=20)
+    assignee_agent_id: str | None = Field(default=None, max_length=64)
+    reviewer_agent_id: str | None = Field(default=None, max_length=64)
+    parent_id: str | None = Field(default=None, max_length=64)
+
+
+class TaskAssignRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+    reviewer_agent_id: str | None = Field(default=None, max_length=64)
+
+
+class TaskCheckoutRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+
+
+class TaskReleaseRequest(BaseModel):
+    """POST /management/tasks/{id}/release — 비-lead(머신) 호출 시
+    checkout 소유 agent_id와 일치해야 한다. lead는 생략 가능."""
+
+    agent_id: str = Field(default="", max_length=64)

@@ -1,8 +1,11 @@
 # mypy: disable-error-code="attr-defined"
 """Agent registry 스토어 메서드 믹스인 (db.py Store에서 추출).
 
-agents 테이블 — Paperclip agents 포팅: adapter_type + reports_to 조직도 +
-status(active|paused|archived) 운영 상태. capabilities는 JSON 배열 TEXT.
+agents 테이블 — Paperclip agents 포팅: adapter_type(provider) + reports_to
+조직도 + status 라이프사이클 + kind(workflow|external 실행 모델) +
+adapter_config JSON. status 어휘는 models.management의 AgentStatus 7값에
+레거시 'archived'(=terminated 별칭)를 더한 집합 — canonical 판정은
+서비스/모델 계층이 담당한다.
 """
 
 from __future__ import annotations
@@ -12,6 +15,8 @@ import uuid
 from typing import Any
 
 from .util import _iso, _now
+
+_AGENT_KINDS = ("workflow", "external")
 
 
 class AgentStoreMixin:
@@ -25,16 +30,27 @@ class AgentStoreMixin:
         except (ValueError, TypeError):
             d["capabilities"] = []
         try:
+            cfg = json.loads(d.get("adapter_config") or "{}")
+            d["adapter_config"] = cfg if isinstance(cfg, dict) else {}
+        except (ValueError, TypeError):
+            d["adapter_config"] = {}
+        try:
             d["monthly_budget_usd"] = (
                 float(d["monthly_budget_usd"]) if d.get("monthly_budget_usd") is not None else None
             )
         except (TypeError, ValueError):
             d["monthly_budget_usd"] = None
+        try:
+            d["monthly_budget_microusd"] = int(d.get("monthly_budget_microusd") or 0)
+        except (TypeError, ValueError):
+            d["monthly_budget_microusd"] = 0
         # 미설정 TEXT 컬럼은 None 대신 ""로 정규화 — API 계약상 null 가능 필드는
-        # role/description/reports_to만 null을 유지한다.
-        for k in ("role", "description"):
+        # role/title/description/reports_to/last_seen_at만 null을 유지한다.
+        for k in ("role", "title", "description"):
             if d.get(k) is None:
                 d[k] = ""
+        kind = str(d.get("kind") or "").strip().lower()
+        d["kind"] = kind if kind in _AGENT_KINDS else "workflow"
         return d
 
     def create_agent(
@@ -43,11 +59,15 @@ class AgentStoreMixin:
         adapter_type: str,
         *,
         role: str = "",
+        title: str = "",
         description: str = "",
         capabilities: list[str] | None = None,
+        kind: str = "workflow",
+        adapter_config: dict[str, Any] | None = None,
         reports_to: str | None = None,
         status: str = "active",
         monthly_budget_usd: float | None = None,
+        monthly_budget_microusd: int = 0,
         created_by: str = "",
     ) -> dict[str, Any] | None:
         """에이전트 생성. name은 trim 후 lower() 기준 중복 시 None."""
@@ -63,24 +83,38 @@ class AgentStoreMixin:
         # (앱 계층 agents.validate_reports_to가 archived/사이클까지 검증)
         if rt is not None and self.get_agent(rt) is None:
             return None
+        k = (kind or "").strip().lower()[:20]
+        if k not in _AGENT_KINDS:
+            k = "workflow"
+        cfg = adapter_config if isinstance(adapter_config, dict) else {}
+        try:
+            microusd = max(0, int(monthly_budget_microusd or 0))
+        except (TypeError, ValueError):
+            microusd = 0
         aid = uuid.uuid4().hex[:12]
         now = _iso(_now())
         try:
             with self.tx() as c:
                 c.execute(
-                    "INSERT INTO agents(id,name,adapter_type,role,description,capabilities,"
-                    "reports_to,status,monthly_budget_usd,created_by,created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO agents(id,name,adapter_type,role,title,description,"
+                    "capabilities,kind,adapter_config,reports_to,status,"
+                    "monthly_budget_usd,monthly_budget_microusd,created_by,"
+                    "created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         aid,
                         name,
                         adapter_type,
                         role.strip()[:100] or None,
+                        title.strip()[:200] or None,
                         description.strip()[:2000] or None,
                         json.dumps([str(c)[:100] for c in (capabilities or [])][:50]),
+                        k,
+                        json.dumps(cfg, ensure_ascii=False, default=str)[:8000],
                         rt,
                         status.strip().lower()[:20] or "active",
                         monthly_budget_usd,
+                        microusd,
                         created_by[:200],
                         now,
                         now,
@@ -112,9 +146,10 @@ class AgentStoreMixin:
         return [self._agent_json(r) for r in self._conn.execute(sql, params).fetchall()]
 
     def update_agent(self, agent_id: str, **fields: Any) -> dict[str, Any] | None:
-        """부분 갱신 — name/adapter_type/role/description/capabilities/
-        reports_to/status/monthly_budget_usd. None 반환 = 에이전트 없음 또는
-        name 중복(integrity)."""
+        """부분 갱신 — name/adapter_type/role/title/description/capabilities/
+        kind/adapter_config/reports_to/status/monthly_budget_usd/
+        monthly_budget_microusd/last_seen_at.
+        None 반환 = 에이전트 없음 또는 name 중복(integrity)."""
         agent = self.get_agent(agent_id)
         if agent is None:
             return None
@@ -134,8 +169,20 @@ class AgentStoreMixin:
             updates["adapter_type"] = at
         if "role" in fields:
             updates["role"] = str(fields["role"] or "").strip()[:100] or None
+        if "title" in fields:
+            updates["title"] = str(fields["title"] or "").strip()[:200] or None
         if "description" in fields:
             updates["description"] = str(fields["description"] or "").strip()[:2000] or None
+        if "kind" in fields:
+            k = str(fields["kind"] or "").strip().lower()[:20]
+            updates["kind"] = k if k in _AGENT_KINDS else "workflow"
+        if "adapter_config" in fields:
+            cfg = fields["adapter_config"]
+            updates["adapter_config"] = (
+                json.dumps(cfg, ensure_ascii=False, default=str)[:8000]
+                if isinstance(cfg, dict)
+                else "{}"
+            )
         if "capabilities" in fields:
             caps = fields["capabilities"]
             if caps is None:
@@ -164,6 +211,16 @@ class AgentStoreMixin:
         if "monthly_budget_usd" in fields:
             mb = fields["monthly_budget_usd"]
             updates["monthly_budget_usd"] = float(mb) if mb is not None else None
+        if "monthly_budget_microusd" in fields:
+            try:
+                updates["monthly_budget_microusd"] = max(
+                    0, int(fields["monthly_budget_microusd"] or 0)
+                )
+            except (TypeError, ValueError):
+                updates["monthly_budget_microusd"] = 0
+        if "last_seen_at" in fields:
+            lsa = fields["last_seen_at"]
+            updates["last_seen_at"] = str(lsa)[:64] if lsa else None
         if not updates:
             return agent
         sets = ", ".join(f"{k}=?" for k in updates)
@@ -174,6 +231,30 @@ class AgentStoreMixin:
                     (*updates.values(), _iso(_now()), agent_id),
                 )
         except self._integrity_errors:
+            return None
+        return self.get_agent(agent_id)
+
+    def transition_agent_status(
+        self, agent_id: str, from_status: str, to_status: str
+    ) -> dict[str, Any] | None:
+        """status 조건부 전이 — `WHERE lower(status)=from` CAS.
+
+        읽기~쓰기 사이 다른 writer가 status를 바꿨으면 rowcount=0 → None.
+        'terminated는 진짜 terminal'을 동시성 하에서도 보장한다 —
+        from_status 이후 누군가 terminated로 바꿨다면 이 전이는 실패한다.
+        from_status는 canonical 값 — 레거시 'archived' 저장행은
+        canonical terminated라 이 경로에 도달하지 않는다(전이 거부됨)."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE agents SET status=?, updated_at=? WHERE id=? AND lower(status)=?",
+                (
+                    to_status.strip().lower()[:20],
+                    _iso(_now()),
+                    agent_id,
+                    from_status.strip().lower()[:20],
+                ),
+            )
+        if int(getattr(cur, "rowcount", 0) or 0) <= 0:
             return None
         return self.get_agent(agent_id)
 

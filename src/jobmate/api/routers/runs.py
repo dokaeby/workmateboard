@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ... import budget_scope, wakeups
-from ...models import StageStatus
+from ...models import StageStatus, canonical_agent_status
 from ...workflows import WORKFLOWS
 from ..jobs import _parse_diff_files
 from ..schemas import ApprovalRequest, RunCreateRequest, RunPatchRequest
@@ -70,8 +70,8 @@ def register(app: FastAPI, ctx: Any) -> None:
             agent_row = store.get_agent(agent_id)
             if agent_row is None:
                 return err(422, "validation", "agent not found", request)
-            if str(agent_row.get("status") or "") == "archived":
-                return err(422, "validation", "agent is archived", request)
+            if canonical_agent_status(agent_row.get("status")) == "terminated":
+                return err(422, "validation", "agent is terminated", request)
         # goals 태깅 — 명시된 goal_id는 존재하는 비archived 목표여야
         # runs.goal_id에 기록된다. 미지정 시 store.create_run이 프로젝트의
         # goal_id로 폴백 해석한다.

@@ -384,6 +384,7 @@ class WorkflowRunner:
                 self.store.audit(
                     run_id, "system", "waiting_approval", stage.key, {"summary": summary[:500]}
                 )
+                self._project_management(run_id)
             decision = interrupt({"run_id": run_id, "stage": stage.key, "summary": summary})
         raw_dec = (decision or {}).get("decision", "reject")
         dec: Literal["approve", "reject"] = "approve" if raw_dec == "approve" else "reject"
@@ -395,6 +396,7 @@ class WorkflowRunner:
         self.store.update_run(
             run_id, status=RunStatus.RUNNING if dec == "approve" else RunStatus.REJECTED
         )
+        self._project_management(run_id)
         return {"stage_outputs": {stage.key: out}, "approval": out}
 
     # ---------- helpers ----------
@@ -699,6 +701,7 @@ class WorkflowRunner:
         self.store.audit(
             run_id, "system", "run_finalized", "", {"status": status.value, "escalate": escalate}
         )
+        self._project_management(run_id)
         logger.info("run %s finalized status=%s escalate=%s", run_id, status.value, escalate or "-")
         run = self.store.get_run(run_id)
         if run is not None and self.spec.key == "dev_review":
@@ -707,6 +710,18 @@ class WorkflowRunner:
             self.store.update_run(run_id, metadata=meta)
             self.store.audit(run_id, "system", "pr_summary", "", {"chars": len(meta["pr_summary"])})
         return {"final_status": status.value}
+
+    def _project_management(self, run_id: str) -> None:
+        """run→task/agent 상태 투영 hook (management 1차).
+
+        task_runs 링크가 있는 run의 상태 전이를 task/agent에 반영한다.
+        실패해도 run 결과를 유실시키지 않는다 — 서비스 내부에서도 삼킨다."""
+        try:
+            from ..services import agent_management as _mgmt
+
+            _mgmt.project_run_status(self.store, run_id)
+        except Exception:
+            logger.warning("management projection failed run=%s", run_id, exc_info=True)
 
     # ---------- public API ----------
     def invoke(

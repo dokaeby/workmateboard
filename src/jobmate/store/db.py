@@ -26,6 +26,7 @@ from .comms import CommsStoreMixin
 from .evals import EvalStoreMixin
 from .goals import GoalStoreMixin
 from .inbox import InboxStoreMixin
+from .management import ManagementStoreMixin
 from .projects import ProjectStoreMixin
 from .radar import RadarStoreMixin
 from .runs import RunStoreMixin
@@ -553,11 +554,16 @@ CREATE TABLE IF NOT EXISTS agents (
   name TEXT NOT NULL UNIQUE,
   adapter_type TEXT NOT NULL,
   role TEXT,
+  title TEXT,
   description TEXT,
   capabilities TEXT NOT NULL DEFAULT '[]',
+  kind TEXT NOT NULL DEFAULT 'workflow',
+  adapter_config TEXT NOT NULL DEFAULT '{}',
   reports_to TEXT REFERENCES agents(id),
   status TEXT NOT NULL DEFAULT 'active',
   monthly_budget_usd REAL,
+  monthly_budget_microusd INTEGER NOT NULL DEFAULT 0,
+  last_seen_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -612,6 +618,61 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_eval_runs_eval ON eval_runs(eval_id);
 CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
+
+-- agent-management 1차 (paperclip spec): 영속 작업 티켓.
+-- task=업무 소유권, run=실행 시도 — task_runs가 둘을 연결한다.
+-- identifier는 'WMB-<n>' 사람용 유일 키(Store.create_task가 채번).
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  identifier TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'backlog',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  assignee_agent_id TEXT,
+  reviewer_agent_id TEXT,
+  parent_id TEXT,
+  current_run_id TEXT,
+  checkout_agent_id TEXT,
+  checkout_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_agent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(checkout_agent_id);
+
+-- agent-management 1차: 통합 에이전트 이벤트 — idempotency_key UNIQUE로
+-- 재전송/중복 기록을 막는다(동일 키 append는 기존 행 반환).
+CREATE TABLE IF NOT EXISTS agent_events (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  event_type TEXT NOT NULL,
+  agent_id TEXT,
+  task_id TEXT,
+  run_id TEXT,
+  actor TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '{}',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_run ON agent_events(run_id, created_at);
+
+-- task↔run 다대다 링크 — (task_id, run_id) 복합 UNIQUE, attempt는
+-- 같은 task의 재실행 순번.
+CREATE TABLE IF NOT EXISTS task_runs (
+  task_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_runs_run ON task_runs(run_id);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -1113,11 +1174,16 @@ CREATE TABLE IF NOT EXISTS agents (
   name TEXT NOT NULL UNIQUE,
   adapter_type TEXT NOT NULL,
   role TEXT,
+  title TEXT,
   description TEXT,
   capabilities TEXT NOT NULL DEFAULT '[]',
+  kind TEXT NOT NULL DEFAULT 'workflow',
+  adapter_config TEXT NOT NULL DEFAULT '{}',
   reports_to TEXT REFERENCES agents(id),
   status TEXT NOT NULL DEFAULT 'active',
   monthly_budget_usd DOUBLE PRECISION,
+  monthly_budget_microusd BIGINT NOT NULL DEFAULT 0,
+  last_seen_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -1167,6 +1233,55 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_eval_runs_eval ON eval_runs(eval_id);
 CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
+
+-- agent-management 1차 (paperclip spec): SQLite판과 동일 구조
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  identifier TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'backlog',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  assignee_agent_id TEXT,
+  reviewer_agent_id TEXT,
+  parent_id TEXT,
+  current_run_id TEXT,
+  checkout_agent_id TEXT,
+  checkout_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_agent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(checkout_agent_id);
+
+CREATE TABLE IF NOT EXISTS agent_events (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  event_type TEXT NOT NULL,
+  agent_id TEXT,
+  task_id TEXT,
+  run_id TEXT,
+  actor TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '{}',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_run ON agent_events(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS task_runs (
+  task_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_runs_run ON task_runs(run_id);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1250,6 +1365,7 @@ class Store(
     AgentStoreMixin,
     GoalStoreMixin,
     EvalStoreMixin,
+    ManagementStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -1287,6 +1403,7 @@ class Store(
         self._migrate_goal_columns()
         self._migrate_deferred_wakeup_scopes()
         self._migrate_workflow_version_columns()
+        self._migrate_agent_management_columns()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -1549,6 +1666,37 @@ class Store(
                 failed,
                 len(rows),
             )
+
+    def _migrate_agent_management_columns(self) -> None:
+        """agent-management 1차 — 기존 agents 테이블에 신규 컬럼 보강.
+
+        kind는 실행 모델(workflow|external), adapter_config는 provider별
+        실행 설정 JSON, last_seen_at은 머신 heartbeat 시각,
+        monthly_budget_microusd는 2차 비용 원장이 쓸 저장 전용 예산.
+        status 어휘는 건드리지 않는다 — 'archived'는 terminated의
+        레거시 별칭으로 계속 유효(models.management 참조)."""
+        # PG는 fresh schema(SCHEMA_PG)와 타입을 맞춰 BIGINT — INTEGER로
+        # 추가하면 마이그레이션 DB와 신규 DB의 컬럼 타입이 어긋난다.
+        # SQLite는 INTEGER affinity라 BIGINT도 동일하게 동작한다.
+        self._ensure_columns(
+            "agents",
+            {
+                "title": "TEXT",
+                "kind": "TEXT NOT NULL DEFAULT 'workflow'",
+                "adapter_config": "TEXT NOT NULL DEFAULT '{}'",
+                "last_seen_at": "TEXT",
+                "monthly_budget_microusd": (
+                    "BIGINT NOT NULL DEFAULT 0" if self._pg else "INTEGER NOT NULL DEFAULT 0"
+                ),
+            },
+        )
+        # kind 인덱스는 컬럼 보강 후에만 생성 가능 — SCHEMA의 executescript는
+        # 기존 DB에서 컬럼 부재로 실패하므로 여기서 만든다(실패해도 경고만).
+        try:
+            with self.tx() as c:
+                c.execute("CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind)")
+        except Exception as e:
+            logger.warning("agents kind index skipped: %s", e)
 
     def _migrate_workflow_version_columns(self) -> None:
         """custom_workflows에 latest_revision/updated_at 보강 + 기존 spec 백필.

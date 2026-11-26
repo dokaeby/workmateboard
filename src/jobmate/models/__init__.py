@@ -1,4 +1,7 @@
 from .enums import (
+    AgentEventType,
+    AgentKind,
+    AgentStatus,
     Confidence,
     DoneState,
     LinkStatus,
@@ -6,7 +9,18 @@ from .enums import (
     RunStatus,
     Severity,
     StageStatus,
+    TaskPriority,
+    TaskStatus,
     VerdictDecision,
+)
+from .management import (
+    AGENT_WORK_STATUSES,
+    agent_transition_targets,
+    can_transition_agent,
+    can_transition_task,
+    canonical_agent_status,
+    is_agent_terminal,
+    task_transition_targets,
 )
 from .outputs import (
     AnalysisResult,
@@ -33,7 +47,11 @@ from .records import (
 from .spec import AgentSpec, ModelConfig, StageSpec, WorkflowSpec
 
 __all__ = [
+    "AGENT_WORK_STATUSES",
+    "AgentEventType",
+    "AgentKind",
     "AgentSpec",
+    "AgentStatus",
     "AnalysisResult",
     "Approval",
     "AuditEvent",
@@ -60,7 +78,15 @@ __all__ = [
     "StageRun",
     "StageSpec",
     "StageStatus",
+    "TaskPriority",
+    "TaskStatus",
     "Verdict",
     "VerdictDecision",
     "WorkflowSpec",
+    "agent_transition_targets",
+    "can_transition_agent",
+    "can_transition_task",
+    "canonical_agent_status",
+    "is_agent_terminal",
+    "task_transition_targets",
 ]

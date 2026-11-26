@@ -36,6 +36,9 @@ class AdminStoreMixin:
         - eval_runs: status <> 'pending'이고 created_at < now-365d 삭제
           (pending은 lazy 채점 대기 중이므로 보존; evals 픽스처 자체는
           이력이므로 유지)
+        - agent_events: created_at < now-90d 삭제 — heartbeat 등 고빈도
+          이벤트 포함 전체 타입 동일 기준. tasks/task_runs는 업무 이력
+          소유권이라 별도 정책이 없어 보존한다.
         반환값: 테이블별 삭제/정리 건수."""
         now = now or _now()
         d30 = _iso(now - timedelta(days=30))
@@ -104,6 +107,10 @@ class AdminStoreMixin:
                 (d365,),
             )
             counts["eval_runs"] = int(getattr(cur, "rowcount", 0) or 0)
+            # agent_events — 90일 경과분 전부 삭제(타입 무관). 멱등 replay는
+            # 최근 키만 의미가 있고, 장기 보존 감사는 audit_events(90d)가 담당.
+            cur = c.execute("DELETE FROM agent_events WHERE created_at < ?", (d90,))
+            counts["agent_events"] = int(getattr(cur, "rowcount", 0) or 0)
         return counts
 
     # ---- agent_sessions 브릿지/헬스 집계 ----

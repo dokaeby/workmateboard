@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .models import AgentStatus, canonical_agent_status
 from .pricing import cost_usd
 from .store.db import Store
 
@@ -45,7 +46,8 @@ def validate_reports_to(store: Store, agent_id: str | None, reports_to: str) -> 
     parent = store.get_agent(target)
     if parent is None:
         return "reports_to agent not found"
-    if str(parent.get("status") or "") == "archived":
+    # terminal(archived 별칭 포함)은 상위 불가 — management 1차의 terminated도 동일 취급
+    if canonical_agent_status(parent.get("status")) == AgentStatus.TERMINATED.value:
         return "archived agent cannot be a reports_to target"
     if agent_id is not None and store.reports_to_would_cycle(agent_id, target):
         return "reports_to would create a cycle"

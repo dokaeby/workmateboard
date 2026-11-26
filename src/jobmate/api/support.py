@@ -196,6 +196,16 @@ def _reap_stale_runs(
                 worker_logger.warning(
                     "wakeup finalize after stale reap failed run=%s", rid, exc_info=True
                 )
+    # 관리 task 투영 — reaped run이 failed가 됐으므로 연결 task는
+    # in_progress에 영구 고착되지 않고 blocked로 내려간다 (1차 E항).
+    if reaped_ids:
+        try:
+            from ..services import agent_management as _mgmt
+
+            for rid in reaped_ids:
+                _mgmt.project_run_status(store, rid)
+        except Exception:
+            worker_logger.warning("management projection after reap failed", exc_info=True)
     return n
 
 

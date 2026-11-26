@@ -15,6 +15,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ... import agents as agents_svc
+from ...models import AgentStatus, can_transition_agent, canonical_agent_status
+from ...services import agent_management as mgmt
 from ..schemas import AgentCreateRequest, AgentPatchRequest
 
 logger = logging.getLogger("jobmate.api")
@@ -30,25 +32,34 @@ def register(app: FastAPI, ctx: Any) -> None:
     @app.get("/api/v1/agents")
     def list_agents(request: Request, status: str | None = None) -> JSONResponse:
         """에이전트 레지스트리 목록(lead+) — reports_to로 조직도 트리 구성.
-        status 필터 선택(active|paused|archived); 빈 문자열은 미지정과 동일."""
+        status 필터는 통합 어휘(canonical 7값 + 레거시 'archived' 별칭)를
+        받아들인다 — 'archived'/'terminated' 모두 canonical terminated로
+        매칭돼 신규 상태(idle/running/error 등)도 필터 가능하다(L9).
+        빈 문자열은 미지정과 동일."""
         gate = _lead_gate(request)
         if gate is not None:
             return gate
         status = (status or "").strip().lower() or None
-        if status is not None and status not in agents_svc.AGENT_STATUSES:
-            return err(
-                422,
-                "validation",
-                f"status must be one of {list(agents_svc.AGENT_STATUSES)}",
-                request,
-            )
-        if status:
+        canon_status = ""
+        if status is not None:
+            canon_status = canonical_agent_status(status)
+            if canon_status not in {s.value for s in AgentStatus}:
+                return err(
+                    422,
+                    "validation",
+                    f"status must be one of {sorted(s.value for s in AgentStatus)} or 'archived'",
+                    request,
+                )
+        if canon_status:
             run_stats, cost_map = agents_svc.stats_by_agent(store)
+            # 저장값이 레거시 'archived'일 수 있으므로 raw 컬럼이 아니라
+            # canonical 판정으로 필터한다.
             items = [
                 agents_svc.agent_out_with_stats(
                     a, run_stats.get(str(a.get("id") or ""), {}), cost_map
                 )
-                for a in store.list_agents(status=status)
+                for a in store.list_agents()
+                if canonical_agent_status(a.get("status")) == canon_status
             ]
             return JSONResponse(content={"items": items})
         return JSONResponse(content=agents_svc.agents_payload(store))
@@ -89,9 +100,33 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
-        if store.get_agent(agent_id) is None:
+        agent_row = store.get_agent(agent_id)
+        if agent_row is None:
             return err(404, "not_found", "agent not found", request)
         fields = body.model_dump(exclude_unset=True)
+        # status는 전이 allowlist를 거친다 — 통합 어휘(canonical 7값 +
+        # 레거시 'archived' 별칭)만 허용하고, 전이 불가/terminal 출발은
+        # 409. 비-status 필드 쓰기 전에 전이 가능 여부를 먼저 검증해
+        # 부분 적용을 막는다(H2/M4와 동일 원자성 규칙).
+        to_status = fields.pop("status", None)
+        to_canon = ""
+        if to_status is not None:
+            to_canon = canonical_agent_status(str(to_status))
+            if to_canon not in {s.value for s in AgentStatus}:
+                return err(
+                    422,
+                    "validation",
+                    f"status must be one of {sorted(s.value for s in AgentStatus)} or 'archived'",
+                    request,
+                )
+            frm = canonical_agent_status(agent_row.get("status"))
+            if to_canon != frm and not can_transition_agent(frm, to_canon):
+                return err(
+                    409,
+                    "invalid_transition",
+                    f"cannot transition agent from {frm} to {to_canon}",
+                    request,
+                )
         verr = agents_svc.validate_agent_fields(store, fields, agent_id=agent_id)
         if verr is not None:
             code = 409 if verr == agents_svc.ERR_NAME_CONFLICT else 422
@@ -107,9 +142,43 @@ def register(app: FastAPI, ctx: Any) -> None:
             if store.get_agent(agent_id) is None:
                 return err(404, "not_found", "agent not found", request)
             return err(409, "conflict", agents_svc.ERR_NAME_CONFLICT, request)
+        # status 전이 — allowlist 통과분만 canonical 값으로 기록하고
+        # agent_events에도 남긴다(management transition과 동일 흔적).
+        # CAS 전이 — 읽기~쓰기 사이 status가 바뀌었으면(terminated 포함)
+        # 덮어쓰지 않고 409로 재시도 가능하게 한다.
+        status_changed = False
+        if to_canon:
+            frm = canonical_agent_status(agent.get("status"))
+            if to_canon != frm:
+                transitioned = store.transition_agent_status(agent_id, frm, to_canon)
+                if transitioned is None:
+                    fresh = store.get_agent(agent_id)
+                    if fresh is not None and canonical_agent_status(fresh.get("status")) == (
+                        to_canon
+                    ):
+                        agent = fresh  # 경합 중 동일 목표 도달 — no-op
+                    else:
+                        return err(
+                            409,
+                            "invalid_transition",
+                            "agent status changed concurrently; retry",
+                            request,
+                        )
+                else:
+                    agent = transitioned
+                status_changed = True
+                mgmt.emit_event(
+                    store,
+                    "agent_status_changed",
+                    agent_id=agent_id,
+                    actor=_actor_label(request),
+                    summary=f"agent {frm} -> {to_canon} (legacy patch)",
+                    detail={"from": frm, "to": to_canon, "via": "legacy_patch"},
+                )
         out = agents_svc.agent_out(store, agent)
-        _audit_api(request, "agent_update", agent_id, {"fields": sorted(fields)})
-        logger.info("agent updated id=%s fields=%s", agent_id, sorted(fields))
+        audit_fields = sorted(fields) + (["status"] if status_changed else [])
+        _audit_api(request, "agent_update", agent_id, {"fields": audit_fields})
+        logger.info("agent updated id=%s fields=%s", agent_id, audit_fields)
         return JSONResponse(content=out)
 
     @app.delete("/api/v1/agents/{agent_id}")

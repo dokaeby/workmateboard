@@ -352,6 +352,23 @@ def create_app(
             return err(403, "forbidden", "lead role required", request)
         return None
 
+    def _explicit_lead_user(request: Request) -> dict[str, Any] | None:
+        """'명시적' lead/admin — 세션 사용자 role 또는 인증 비활성 로컬
+        개발 모드만 인정한다. 유효 API 키(머신)는 _lead_user에서는 admin으로
+        취급되지만 여기서는 제외 — 머신 키 하나가 임의 task의 checkout을
+        해제하지 못하게 holder 검사가 필요한 경로(release)에서 구분용."""
+        from ..security import allowed_emails, api_key
+
+        user = _session_user(request)
+        if user is not None:
+            role = _effective_role(user)
+            if role in ("lead", "admin"):
+                return {**user, "role": role}
+            return None
+        if not api_key() and not allowed_emails() and not os.environ.get("VERCEL"):
+            return {"id": "local", "email": "", "role": "admin"}
+        return None
+
     def _admin_gate(request: Request) -> JSONResponse | None:
         """admin이 아니면 403 응답, 아니면 None — 라우트 첫 줄에서 호출."""
         if _admin_user(request) is None:
@@ -651,6 +668,13 @@ def create_app(
             _wakeups.on_run_finished(store, run_id, schedule=_sched_promoted)
         except Exception:
             logger.warning("wakeup finalize failed run=%s", run_id, exc_info=True)
+        # resume이 run을 종결/재대기시켰으면 관리 task/agent 상태도 투영
+        try:
+            from ..services import agent_management as _mgmt
+
+            _mgmt.project_run_status(store, run_id)
+        except Exception:
+            logger.warning("management projection failed run=%s", run_id, exc_info=True)
         return {"ok": True, "run": run_detail(run_id) or {}}
 
     # ---- workflow schedules (주기적 run 자동 생성) ----
@@ -1373,6 +1397,9 @@ padding:32px;max-width:360px;text-align:center">
         goals as _r_goals,
     )
     from .routers import (
+        management as _r_management,
+    )
+    from .routers import (
         messaging as _r_messaging,
     )
     from .routers import (
@@ -1407,6 +1434,7 @@ padding:32px;max-width:360px;text-align:center">
     _r_builder.register(app, ctx)
     _r_budgets.register(app, ctx)
     _r_agents.register(app, ctx)
+    _r_management.register(app, ctx)
     _r_goals.register(app, ctx)
     _r_evals.register(app, ctx)
     return app

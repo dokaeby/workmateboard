@@ -12,17 +12,39 @@ import "./i18n";
 import "./agents.css";
 
 const ADAPTER_TYPES = ["claude", "codex", "gemini", "devin", "custom"];
-const STATUSES = ["active", "paused", "archived"];
+// 표시/필터/폼 select 공용 전체 상태 어휘 — management 1차의 canonical
+// 7값 + 레거시 별칭 archived. PATCH /agents는 서버에서 전이 allowlist를
+// 거치므로 canonical 상태도 그대로 보낼 수 있다(H2).
+const DISPLAY_STATUSES = [
+  "active",
+  "idle",
+  "running",
+  "pending_approval",
+  "paused",
+  "error",
+  "terminated",
+  "archived",
+];
 
-const STATUS_TONE: Record<string, "ok" | "warn" | "muted"> = {
+const STATUS_TONE: Record<string, "ok" | "warn" | "err" | "muted" | "accent"> = {
   active: "ok",
+  idle: "muted",
+  running: "ok",
+  pending_approval: "warn",
   paused: "warn",
+  error: "err",
+  terminated: "muted",
   archived: "muted",
 };
 
 const STATUS_LABEL_KEY: Record<string, string> = {
   active: "agents.statusActive",
+  idle: "agents.statusIdle",
+  running: "agents.statusRunning",
+  pending_approval: "agents.statusPendingApproval",
   paused: "agents.statusPaused",
+  error: "agents.statusError",
+  terminated: "agents.statusTerminated",
   archived: "agents.statusArchived",
 };
 
@@ -115,6 +137,8 @@ function AgentForm({
     const body: Record<string, unknown> = {
       name: name.trim(),
       adapter_type: adapter,
+      // status는 canonical 값도 허용 — PATCH /agents가 서버에서 전이
+      // allowlist를 적용한다(동일 상태는 no-op). 생성 시에는 'active' 고정.
       status,
     };
     if (role.trim()) body.role = role.trim();
@@ -185,7 +209,7 @@ function AgentForm({
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-muted">{t("agents.statusField", "상태")}</span>
             <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
-              {STATUSES.map((s) => (
+              {DISPLAY_STATUSES.map((s) => (
                 <option key={s} value={s}>{statusLabel(t, s)}</option>
               ))}
             </select>
@@ -490,7 +514,7 @@ function AgentsBody() {
           className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm"
         >
           <option value="all">{t("agents.statusAll", "전체 상태")}</option>
-          {STATUSES.map((s) => (
+          {DISPLAY_STATUSES.map((s) => (
             <option key={s} value={s}>{statusLabel(t, s)}</option>
           ))}
         </select>

@@ -30,6 +30,20 @@ logger = logging.getLogger("jobmate.api")
 worker_logger = logging.getLogger("jobmate.worker")
 
 
+def _project_management(store: Store, run_id: str) -> None:
+    """run→task/agent 상태 투영 (management 1차 E항).
+
+    task_runs에 링크된 run의 상태 변경을 task/agent에 반영한다.
+    투영 실패는 run 결과를 유실시키지 않는다 — 내부에서도 삼키지만
+    import/호출 자체의 예외도 여기서 한 번 더 방어한다."""
+    try:
+        from ..services import agent_management as _mgmt
+
+        _mgmt.project_run_status(store, run_id)
+    except Exception:
+        worker_logger.warning("management projection failed run=%s", run_id, exc_info=True)
+
+
 class BudgetExceededError(RuntimeError):
     """스코프드 예산 hard_stop으로 run 생성이 차단됨.
 
@@ -120,6 +134,7 @@ def _execute_run_job(
     if not _acquire_run_slot(run_id):
         store.update_run(run_id, status=RunStatus.FAILED, error="concurrency_timeout")
         store.audit(run_id, "system", "run_queue_timeout", run_id, {})
+        _project_management(store, run_id)
         _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
         return
     try:
@@ -139,6 +154,7 @@ def _execute_run_job(
         _run_slots().release()
     run = store.get_run(run_id)
     logger.info("run %s finished status=%s", run_id, getattr(run, "status", "?"))
+    _project_management(store, run_id)
     _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
 
 
@@ -653,6 +669,7 @@ def _create_and_run(
             store.update_run(run.id, status=RunStatus.FAILED, error="concurrency_timeout")
         except Exception:
             logger.warning("run %s FAILED 마킹 실패", run.id, exc_info=True)
+        _project_management(store, run.id)
         _promote_deferred_runs(store, settings, llm, adapters, run.id)
         raise RuntimeError(f"run {run.id} concurrency slot timeout")
     invoke_error: Exception | None = None
@@ -677,6 +694,7 @@ def _create_and_run(
         _run_slots().release()
     done = store.get_run(run.id)
     logger.info("run %s finished status=%s", run.id, getattr(done, "status", "?"))
+    _project_management(store, run.id)
     _promote_deferred_runs(store, settings, llm, adapters, run.id)
     if invoke_error is not None:
         raise invoke_error

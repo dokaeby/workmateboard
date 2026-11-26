@@ -16,6 +16,7 @@ import { StatusBadge } from "./bits";
 import { PipelineCard, RunDetailPanel, AuditFeed } from "./RunPanels";
 import { OfficeBottomGrid } from "./BottomGrid";
 import { OfficeSpriteSection } from "./SpriteSection";
+import { ManagementRoster } from "./ManagementRoster";
 import type { RunListItem } from "./types";
 import "./office.css";
 
@@ -122,6 +123,9 @@ export default function OfficePage() {
           </div>
         </div>
       </div>
+
+      {/* 관리 에이전트 로스터 — /management/agents 실데이터(1차). 데모 데이터와 무관 */}
+      <ManagementRoster />
 
       {/* 하단 정보 — 세션 | 활동 | 통계+스케줄 3열 (OfficeBottomGrid 내부 그리드) */}
       <OfficeBottomGrid />

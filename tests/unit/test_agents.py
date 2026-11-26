@@ -337,13 +337,13 @@ def test_run_agent_id_tagging(tmp_path: Path) -> None:
     run = store.get_run(r.json()["id"])
     assert run is not None and run.agent_id == a["id"]
 
-    # archived 에이전트는 신규 run 태깅 불가 → 422
+    # terminated(구 archived) 에이전트는 신규 run 태깅 불가 → 422
     assert client.delete(f"/api/v1/agents/{a['id']}").status_code == 200
     r = client.post(
         "/api/v1/runs",
         json={"workflow": "dev_review", "task": "t2", "agent_id": a["id"]},
     )
-    assert r.status_code == 422 and "archived" in r.json()["error"]["message"]
+    assert r.status_code == 422 and "terminated" in r.json()["error"]["message"]
     # 태그 없는 run은 archived와 무관하게 생성 가능
     r = client.post("/api/v1/runs", json={"workflow": "dev_review", "task": "t3"})
     assert r.status_code == 202
@@ -409,3 +409,90 @@ def test_agents_auth_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     aid = r.json()["id"]
     assert lead.patch(f"/api/v1/agents/{aid}", json={"status": "paused"}).status_code == 200
     assert lead.delete(f"/api/v1/agents/{aid}").status_code == 200
+
+
+# ---------------- PATCH status 전이 규칙 (H2) ----------------
+
+
+def test_patch_agent_status_uses_transition_allowlist(tmp_path: Path) -> None:
+    """H2 — PATCH /agents/{id}의 status는 전이 allowlist를 거친다.
+
+    레거시 vocab(active/paused/archived)와 canonical 7값을 모두 받고,
+    허용되지 않는 전이·terminal 출발은 409, 어휘 밖 값은 422."""
+    client, store = _env(tmp_path)
+    a = _mk(client, "Dev")  # status=active
+
+    # active→idle는 allowlist에 없음 → 409, 다른 필드도 커밋되지 않음
+    r = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "idle", "role": "nope"})
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "invalid_transition"
+    assert store.get_agent(a["id"])["role"] != "nope"
+
+    # canonical 상태 허용 — active→running→idle
+    r = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "running"})
+    assert r.status_code == 200 and r.json()["status"] == "running"
+    r = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "idle"})
+    assert r.status_code == 200 and r.json()["status"] == "idle"
+
+    # 레거시 vocab도 canonical로 매핑 — paused 허용(idle→paused)
+    r = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "paused"})
+    assert r.status_code == 200 and r.json()["status"] == "paused"
+
+    # 어휘 밖 값 → 422
+    r = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "bogus"})
+    assert r.status_code == 422
+
+
+def test_patch_agent_cannot_resurrect_terminated(tmp_path: Path) -> None:
+    """H2 — terminated(archived) 에이전트는 어떤 상태로도 되돌릴 수 없다."""
+    client, store = _env(tmp_path)
+    a = _mk(client, "Dev")
+    assert client.delete(f"/api/v1/agents/{a['id']}").status_code == 200
+    assert store.get_agent(a["id"])["status"] == "archived"
+
+    # 부활 시도 → 409
+    r = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "active"})
+    assert r.status_code == 409
+    # terminal→terminal no-op(동일 canonical)은 허용
+    r2 = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "archived"})
+    assert r2.status_code == 200
+    # status 없이 다른 필드 수정은 terminal이어도 허용(레지스트리 메타)
+    r3 = client.patch(f"/api/v1/agents/{a['id']}", json={"role": "former"})
+    assert r3.status_code == 200 and r3.json()["role"] == "former"
+
+
+def test_patch_agent_status_transition_emits_event(tmp_path: Path) -> None:
+    """H2 — legacy PATCH의 status 변경도 agent_events에 기록된다."""
+    client, store = _env(tmp_path)
+    a = _mk(client, "Dev")
+    r = client.patch(f"/api/v1/agents/{a['id']}", json={"status": "paused"})
+    assert r.status_code == 200
+    evs = [
+        e
+        for e in store.list_agent_events(agent_id=a["id"])
+        if e["event_type"] == "agent_status_changed"
+    ]
+    assert evs and evs[0]["detail"].get("to") == "paused"
+
+
+# ---------------- status 필터 통합 어휘 (L9) ----------------
+
+
+def test_agents_status_filter_accepts_canonical_vocab(tmp_path: Path) -> None:
+    """L9 — GET /agents?status=는 canonical 7값 + archived 별칭을 받는다."""
+    client, store = _env(tmp_path)
+    a = _mk(client, "IdleOne")
+    store.update_agent(a["id"], status="idle")
+    b = _mk(client, "Gone")
+    assert client.delete(f"/api/v1/agents/{b['id']}").status_code == 200
+
+    # canonical 신규 상태 필터
+    items = client.get("/api/v1/agents?status=idle").json()["items"]
+    assert [i["id"] for i in items] == [a["id"]]
+    # terminated/archived 둘 다 canonical terminated 저장행에 매칭
+    for flt in ("terminated", "archived"):
+        items = client.get(f"/api/v1/agents?status={flt}").json()["items"]
+        assert b["id"] in [i["id"] for i in items]
+        assert a["id"] not in [i["id"] for i in items]
+    # 어휘 밖 → 422
+    assert client.get("/api/v1/agents?status=bogus").status_code == 422

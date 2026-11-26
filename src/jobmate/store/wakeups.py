@@ -70,10 +70,12 @@ class WakeupStoreMixin:
     def get_wakeup_by_idempotency(self, idempotency_key: str) -> dict[str, Any] | None:
         if not idempotency_key:
             return None
+        # create_wakeup은 저장 시 [:200]으로 자른다 — 조회도 같은 정규화를
+        # 적용해야 잘린 키로 INSERT된 행을 찾을 수 있다(M1).
         row = self._conn.execute(
             "SELECT * FROM wakeup_requests WHERE idempotency_key=?"
             " ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
+            (idempotency_key[:200],),
         ).fetchone()
         return self._wakeup_json(row) if row else None
 
