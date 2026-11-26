@@ -43,13 +43,22 @@ def canonical_input(input_data: dict[str, Any]) -> str:
     )
 
 
-def scope_key_for(workflow_key: str, input_data: dict[str, Any], agent_id: str = "") -> str:
-    """코얼레싱 scope — workflow + canonical input + agent_id.
+def scope_key_for(
+    workflow_key: str,
+    input_data: dict[str, Any],
+    agent_id: str = "",
+    goal_id: str = "",
+) -> str:
+    """코얼레싱 scope — workflow + canonical input + agent_id + goal_id.
 
-    agent_id가 다르면 별도 scope — 동일 input이라도 다른 에이전트 태그의
-    run이 서로를 coalesce해 태그가 유실되는 것을 막는다. agent_id는
-    runs.agent_id 컬럼에서 오며 input_data에는 들어가지 않는다."""
-    canon = canonical_input({"agent_id": agent_id or "", "input": input_data or {}})
+    agent_id/goal_id가 다르면 별도 scope — 동일 input이라도 다른 태그의
+    run이 서로를 coalesce해 태그가 유실되는 것을 막는다. 둘 다 runs 컬럼에서
+    오며 input_data에는 들어가지 않는다(명시 input.goal_id는 canonical
+    input에 그대로 포함된다). input["goal"]은 create_run이 주입하는
+    표시용 컨텍스트({id,title})라 scope 비교에서 제외한다 — 저장된
+    run.input과 요청 input_data의 canonical 형태를 일치시키기 위함."""
+    inp = {k: v for k, v in (input_data or {}).items() if k != "goal"}
+    canon = canonical_input({"agent_id": agent_id or "", "goal_id": goal_id or "", "input": inp})
     digest = hashlib.sha256(canon.encode()).hexdigest()[:16]
     return f"{workflow_key}:{digest}"
 
@@ -60,6 +69,7 @@ def _payload_json(
     created_by: str,
     job_payload: dict[str, Any],
     agent_id: str = "",
+    goal_id: str = "",
 ) -> str:
     return json.dumps(
         {
@@ -67,8 +77,9 @@ def _payload_json(
             "version": version,
             "created_by": created_by,
             "job": job_payload,
-            # deferred promote 시 runs.agent_id 태그를 유지하기 위해 payload에 포함.
+            # deferred promote 시 runs.agent_id/goal_id 태그를 유지하기 위해 payload에 포함.
             "agent_id": agent_id,
+            "goal_id": goal_id,
         },
         ensure_ascii=False,
         default=str,
@@ -187,16 +198,20 @@ def _create_wakeup_or_replay(
 
 
 def _active_run_for_scope(
-    store: Store, workflow_key: str, input_data: dict[str, Any], agent_id: str = ""
+    store: Store,
+    workflow_key: str,
+    input_data: dict[str, Any],
+    agent_id: str = "",
+    goal_id: str = "",
 ) -> Run | None:
     """동일 scope의 queued/running run — 볼륨이 작아 Python 비교."""
-    scope_key = scope_key_for(workflow_key, input_data, agent_id)
+    scope_key = scope_key_for(workflow_key, input_data, agent_id, goal_id)
     for run in store.list_active_runs():
         if run.workflow_key != workflow_key:
             continue
         if run.status.value not in _ACTIVE_STATUSES:
             continue
-        if scope_key_for(workflow_key, run.input, run.agent_id) == scope_key:
+        if scope_key_for(workflow_key, run.input, run.agent_id, run.goal_id) == scope_key:
             return run
     return None
 
@@ -213,6 +228,7 @@ def admit_run(
     version: str = "",
     job_payload: dict[str, Any] | None = None,
     agent_id: str = "",
+    goal_id: str = "",
 ) -> dict[str, Any]:
     """run 생성 요청 접수 — 코얼레싱/디퍼 판정.
 
@@ -233,14 +249,53 @@ def admit_run(
     # 컬럼·예산 귀속·코얼레싱 scope_key가 모두 같은 값을 쓰게 한다.
     if isinstance(input_data.get("project"), str):
         input_data["project"] = budget_scope.clean_scope_id(input_data["project"])
+    # "goal"/"goal_id"는 예약 키 — 호출자가 임의 값을 넣어도 scope/payload/
+    # run.input에 새지 않게 제거한다("goal_id"는 아래에서 goal_id 파라미터로
+    # 흡수). create_run도 동일하게 제거하므로 promote 경로와 형태가 일치한다.
+    input_data = {k: v for k, v in input_data.items() if k != "goal"}
+    # input_data.goal_id를 명시 goal_id 파라미터로 흡수 — runs.goal_id
+    # 컬럼·scope_key·payload가 모두 같은 태그를 쓰게 하고, canonical
+    # input에서는 goal_id 키를 제거해 create_run이 저장하는 input과
+    # 형태를 일치시킨다.
+    goal_explicit = bool((goal_id or "").strip())
+    if "goal_id" in input_data:
+        gv = input_data.get("goal_id")
+        if isinstance(gv, str) and gv.strip():
+            goal_explicit = True
+            if not goal_id:
+                goal_id = gv.strip()[:64]
+        input_data = {k: v for k, v in input_data.items() if k != "goal_id"}
+    # goal_id 해석은 create_run과 같은 단일 경로(resolve_run_goal_id) —
+    # 프로젝트 폴백 goal까지 scope_key/payload/run이 일치해야 coalescing과
+    # deferred promote가 깨지지 않는다(H1). 명시 goal은 존재+비archived
+    # 검증(위반 시 거부), 프로젝트 폴백의 무효 goal은 태그 해제(strip).
+    goal_id = store.resolve_run_goal_id(input_data, goal_id)
+    if goal_id:
+        g = store.get_goal(goal_id)
+        if g is None or str(g.get("status") or "") == "archived":
+            if goal_explicit:
+                return {
+                    "action": "invalid_goal",
+                    "run_id": "",
+                    "wakeup_id": "",
+                    "run": None,
+                    "job_payload": None,
+                    "error": "goal not found" if g is None else "goal is archived",
+                }
+            logger.warning(
+                "admit_run: project-fallback goal %s unusable — stripped workflow=%s",
+                goal_id,
+                workflow_key,
+            )
+            goal_id = ""
     source = source if source in WAKEUP_SOURCES else "api"
     job = (
         dict(job_payload)
         if job_payload is not None
         else {"task": str(input_data.get("task") or "")}
     )
-    payload_json = _payload_json(input_data, version, created_by, job, agent_id)
-    scope_key = scope_key_for(workflow_key, input_data, agent_id)
+    payload_json = _payload_json(input_data, version, created_by, job, agent_id, goal_id)
+    scope_key = scope_key_for(workflow_key, input_data, agent_id, goal_id)
 
     # a. idempotency replay — 동일 키라도 scope(입력)가 다르면 재생이 아니라 충돌
     if idempotency_key:
@@ -256,7 +311,7 @@ def admit_run(
             return _replay_result(store, prev)
 
     # b/c/d. 동일 scope active run 판정
-    active = _active_run_for_scope(store, workflow_key, input_data, agent_id)
+    active = _active_run_for_scope(store, workflow_key, input_data, agent_id, goal_id)
     if active is not None and not force_new:
         res = _create_wakeup_or_replay(
             store,
@@ -320,6 +375,7 @@ def admit_run(
         trace_id=uuid.uuid4().hex,
         created_by=created_by,
         agent_id=agent_id,
+        goal_id=goal_id,
     )
     res = _create_wakeup_or_replay(
         store,
@@ -378,11 +434,10 @@ def on_run_finished(
 
     created: list[tuple[Run, dict[str, Any]]] = []
     # 단일 비행: scope당 활성 run 1개 — 가장 오래된 deferred 1건만 promote.
-    # scope_key는 (workflow, input, agent_id) — finishing run의 agent_id로
-    # 조회하므로 다른 에이전트 태그의 deferred는 해당 에이전트 run 종결 시
-    # promote된다.
+    # scope_key는 (workflow, input, agent_id, goal_id) — finishing run의
+    # 태그로 조회하므로 다른 태그의 deferred는 해당 run 종결 시 promote된다.
     for w in store.list_deferred_wakeups(
-        scope_key_for(run.workflow_key, run.input, run.agent_id), limit=10
+        scope_key_for(run.workflow_key, run.input, run.agent_id, run.goal_id), limit=10
     ):
         try:
             payload = json.loads(str(w.get("payload") or ""))
@@ -402,8 +457,12 @@ def on_run_finished(
             continue
         input_data = dict(inp)
         w_agent_id = str(payload.get("agent_id") or "")
+        w_goal_id = str(payload.get("goal_id") or "")
         # 아직 같은 scope의 활성 run이 있으면 promote 보류
-        if _active_run_for_scope(store, run.workflow_key, input_data, w_agent_id) is not None:
+        if (
+            _active_run_for_scope(store, run.workflow_key, input_data, w_agent_id, w_goal_id)
+            is not None
+        ):
             continue
         # defer 이후 대상 에이전트가 archived됐으면 promote하지 않는다 —
         # POST /runs의 archived 거부와 동일 규칙을 promote 경로에도 적용.
@@ -415,6 +474,20 @@ def on_run_finished(
                     "deferred wakeup %s failed: agent %s archived workflow=%s",
                     w["id"],
                     w_agent_id,
+                    run.workflow_key,
+                )
+                continue
+        # defer 이후 목표가 archived됐으면 promote하지 않는다 — admit_run의
+        # archived goal 거부/strip과 동일 규칙을 promote 경로에도 적용.
+        # (missing goal은 create_run이 strip하므로 여기서는 archived만 마감)
+        if w_goal_id:
+            w_goal = store.get_goal(w_goal_id)
+            if w_goal is not None and str(w_goal.get("status") or "") == "archived":
+                store.fail_wakeup(str(w["id"]))
+                logger.warning(
+                    "deferred wakeup %s failed: goal %s archived workflow=%s",
+                    w["id"],
+                    w_goal_id,
                     run.workflow_key,
                 )
                 continue
@@ -449,6 +522,7 @@ def on_run_finished(
                 trace_id=uuid.uuid4().hex,
                 created_by=str(payload.get("created_by") or "wakeup"),
                 agent_id=w_agent_id,
+                goal_id=w_goal_id,
             )
         except Exception:
             # 생성 실패 시 deferred로 복원 — 다음 종결 이벤트에 재시도

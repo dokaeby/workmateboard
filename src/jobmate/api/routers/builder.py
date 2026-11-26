@@ -118,6 +118,14 @@ def register(app: FastAPI, ctx: Any) -> None:
             job_payload={"task": payload["task"]},
         )
         action = str(res.get("action") or "")
+        if action == "invalid_goal":
+            # 플레이북 input의 goal_id가 무효(미존재/archived) — run 생성 거부
+            return err(
+                422,
+                "validation",
+                f"playbook goal invalid: {res.get('error') or 'invalid goal'}",
+                request,
+            )
         if action != "created":
             run = res.get("run")
             _audit_api(
@@ -286,7 +294,14 @@ def register(app: FastAPI, ctx: Any) -> None:
         return JSONResponse(
             content={
                 "items": [
-                    {"name": r["name"], "spec": r["spec"]} for r in store.list_custom_workflows()
+                    {
+                        "name": r["name"],
+                        "spec": r["spec"],
+                        # CAS 기준 리비전 — 프론트가 저장 시 base_revision을
+                        # 채울 수 있게 목록에도 포함한다(revisions fetch 실패 대비).
+                        "latest_revision": int(r.get("latest_revision") or 0),
+                    }
+                    for r in store.list_custom_workflows()
                 ]
             }
         )
@@ -315,12 +330,45 @@ def register(app: FastAPI, ctx: Any) -> None:
             )
         if spec.key != name:
             return err(422, "invalid_spec", "spec.key must equal the workflow name", request)
-        store.upsert_custom_workflow(name, spec.model_dump(mode="json"))
+        # append-only 리비전 저장 — base_revision이 현재 latest와 다르면
+        # 409 revision_conflict(낙관적 동시성 제어). 생략 시 최신 위에 append.
+        res = store.save_custom_workflow(
+            name,
+            spec.model_dump(mode="json"),
+            base_revision=body.base_revision,
+            note=body.note,
+            created_by=_actor_label(request),
+        )
+        if not res.get("ok"):
+            # 표준 err() 엔벨로프 + 최상위 current_revision — 프론트는
+            # error.code==="revision_conflict"로 판별한다.
+            return err(
+                409,
+                "revision_conflict",
+                "workflow spec was modified concurrently",
+                request,
+                extra={"current_revision": int(res.get("current_revision") or 0)},
+            )
         _sync_workflow_registry(store)
-        _audit_api(request, "custom_workflow_save", name, {"version": spec.version})
-        logger.info("custom workflow saved name=%s version=%s", name, spec.version)
+        _audit_api(
+            request,
+            "custom_workflow_save",
+            name,
+            {"version": spec.version, "revision": res.get("revision")},
+        )
+        logger.info(
+            "custom workflow saved name=%s version=%s revision=%s",
+            name,
+            spec.version,
+            res.get("revision"),
+        )
         return JSONResponse(
-            status_code=201, content={"name": name, "spec": spec.model_dump(mode="json")}
+            status_code=201,
+            content={
+                "name": name,
+                "spec": spec.model_dump(mode="json"),
+                "revision": int(res.get("revision") or 0),
+            },
         )
 
     @app.delete("/api/v1/workflows/custom/{name}")
@@ -336,6 +384,66 @@ def register(app: FastAPI, ctx: Any) -> None:
         _audit_api(request, "custom_workflow_delete", name, {})
         logger.info("custom workflow deleted name=%s", name)
         return JSONResponse(content={"ok": True})
+
+    # ---- 4-1. WORKFLOW SPEC REVISIONS (append-only 버전 이력) ----
+    @app.get("/api/v1/workflows/custom/{name}/revisions")
+    def list_custom_workflow_revisions(name: str, request: Request) -> JSONResponse:
+        """리비전 목록(최신순) — spec은 spec_preview(200자)로 대체."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        if store.get_custom_workflow(name) is None:
+            return err(404, "not_found", "custom workflow not found", request)
+        return JSONResponse(content={"items": store.list_custom_workflow_revisions(name)})
+
+    @app.get("/api/v1/workflows/custom/{name}/revisions/{rev}")
+    def get_custom_workflow_revision(name: str, rev: int, request: Request) -> JSONResponse:
+        """특정 리비전의 전체 spec 조회."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        rev_row = store.get_custom_workflow_revision(name, rev)
+        if rev_row is None:
+            return err(404, "not_found", "workflow revision not found", request)
+        return JSONResponse(content=rev_row)
+
+    @app.post("/api/v1/workflows/custom/{name}/revisions/{rev}/restore")
+    def restore_custom_workflow_revision(name: str, rev: int, request: Request) -> JSONResponse:
+        """restore-as-new-revision — 과거 spec을 최신+1 리비전으로 복제.
+        이력은 재작성하지 않는다."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        if store.get_custom_workflow(name) is None:
+            return err(404, "not_found", "custom workflow not found", request)
+        res = store.restore_custom_workflow_revision(name, rev, created_by=_actor_label(request))
+        if not res.get("ok"):
+            reason = str(res.get("reason") or "")
+            if reason == "invalid_spec":
+                return err(
+                    422,
+                    "invalid_spec",
+                    "stored revision spec is not a valid WorkflowSpec for this workflow",
+                    request,
+                )
+            if reason == "conflict":
+                return err(
+                    409,
+                    "revision_conflict",
+                    "workflow spec was modified concurrently",
+                    request,
+                    extra={"current_revision": int(res.get("current_revision") or 0)},
+                )
+            return err(404, "not_found", "workflow revision not found", request)
+        _sync_workflow_registry(store)
+        _audit_api(request, "custom_workflow_restore", name, {"revision": res["revision"]})
+        logger.info(
+            "custom workflow restored name=%s from_rev=%s new_rev=%s",
+            name,
+            rev,
+            res["revision"],
+        )
+        return JSONResponse(content={"name": name, "revision": res["revision"]})
 
     # ---- 5. TRIGGERS (트리거 뷰 lead 전용 — run 자동 발사 설정) ----
     @app.get("/api/v1/triggers")

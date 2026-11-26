@@ -137,7 +137,13 @@ def create_app(
     if _v2_dist.is_dir():
         app.mount("/app", StaticFiles(directory=_v2_dist, html=True), name="app_v2")
 
-    def err(status: int, code: str, message: str, request: Request) -> JSONResponse:
+    def err(
+        status: int,
+        code: str,
+        message: str,
+        request: Request,
+        extra: dict[str, Any] | None = None,
+    ) -> JSONResponse:
         # request_id는 access_log_middleware가 심은 값을 재사용 — 별도 uuid를
         # 만들면 접근 로그의 rid와 응답의 request_id가 어긋난다.
         rid = (
@@ -145,10 +151,11 @@ def create_app(
             or request.headers.get("x-request-id", "")
             or uuid.uuid4().hex[:12]
         )
-        return JSONResponse(
-            status_code=status,
-            content={"error": {"code": code, "message": message, "request_id": rid}},
-        )
+        content: dict[str, Any] = {"error": {"code": code, "message": message, "request_id": rid}}
+        # 계약상 최상위 추가 필드(current_revision 등) — error 객체 밖에 둔다.
+        if extra:
+            content.update(extra)
+        return JSONResponse(status_code=status, content=content)
 
     def run_detail(run_id: str) -> dict[str, Any] | None:
         run = store.get_run(run_id)
@@ -167,6 +174,7 @@ def create_app(
             "updated_at": run.updated_at.isoformat(),
             "project": run.project,
             "agent_id": run.agent_id,
+            "goal_id": run.goal_id,
             "coalesced_count": store.coalesced_counts_for_runs([run_id]).get(run_id, 0),
             "stages": [s.model_dump(mode="json") for s in store.get_stage_runs(run_id)],
             "approvals": [a.model_dump(mode="json") for a in store.get_approvals(run_id)],
@@ -256,6 +264,14 @@ def create_app(
             version=WORKFLOWS[workflow].version,
             job_payload={"task": task},
         )
+        if res["action"] == "invalid_goal":
+            # input/ctx의 goal_id가 무효 — run 없이 거절(호출자는 ""로 처리)
+            logger.warning(
+                "submit_run rejected: invalid goal workflow=%s error=%s",
+                workflow,
+                res.get("error"),
+            )
+            return ""
         if res["action"] != "created":
             return str(res.get("run_id") or "")
         run = res["run"]
@@ -1351,6 +1367,9 @@ padding:32px;max-width:360px;text-align:center">
         events as _r_events,
     )
     from .routers import (
+        goals as _r_goals,
+    )
+    from .routers import (
         messaging as _r_messaging,
     )
     from .routers import (
@@ -1385,6 +1404,7 @@ padding:32px;max-width:360px;text-align:center">
     _r_builder.register(app, ctx)
     _r_budgets.register(app, ctx)
     _r_agents.register(app, ctx)
+    _r_goals.register(app, ctx)
     return app
 
 

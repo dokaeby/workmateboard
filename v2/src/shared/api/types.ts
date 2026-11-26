@@ -6,7 +6,7 @@ export type ViewKey =
   | "projects" | "sessionlog" | "risks" | "approvals" | "perf"
   | "insights" | "automation" | "system" | "archive" | "cost"
   | "developer" | "playbooks" | "connectors" | "triggers" | "builder"
-  | "team" | "audit" | "settings" | "agents";
+  | "team" | "audit" | "settings" | "agents" | "goals";
 
 export interface Me {
   id?: string;
@@ -163,6 +163,7 @@ export interface CustomWorkflow {
   name: string;
   spec?: unknown;
   created_at?: string;
+  latest_revision?: number;
 }
 
 /** /health/detail — settings/system 공용 (머신 필드는 동일 구조). */

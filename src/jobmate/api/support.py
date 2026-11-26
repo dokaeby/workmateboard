@@ -646,6 +646,9 @@ def _fire_trigger_action(
             version=WORKFLOWS[workflow].version,
             job_payload={"task": payload.get("task", "")},
         )
+        if res["action"] == "invalid_goal":
+            worker_logger.warning("trigger %s blocked: invalid goal %s", tid, res.get("error"))
+            return
         if res["action"] != "created":
             worker_logger.info(
                 "trigger %s %s into run=%s", tid, res["action"], res.get("run_id") or "-"

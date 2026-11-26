@@ -4,14 +4,46 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Literal
 
 from ..models import Approval, AuditEvent, Run, RunStatus, StageRun, StageStatus
 from .util import _clamp_limit, _dt, _iso, _loads, _now, clean_scope_id
 
+logger = logging.getLogger("jobmate.store")
+
 
 class RunStoreMixin:
+    def resolve_run_goal_id(self, input_data: dict[str, Any], goal_id: str = "") -> str:
+        """run의 goal_id 해석 — create_run/admit_run 공용 단일 경로.
+
+        순서: 명시 goal_id 파라미터 → input_data.goal_id → 프로젝트
+        (input.project 태그 → projects.name ci 매칭)의 goal_id → ''.
+        wakeups.admit_run이 scope_key/payload 계산 전에 이 함수를 호출해
+        코얼레싱 scope·wakeup payload·생성 run의 goal_id가 항상 일치하게
+        한다(H1 — project 폴백 goal이 scope 계산에서 빠지던 버그 수정)."""
+        gid = (goal_id or "").strip()[:64]
+        if not gid:
+            gv = input_data.get("goal_id")
+            if isinstance(gv, str):
+                gid = gv.strip()[:64]
+        if not gid:
+            pv = input_data.get("project")
+            project = clean_scope_id(pv) if isinstance(pv, str) else ""
+            if project:
+                proj = self.find_project_by_name(project)
+                if proj is not None:
+                    gid = str(proj.get("goal_id") or "")[:64]
+        return gid
+
+    def _goal_usable(self, gid: str) -> bool:
+        """goal_id가 존재하고 archived가 아니면 True — run 태깅 가능 여부."""
+        if not gid:
+            return False
+        g = self.get_goal(gid)
+        return g is not None and str(g.get("status") or "") != "archived"
+
     def create_run(
         self,
         workflow_key: str,
@@ -21,6 +53,7 @@ class RunStoreMixin:
         metadata: dict[str, Any] | None = None,
         created_by: str = "",
         agent_id: str = "",
+        goal_id: str = "",
     ) -> Run:
         # input.project 자유 태그를 컬럼으로도 유지 (PATCH /runs/{id}와 동일 경로).
         # budget policy scope_id와 동일 정규화(clean_scope_id)를 적용해야
@@ -29,6 +62,32 @@ class RunStoreMixin:
         pv = input_data.get("project")
         if isinstance(pv, str):
             project = clean_scope_id(pv)
+        # goal_id 해석은 resolve_run_goal_id 단일 경로 — admit_run의
+        # scope_key/payload 계산과 반드시 같은 결과가 나와야 한다.
+        gid = self.resolve_run_goal_id(input_data, goal_id)
+        # 존재하지 않거나 archived인 goal은 태깅하지 않는다 — 명시값도
+        # 여기서는 strip한다(API 계층이 명시 goal의 422를 이미 담당하고,
+        # 프로젝트 폴백/스케줄 JSON 등 비-API 경로의 dangling 참조를 막는
+        # defense-in-depth). 폴백 goal이 archived면 조용히 태그 해제.
+        if gid and not self._goal_usable(gid):
+            logger.warning(
+                "run goal_id %s unusable (missing/archived) — stripped workflow=%s",
+                gid,
+                workflow_key,
+            )
+            gid = ""
+        # input의 goal_id/goal 키는 컬럼/컨텍스트로 흡수하고 저장 input에서는
+        # 제거한다 — 코얼레싱 canonical input이 (요청 input, runs.goal_id)
+        # 양쪽에서 같은 형태가 되도록. "goal"은 예약 키라 호출자가 임의 값을
+        # 넣어도 프롬프트/컨텍스트로 새어 나가지 않게 항상 제거한다.
+        input_data = {k: v for k, v in input_data.items() if k not in ("goal_id", "goal")}
+        # goal 컨텍스트를 input에 주입 — 워크플로 stage가 run.input["goal"]
+        # 의 {id,title}을 읽어 목표 맥락을 프롬프트에 반영할 수 있다.
+        # ("goal" 키는 코얼레싱 scope 계산에서 제외 — wakeups.scope_key_for)
+        if gid:
+            g = self.get_goal(gid)
+            if g is not None:
+                input_data["goal"] = {"id": gid, "title": str(g.get("title") or "")}
         run = Run(
             id=uuid.uuid4().hex[:12],
             workflow_key=workflow_key,
@@ -42,12 +101,13 @@ class RunStoreMixin:
             created_by=created_by,
             project=project,
             agent_id=(agent_id or "").strip()[:64],
+            goal_id=gid,
         )
         with self.tx() as c:
             c.execute(
                 "INSERT INTO runs(id,workflow_key,workflow_version,input,status,trace_id,"
-                "error,metadata,created_by,project,agent_id,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "error,metadata,created_by,project,agent_id,goal_id,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run.id,
                     run.workflow_key,
@@ -60,6 +120,7 @@ class RunStoreMixin:
                     run.created_by,
                     project,
                     run.agent_id or None,
+                    run.goal_id or None,
                     _iso(run.created_at),
                     _iso(run.updated_at),
                 ),
@@ -168,6 +229,17 @@ class RunStoreMixin:
             reaped_out.extend(reaped)
         return len(reaped)
 
+    # ---- goal 태깅 (runs.goal_id) ----
+    def set_run_goal(self, run_id: str, goal_id: str) -> bool:
+        """run의 goal 태그 설정/해제. ''이면 해제(NULL). updated_at은 건드리지 않는다."""
+        gid = (goal_id or "").strip()[:64] or None
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE runs SET goal_id=? WHERE id=?",
+                (gid, run_id),
+            )
+        return cur.rowcount > 0
+
     def _row_to_run(self, row: Any) -> Run:
         return Run(
             id=row["id"],
@@ -181,6 +253,7 @@ class RunStoreMixin:
             created_by=row["created_by"] if "created_by" in row.keys() else "",
             project=row["project"] if "project" in row.keys() else "",
             agent_id=row["agent_id"] if "agent_id" in row.keys() and row["agent_id"] else "",
+            goal_id=row["goal_id"] if "goal_id" in row.keys() and row["goal_id"] else "",
             created_at=_dt(row["created_at"]) or _now(),
             updated_at=_dt(row["updated_at"]) or _now(),
         )

@@ -135,6 +135,7 @@ def project_overview(store: Store) -> dict[str, Any]:
                 "color": str(proj.get("color") or ""),
                 "description": str(proj.get("description") or ""),
                 "goal": str(proj.get("goal") or ""),
+                "goal_id": proj.get("goal_id") or None,
                 "target_count": int(proj.get("target_count") or 0),
                 "created_by": str(proj.get("created_by") or ""),
                 "session_count": len(g["sessions"]),

@@ -72,6 +72,16 @@ def register(app: FastAPI, ctx: Any) -> None:
                 return err(422, "validation", "agent not found", request)
             if str(agent_row.get("status") or "") == "archived":
                 return err(422, "validation", "agent is archived", request)
+        # goals 태깅 — 명시된 goal_id는 존재하는 비archived 목표여야
+        # runs.goal_id에 기록된다. 미지정 시 store.create_run이 프로젝트의
+        # goal_id로 폴백 해석한다.
+        goal_id = body.goal_id.strip()
+        if goal_id:
+            goal_row = store.get_goal(goal_id)
+            if goal_row is None:
+                return err(422, "validation", "goal not found", request)
+            if str(goal_row.get("status") or "") == "archived":
+                return err(422, "validation", "goal is archived", request)
         # 월간 LLM 예산 집행 — MTD 비용이 monthly_budget_usd를 초과하면
         # run 생성 자체를 거부한다(usage/summary의 budget_exceeded와 동일 기준).
         # llm_usage 전수 합산 비용이 크므로 60초 인메모리 캐시를 둔다.
@@ -143,8 +153,18 @@ def register(app: FastAPI, ctx: Any) -> None:
             version=WORKFLOWS[body.workflow].version,
             job_payload={"task": body.task},
             agent_id=agent_id,
+            goal_id=goal_id,
         )
         action = str(res.get("action") or "")
+        if action == "invalid_goal":
+            # admit_run의 goal 검증 — 명시 goal_id는 라우트에서 이미 검증했으므로
+            # 이 경로는 input_data.goal_id 등 비정규 경로용 방어선.
+            return err(
+                422,
+                "validation",
+                str(res.get("error") or "invalid goal"),
+                request,
+            )
         if action == "conflict":
             # 동일 idempotency_key가 다른 입력으로 이미 사용됨
             return err(
@@ -193,6 +213,7 @@ def register(app: FastAPI, ctx: Any) -> None:
                 "workflow": r.workflow_key,
                 "status": r.status.value,
                 "project": r.project,
+                "goal_id": r.goal_id,
                 "coalesced_count": coalesced.get(r.id, 0),
                 "created_at": r.created_at.isoformat(),
             }
@@ -430,17 +451,40 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.patch("/api/v1/runs/{run_id}")
     def patch_run(run_id: str, body: RunPatchRequest, request: Request) -> JSONResponse:
-        """run의 project 태그 설정/해제 (null/빈 문자열 → 해제). lead 이상."""
+        """run의 project/goal 태그 설정/해제 (null/빈 문자열 → 해제). lead 이상."""
         gate = _lead_gate(request)
         if gate is not None:
             return gate
         run = store.get_run(run_id)
         if run is None:
             return err(404, "not_found", "run not found", request)
-        project = "" if body.project is None else budget_scope.clean_scope_id(body.project)
-        if not store.set_run_project(run_id, project):
-            return err(404, "not_found", "run not found", request)
-        _audit_api(request, "run_project_set", run_id, {"project": project})
-        logger.info("run %s project set to %r", run_id, project)
+        fields_set = body.model_fields_set
+        if not fields_set:
+            return err(422, "validation", "no fields to update", request)
+        # 모든 검증을 먼저 끝낸 뒤 mutate — goal_id 422가 project 변경을
+        # 부분 적용하는 것을 막는다(M4).
+        new_project: str | None = None
+        if "project" in fields_set:
+            new_project = "" if body.project is None else budget_scope.clean_scope_id(body.project)
+        new_goal: str | None = None
+        if "goal_id" in fields_set:
+            gid = (body.goal_id or "").strip()
+            if gid:
+                goal_row = store.get_goal(gid)
+                if goal_row is None:
+                    return err(422, "validation", "goal not found", request)
+                if str(goal_row.get("status") or "") == "archived":
+                    return err(422, "validation", "goal is archived", request)
+            new_goal = gid
+        if new_project is not None:
+            if not store.set_run_project(run_id, new_project):
+                return err(404, "not_found", "run not found", request)
+            _audit_api(request, "run_project_set", run_id, {"project": new_project})
+            logger.info("run %s project set to %r", run_id, new_project)
+        if new_goal is not None:
+            if not store.set_run_goal(run_id, new_goal):
+                return err(404, "not_found", "run not found", request)
+            _audit_api(request, "run_goal_set", run_id, {"goal_id": new_goal})
+            logger.info("run %s goal set to %r", run_id, new_goal)
         d = run_detail(run_id)
         return JSONResponse(content=d or {"ok": True})

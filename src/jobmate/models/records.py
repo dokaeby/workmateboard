@@ -27,6 +27,8 @@ class Run(BaseModel):
     # agents 레지스트리 태깅 — ''/미설정이면 미귀속. best-effort 귀속이며
     # 세션→에이전트 자동 추론은 하지 않는다(POST /runs의 agent_id 명시만).
     agent_id: str = ""
+    # goals 계층 태깅 — 명시 goal_id → 프로젝트 goal_id → NULL 순으로 해석.
+    goal_id: str = ""
 
 
 class StageRun(BaseModel):

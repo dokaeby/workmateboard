@@ -29,6 +29,9 @@ interface ProjectOverviewItem {
 }
 interface OverviewResponse { items?: ProjectOverviewItem[] }
 
+/** /goals 항목 — 프로젝트 생성 폼의 목표(goal_id) 선택용 부분 타입. */
+interface GoalOption { id: string; title?: string }
+
 interface ProjectDetail {
   project?: { id?: string; name?: string };
   sessions?: unknown[];
@@ -124,9 +127,18 @@ function NewProjectForm({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [color, setColor] = useState("");
   const [goal, setGoal] = useState("");
+  const [goalId, setGoalId] = useState("");
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  // 목표 트리에서 goal_id로 연결할 목표 목록 (없으면 선택 UI를 숨긴다).
+  const goals = useQuery({
+    queryKey: ["goals"],
+    queryFn: () => apiGet<{ items?: GoalOption[] }>("/goals"),
+    staleTime: 60000,
+    retry: false,
+  });
+  const goalOptions = (goals.data?.items || []).filter((g) => g && g.id);
   const submit = async () => {
     if (!name.trim()) return;
     setBusy(true); setMsg("");
@@ -135,9 +147,10 @@ function NewProjectForm({ onDone }: { onDone: () => void }) {
         name: name.trim(),
         color: color.trim() || undefined,
         goal: goal.trim() || undefined,
+        goal_id: goalId || undefined,
         target_count: Number(target) || 0,
       });
-      setName(""); setColor(""); setGoal(""); setTarget("");
+      setName(""); setColor(""); setGoal(""); setGoalId(""); setTarget("");
       qc.invalidateQueries({ queryKey: ["projects"] });
       onDone();
     } catch (e) {
@@ -153,6 +166,16 @@ function NewProjectForm({ onDone }: { onDone: () => void }) {
           className="w-32 rounded-md border border-border bg-surface px-2 py-1.5 text-sm" />
         <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder={t("proj.goal", "목표")}
           className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-sm" />
+        {goalOptions.length > 0 && (
+          <select value={goalId} onChange={(e) => setGoalId(e.target.value)}
+            aria-label={t("proj.linkedGoal", "연결된 목표")}
+            className="w-36 rounded-md border border-border bg-surface px-2 py-1.5 text-sm">
+            <option value="">{t("proj.noLinkedGoal", "목표 연결 없음")}</option>
+            {goalOptions.map((g) => (
+              <option key={g.id} value={g.id}>{g.title || g.id}</option>
+            ))}
+          </select>
+        )}
         <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder={t("proj.target", "목표 세션 수")}
           type="number" className="w-32 rounded-md border border-border bg-surface px-2 py-1.5 text-sm" />
       </div>

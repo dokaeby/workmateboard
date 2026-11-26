@@ -7,6 +7,7 @@ import json
 import uuid
 from typing import Any
 
+from ..models import WorkflowSpec
 from .util import _iso, _loads, _now
 
 
@@ -145,38 +146,201 @@ class BuilderStoreMixin:
                 (_iso(_now()), error[:300], connector_id),
             )
 
-    # ---- custom_workflows (비주얼 빌더 WorkflowSpec) ----
+    # ---- custom_workflows (비주얼 빌더 WorkflowSpec) + workflow_revisions ----
+    @staticmethod
+    def _custom_workflow_json(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        d["spec"] = _loads(d.get("spec") or "{}")
+        try:
+            d["latest_revision"] = int(d.get("latest_revision") or 0)
+        except (TypeError, ValueError):
+            d["latest_revision"] = 0
+        return d
+
     def upsert_custom_workflow(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+        """레거시 호환 저장 — 내부적으로 save_custom_workflow에 위임해
+        리비전도 함께 남긴다(리비전 없는 spec 갱신 경로를 없애기 위함)."""
+        self.save_custom_workflow(name, spec, note="upsert")
+        row = self.get_custom_workflow(name)
+        return row if row is not None else {"name": name, "spec": spec}
+
+    def save_custom_workflow(
+        self,
+        name: str,
+        spec: dict[str, Any],
+        *,
+        base_revision: int | None = None,
+        note: str = "",
+        created_by: str = "",
+    ) -> dict[str, Any]:
+        """WorkflowSpec 저장 + append-only 리비전 기록 (Paperclip document
+        versioning 포팅).
+
+        - base_revision이 주어지고 현재 latest_revision과 다르면
+          {"ok": False, "conflict": True, "current_revision": N} — 409 CAS.
+        - base_revision 생략 시 항상 latest+1 리비전을 추가한다
+          (첫 저장은 revision 1).
+        - 성공 시 custom_workflows.spec/latest_revision/updated_at을 갱신하고
+          workflow_revisions에 (name, revision) 행을 append한다.
+          리비전 행은 절대 재작성하지 않는다."""
         now = _iso(_now())
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO custom_workflows(name,spec,created_at) VALUES(?,?,?)"
-                " ON CONFLICT(name) DO UPDATE SET spec=excluded.spec",
-                (name, json.dumps(spec, ensure_ascii=False), now),
-            )
-        return {"name": name, "spec": spec, "created_at": now}
+        spec_json = json.dumps(spec, ensure_ascii=False)
+        try:
+            with self.tx() as c:
+                row = c.execute(
+                    "SELECT latest_revision FROM custom_workflows WHERE name=?", (name,)
+                ).fetchone()
+                latest = int(row["latest_revision"] or 0) if row is not None else 0
+                if row is not None and base_revision is not None:
+                    try:
+                        base = int(base_revision)
+                    except (TypeError, ValueError):
+                        base = -1
+                    if base != latest:
+                        return {
+                            "ok": False,
+                            "conflict": True,
+                            "current_revision": latest,
+                        }
+                new_rev = latest + 1
+                if row is None:
+                    c.execute(
+                        "INSERT INTO custom_workflows"
+                        "(name,spec,created_at,latest_revision,updated_at)"
+                        " VALUES(?,?,?,?,?)",
+                        (name, spec_json, now, new_rev, now),
+                    )
+                else:
+                    cur = c.execute(
+                        "UPDATE custom_workflows SET spec=?, latest_revision=?,"
+                        " updated_at=? WHERE name=?",
+                        (spec_json, new_rev, now, name),
+                    )
+                    if int(getattr(cur, "rowcount", 0) or 0) <= 0:
+                        # SELECT~UPDATE 사이 동시 삭제 — 리비전만 남는
+                        # 고아 행과 false success를 막기 위해 conflict 반환.
+                        return {
+                            "ok": False,
+                            "conflict": True,
+                            "current_revision": 0,
+                        }
+                c.execute(
+                    "INSERT INTO workflow_revisions"
+                    "(id,name,revision,spec,note,created_by,created_at)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex[:12],
+                        name,
+                        new_rev,
+                        spec_json,
+                        str(note or "")[:500],
+                        str(created_by or "")[:200],
+                        now,
+                    ),
+                )
+        except self._integrity_errors:
+            # UNIQUE(name, revision) 충돌 — 동시 저장 경합. 현재 latest를
+            # 다시 읽어 conflict로 보고한다(리비전은 이미 append됐을 수 있으나
+            # latest+1 재시도는 호출자 몫 — 여기서는 안전하게 conflict 반환).
+            cur = self._conn.execute(
+                "SELECT latest_revision FROM custom_workflows WHERE name=?", (name,)
+            ).fetchone()
+            latest = int(cur["latest_revision"] or 0) if cur is not None else 0
+            return {"ok": False, "conflict": True, "current_revision": latest}
+        return {"ok": True, "revision": new_rev, "current_revision": new_rev}
 
     def list_custom_workflows(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT name,spec,created_at FROM custom_workflows ORDER BY name"
-        ).fetchall()
-        out = []
-        for r in rows:
-            spec = _loads(r["spec"])
-            out.append({"name": r["name"], "spec": spec, "created_at": r["created_at"]})
-        return out
+        rows = self._conn.execute("SELECT * FROM custom_workflows ORDER BY name").fetchall()
+        return [self._custom_workflow_json(r) for r in rows]
 
     def get_custom_workflow(self, name: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM custom_workflows WHERE name=?", (name,)).fetchone()
+        return self._custom_workflow_json(row) if row else None
+
+    # ---- workflow_revisions (append-only spec 이력) ----
+    @staticmethod
+    def _workflow_revision_json(r: Any, *, with_spec: bool = False) -> dict[str, Any]:
+        d = dict(r)
+        try:
+            d["revision"] = int(d.get("revision") or 0)
+        except (TypeError, ValueError):
+            d["revision"] = 0
+        if with_spec:
+            d["spec"] = _loads(d.get("spec") or "{}")
+        else:
+            # 목록 응답은 spec 전문 대신 미리보기만 — spec은 전체가 클 수 있다.
+            raw = str(d.pop("spec", "") or "")
+            d["spec_preview"] = raw[:200]
+        return d
+
+    def list_custom_workflow_revisions(self, name: str) -> list[dict[str, Any]]:
+        """리비전 목록 — 최신순. spec은 spec_preview(200자)로 대체."""
+        rows = self._conn.execute(
+            "SELECT id,name,revision,spec,note,created_by,created_at"
+            " FROM workflow_revisions WHERE name=? ORDER BY revision DESC",
+            (name,),
+        ).fetchall()
+        return [self._workflow_revision_json(r) for r in rows]
+
+    def get_custom_workflow_revision(self, name: str, revision: int) -> dict[str, Any] | None:
+        """특정 리비전의 전체 spec 조회."""
         row = self._conn.execute(
-            "SELECT name,spec,created_at FROM custom_workflows WHERE name=?", (name,)
+            "SELECT id,name,revision,spec,note,created_by,created_at"
+            " FROM workflow_revisions WHERE name=? AND revision=?",
+            (name, int(revision)),
         ).fetchone()
-        if not row:
-            return None
-        return {"name": row["name"], "spec": _loads(row["spec"]), "created_at": row["created_at"]}
+        return self._workflow_revision_json(row, with_spec=True) if row else None
+
+    def restore_custom_workflow_revision(
+        self, name: str, revision: int, *, created_by: str = "", note: str = ""
+    ) -> dict[str, Any]:
+        """restore-as-new-revision — 과거 리비전 spec을 최신+1로 복제.
+
+        이력은 절대 재작성하지 않는다. 반환 dict:
+          성공 {"ok": True, "name", "revision"}
+          실패 {"ok": False, "reason": "not_found"|"invalid_spec"|
+                "conflict"|"save_failed", "current_revision"?}
+        reason을 구분해 반환한다 — 호출자가 404/422/409를 정확히 매핑할 수
+        있게(None 단일 반환은 conflict를 404로 오표기했다). 복원 대상 spec은
+        WorkflowSpec으로 재검증하고 spec.key==name을 요구한다 — 레거시/
+        손상 spec이 최신 리비전이 되는 것을 막는다."""
+        rev = self.get_custom_workflow_revision(name, revision)
+        if rev is None:
+            return {"ok": False, "reason": "not_found"}
+        spec = rev.get("spec")
+        if not isinstance(spec, dict):
+            return {"ok": False, "reason": "invalid_spec"}
+        try:
+            ws = WorkflowSpec.model_validate(spec)
+        except Exception:
+            return {"ok": False, "reason": "invalid_spec"}
+        if ws.key != name:
+            return {"ok": False, "reason": "invalid_spec"}
+        auto_note = note or f"restore revision {int(revision)}"
+        res = self.save_custom_workflow(
+            name,
+            ws.model_dump(mode="json"),
+            note=auto_note,
+            created_by=created_by,
+        )
+        if not res.get("ok"):
+            if res.get("conflict"):
+                return {
+                    "ok": False,
+                    "reason": "conflict",
+                    "current_revision": res.get("current_revision"),
+                }
+            return {"ok": False, "reason": "save_failed"}
+        return {"ok": True, "name": name, "revision": int(res["revision"])}
 
     def delete_custom_workflow(self, name: str) -> bool:
+        """워크플로 삭제 — 리비전 이력도 함께 삭제(cascade).
+
+        리비전은 spec의 파생 이력이라 워크플로 없이 보존할 의미가 없고,
+        고아 리비전이 최신 복원 경로를 오염시키는 것을 막는다."""
         with self.tx() as c:
             cur = c.execute("DELETE FROM custom_workflows WHERE name=?", (name,))
+            c.execute("DELETE FROM workflow_revisions WHERE name=?", (name,))
         return cur.rowcount > 0
 
     # ---- triggers (세션 상태 전이 자동화) ----

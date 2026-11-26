@@ -1,0 +1,91 @@
+/* goals 조직도 — agents.css의 커넥터 라인 기법을 goal- 접두어로 이식.
+ * 구조: ul.gld-scroll > ul.gld-tree > li(노드 카드 + ul.gld-list 자식들). */
+
+.gld-scroll {
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.gld-tree,
+.gld-list {
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  padding: 28px 0 0;
+  list-style: none;
+  position: relative;
+}
+
+.gld-tree {
+  padding-top: 0;
+}
+
+.gld-tree > li,
+.gld-list > li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  padding: 28px 8px 0;
+  flex: none;
+}
+
+.gld-tree > li {
+  padding-top: 0;
+}
+
+/* 루트 노드 위쪽에는 연결선이 없다. */
+.gld-tree > li::before,
+.gld-tree > li::after {
+  display: none;
+}
+
+/* 자식 li 상단: 가운데서 오른쪽 끝까지 수평 바 + 중심 수직 스텁. */
+.gld-list > li::before,
+.gld-list > li::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 50%;
+  width: 50%;
+  height: 28px;
+  border-top: 2px solid var(--color-border);
+}
+.gld-list > li::after {
+  right: auto;
+  left: 50%;
+  border-left: 2px solid var(--color-border);
+}
+
+/* 외쪽 절반선 제거 — 첫 자식의 왼쪽, 마지막 자식의 오른쪽. */
+.gld-list > li:first-child::before,
+.gld-list > li:last-child::after {
+  border: 0 none;
+}
+.gld-list > li:last-child::before {
+  border-right: 2px solid var(--color-border);
+  border-radius: 0 8px 0 0;
+}
+.gld-list > li:first-child::after {
+  border-radius: 8px 0 0 0;
+}
+
+/* 자식이 하나뿐이면 수평 바 없이 수직선만 남긴다. */
+.gld-list > li:only-child::before,
+.gld-list > li:only-child::after {
+  display: none;
+}
+.gld-list > li:only-child {
+  padding-top: 0;
+}
+
+/* 부모 카드 아래 → 자식 행 위로 내려오는 수직선 (자식 ul의 padding 영역). */
+.gld-kids::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 28px;
+  border-left: 2px solid var(--color-border);
+}

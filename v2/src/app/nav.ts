@@ -33,6 +33,7 @@ export const NAV_ITEMS: NavItem[] = [
   { view: "builder", label: "워크플로 빌더", icon: "🧩", minRole: "lead" },
   { view: "team", label: "팀", icon: "👥", minRole: "lead" },
   { view: "agents", label: "에이전트", icon: "🕸", minRole: "lead" },
+  { view: "goals", label: "목표", icon: "🎯" },
   { view: "audit", label: "감사 로그", icon: "🔍", minRole: "admin" },
   { view: "settings", label: "설정", icon: "⚙" },
 ];

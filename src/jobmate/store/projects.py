@@ -25,9 +25,11 @@ class ProjectStoreMixin:
         description: str = "",
         goal: str = "",
         target_count: int = 0,
+        goal_id: str | None = None,
         created_by: str = "",
     ) -> dict[str, Any] | None:
-        """프로젝트 생성. name은 trim 후 lower() 기준 중복 시 None."""
+        """프로젝트 생성. name은 trim 후 lower() 기준 중복 시 None.
+        goal_id는 goals.id 참조(존재 검증은 라우트 계층)."""
         name = name.strip()[:200]
         if not name:
             return None
@@ -35,11 +37,12 @@ class ProjectStoreMixin:
             return None
         pid = uuid.uuid4().hex[:12]
         now = _iso(_now())
+        gid = (goal_id or "").strip()[:64] or None
         try:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO projects(id,name,color,description,goal,target_count,"
-                    "created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    "goal_id,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         pid,
                         name,
@@ -47,6 +50,7 @@ class ProjectStoreMixin:
                         description.strip()[:2000],
                         goal.strip()[:500],
                         int(target_count or 0),
+                        gid,
                         created_by[:200],
                         now,
                     ),
@@ -72,7 +76,8 @@ class ProjectStoreMixin:
         return self._project_json(row) if row else None
 
     def update_project(self, project_id: str, **fields: Any) -> dict[str, Any] | None:
-        """name/color/description/goal/target_count 부분 갱신. name 변경 시 ci 중복 검사."""
+        """name/color/description/goal/target_count/goal_id 부분 갱신.
+        name 변경 시 ci 중복 검사. goal_id=None은 해제."""
         proj = self.get_project(project_id)
         if proj is None:
             return None
@@ -96,6 +101,9 @@ class ProjectStoreMixin:
                 updates["target_count"] = max(0, int(fields["target_count"] or 0))
             except (TypeError, ValueError):
                 return None
+        if "goal_id" in fields:
+            gv = fields["goal_id"]
+            updates["goal_id"] = (str(gv).strip()[:64] or None) if gv else None
         if not updates:
             return proj
         sets = ", ".join(f"{k}=?" for k in updates)

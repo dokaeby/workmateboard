@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +23,7 @@ from .agents import AgentStoreMixin
 from .budgets import BudgetStoreMixin
 from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
+from .goals import GoalStoreMixin
 from .inbox import InboxStoreMixin
 from .projects import ProjectStoreMixin
 from .radar import RadarStoreMixin
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS runs (
   created_by TEXT NOT NULL DEFAULT '',
   project TEXT NOT NULL DEFAULT '',
   agent_id TEXT,
+  goal_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -404,11 +408,30 @@ CREATE TABLE IF NOT EXISTS connectors (
 );
 
 -- custom_workflows: 비주얼 빌더로 만든 WorkflowSpec 영속화
+-- latest_revision/updated_at은 workflow_revisions append-only 이력의
+-- 현재 포인터 — spec 본문은 항상 최신 리비전과 동기화된다.
 CREATE TABLE IF NOT EXISTS custom_workflows (
   name TEXT PRIMARY KEY,
   spec TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  latest_revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
 );
+
+-- workflow_revisions: WorkflowSpec append-only 버전 이력 (Paperclip document
+-- versioning 포팅) — 리비전은 절대 재작성하지 않고, 복원은 새 리비전으로
+-- 추가한다. UNIQUE(name, revision)가 CAS 직렬화의 최후 보루.
+CREATE TABLE IF NOT EXISTS workflow_revisions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  spec TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(name, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_revisions_name ON workflow_revisions(name);
 
 -- triggers: 세션 상태 전이 기반 자동화
 CREATE TABLE IF NOT EXISTS triggers (
@@ -464,6 +487,7 @@ CREATE TABLE IF NOT EXISTS projects (
   description TEXT NOT NULL DEFAULT '',
   goal TEXT NOT NULL DEFAULT '',
   target_count INTEGER NOT NULL DEFAULT 0,
+  goal_id TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
@@ -539,6 +563,22 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS idx_agents_reports_to ON agents(reports_to);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+
+-- goals: 목표 계층 (Paperclip goals 포팅) — parent_id 자기참조 트리,
+-- status(active|done|archived). FK는 두지 않고 앱 계층이 존재/사이클을
+-- 검증한다(agents.reports_to와 동일 패턴 — SQLite FK 미강제 커넥션 대비).
+CREATE TABLE IF NOT EXISTS goals (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  parent_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
+CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -555,6 +595,7 @@ CREATE TABLE IF NOT EXISTS runs (
   created_by TEXT NOT NULL DEFAULT '',
   project TEXT NOT NULL DEFAULT '',
   agent_id TEXT,
+  goal_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -897,11 +938,30 @@ CREATE TABLE IF NOT EXISTS connectors (
 );
 
 -- custom_workflows: 비주얼 빌더로 만든 WorkflowSpec 영속화
+-- latest_revision/updated_at은 workflow_revisions append-only 이력의
+-- 현재 포인터 — spec 본문은 항상 최신 리비전과 동기화된다.
 CREATE TABLE IF NOT EXISTS custom_workflows (
   name TEXT PRIMARY KEY,
   spec TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  latest_revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
 );
+
+-- workflow_revisions: WorkflowSpec append-only 버전 이력 (Paperclip document
+-- versioning 포팅) — 리비전은 절대 재작성하지 않고, 복원은 새 리비전으로
+-- 추가한다. UNIQUE(name, revision)가 CAS 직렬화의 최후 보루.
+CREATE TABLE IF NOT EXISTS workflow_revisions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  spec TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(name, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_revisions_name ON workflow_revisions(name);
 
 -- triggers: 세션 상태 전이 기반 자동화
 CREATE TABLE IF NOT EXISTS triggers (
@@ -957,6 +1017,7 @@ CREATE TABLE IF NOT EXISTS projects (
   description TEXT NOT NULL DEFAULT '',
   goal TEXT NOT NULL DEFAULT '',
   target_count INTEGER NOT NULL DEFAULT 0,
+  goal_id TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
@@ -1030,6 +1091,20 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS idx_agents_reports_to ON agents(reports_to);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+
+-- goals: 목표 계층 (Paperclip goals 포팅) — SQLite판과 동일 구조
+CREATE TABLE IF NOT EXISTS goals (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  parent_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
+CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1111,6 +1186,7 @@ class Store(
     BudgetStoreMixin,
     WakeupStoreMixin,
     AgentStoreMixin,
+    GoalStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -1145,6 +1221,9 @@ class Store(
         self._migrate_budget_incident_index()
         self._migrate_wakeup_idempotency_index()
         self._migrate_agent_name_index()
+        self._migrate_goal_columns()
+        self._migrate_deferred_wakeup_scopes()
+        self._migrate_workflow_version_columns()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -1155,7 +1234,8 @@ class Store(
         try:
             if self._pg:
                 rows = self._conn.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name=?",
+                    "SELECT column_name FROM information_schema.columns"
+                    " WHERE table_name=? AND table_schema = current_schema()",
                     (table,),
                 ).fetchall()
                 have = {r["column_name"] for r in rows}
@@ -1322,6 +1402,170 @@ class Store(
                 )
         except Exception as e:
             logger.warning("agents name unique index skipped: %s", e)
+
+    def _migrate_goal_columns(self) -> None:
+        """기존 DB의 runs/projects에 goal_id 컬럼 보강 (Phase-3 goals)."""
+        self._ensure_columns("runs", {"goal_id": "TEXT"})
+        self._ensure_columns("projects", {"goal_id": "TEXT"})
+
+    def _migrate_deferred_wakeup_scopes(self) -> None:
+        """goal_id 도입으로 바뀐 scope_key 형식에 맞춰 deferred wakeup 재계산.
+
+        scope_key_for의 digest가 (agent_id, goal_id, input)을 포함하도록
+        바뀌면서, goal_id 미포함 구형식으로 저장된 status='deferred' 행은
+        on_run_finished의 scope 조회와 영원히 매칭되지 않아 고착된다.
+        payload(input/agent_id/goal_id)에서 scope_key를 재계산해 갱신하고,
+        payload에 goal_id가 없으면 프로젝트 폴백 규칙(resolve_run_goal_id와
+        동일: input.goal_id → project→projects.goal_id, archived 제외)으로
+        보정해 payload에도 기록한다 — promote 경로의 scope 계산과 일치시키기
+        위함. payload를 해석할 수 없는 행은 재시도해도 복구되지 않으므로
+        failed로 마감한다. 행 단위 best-effort — 실패는 경고만 남긴다
+        (_migrate_* 패턴과 동일)."""
+        try:
+            from ..wakeups import scope_key_for  # 지연 import — 순환 방지
+        except Exception as e:
+            logger.warning("deferred wakeup scope migration skipped: %s", e)
+            return
+        try:
+            rows = self._conn.execute(
+                "SELECT id, scope_key, payload FROM wakeup_requests WHERE status='deferred'"
+            ).fetchall()
+        except Exception as e:
+            logger.warning("deferred wakeup scope scan failed: %s", e)
+            return
+        fixed = failed = 0
+        for r in rows:
+            wid = str(r["id"])
+            try:
+                payload = json.loads(str(r["payload"] or ""))
+            except (ValueError, TypeError):
+                payload = None
+            inp = payload.get("input") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict) or not isinstance(inp, dict):
+                # promote 경로도 같은 이유로 failed 마감한다 — 여기서 미리
+                # 마감해 고착 deferred를 남기지 않는다.
+                try:
+                    self.fail_wakeup(wid)
+                    failed += 1
+                except Exception as e:
+                    logger.warning("deferred wakeup %s fail-mark failed: %s", wid, e)
+                continue
+            try:
+                # scope_key = "{workflow_key}:{digest}" — digest는 마지막
+                # ':' 뒤 16hex. workflow_key는 ':'를 포함하지 않는다.
+                wf = str(r["scope_key"] or "").rsplit(":", 1)[0]
+                agent_id = str(payload.get("agent_id") or "")
+                gid = str(payload.get("goal_id") or "").strip()[:64]
+                payload_changed = False
+                if not gid:
+                    # admit_run과 동일한 폴백 해석 — project 태그의 goal.
+                    gid = self.resolve_run_goal_id(dict(inp), "")
+                    if gid and not self._goal_usable(gid):
+                        gid = ""
+                    if gid:
+                        payload["goal_id"] = gid
+                        payload_changed = True
+                new_scope = scope_key_for(wf, inp, agent_id, gid)
+                if new_scope == str(r["scope_key"] or "") and not payload_changed:
+                    continue
+                new_payload = json.dumps(payload, ensure_ascii=False, default=str)
+                with self.tx() as c:
+                    c.execute(
+                        "UPDATE wakeup_requests SET scope_key=?, payload=?"
+                        " WHERE id=? AND status='deferred'",
+                        (new_scope, new_payload, wid),
+                    )
+                fixed += 1
+            except Exception as e:
+                failed += 1
+                logger.warning("deferred wakeup %s scope recompute failed: %s", wid, e)
+        if fixed or failed:
+            logger.info(
+                "deferred wakeup scope migration: fixed=%d failed=%d total=%d",
+                fixed,
+                failed,
+                len(rows),
+            )
+
+    def _migrate_workflow_version_columns(self) -> None:
+        """custom_workflows에 latest_revision/updated_at 보강 + 기존 spec 백필.
+
+        CREATE TABLE IF NOT EXISTS는 기존 테이블을 변경하지 않으므로 컬럼은
+        _ensure_columns로 추가하고, 리비전 이력이 없는 기존 행은 현재 spec을
+        revision 1(note='backfill')로 복원한다 — 이후 모든 저장이
+        latest+1 append-only 리비전으로 이어진다."""
+        self._ensure_columns(
+            "custom_workflows",
+            {
+                "latest_revision": "INTEGER NOT NULL DEFAULT 0",
+                "updated_at": "TEXT",
+            },
+        )
+        self._backfill_workflow_revisions()
+
+    def _backfill_workflow_revisions(self) -> None:
+        """workflow_revisions가 비어 있는 custom_workflows 행에 revision 1 생성.
+
+        관용적 마이그레이션 — 실패해도 기동을 막지 않고 경고만 남긴다
+        (_migrate_* 패턴과 동일). latest_revision도 함께 동기화한다."""
+        try:
+            rows = self._conn.execute(
+                "SELECT name, spec, created_at FROM custom_workflows"
+            ).fetchall()
+        except Exception as e:
+            logger.warning("workflow_revisions backfill scan failed: %s", e)
+            return
+        for r in rows:
+            # 행 단위 best-effort — 깨진 spec/이름 하나가 나머지 백필을
+            # 중단시키지 않게 한다.
+            try:
+                self._backfill_workflow_revision_row(r)
+            except Exception as e:
+                logger.warning(
+                    "workflow_revisions backfill row %s failed: %s",
+                    r["name"] if hasattr(r, "keys") else "?",
+                    e,
+                )
+
+    def _backfill_workflow_revision_row(self, r: Any) -> None:
+        name = str(r["name"])
+        rev_row = self._conn.execute(
+            "SELECT COALESCE(MAX(revision),0) AS m FROM workflow_revisions WHERE name=?",
+            (name,),
+        ).fetchone()
+        max_rev = int(rev_row["m"] or 0) if rev_row is not None else 0
+        if max_rev == 0:
+            now = _iso(_now())
+            with self.tx() as c:
+                c.execute(
+                    "INSERT INTO workflow_revisions"
+                    "(id,name,revision,spec,note,created_by,created_at)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex[:12],
+                        name,
+                        1,
+                        str(r["spec"]),
+                        "backfill",
+                        "",
+                        now,
+                    ),
+                )
+                c.execute(
+                    "UPDATE custom_workflows SET latest_revision=1,"
+                    " updated_at=COALESCE(updated_at, created_at) WHERE name=?",
+                    (name,),
+                )
+            logger.info("workflow_revisions backfill: %s -> revision 1", name)
+        else:
+            # 리비전은 있으나 latest_revision 포인터가 뒤처진 경우 동기화
+            with self.tx() as c:
+                c.execute(
+                    "UPDATE custom_workflows SET latest_revision=?"
+                    " WHERE name=? AND (latest_revision IS NULL"
+                    " OR latest_revision < ?)",
+                    (max_rev, name, max_rev),
+                )
 
     @property
     def _conn(self) -> Any:

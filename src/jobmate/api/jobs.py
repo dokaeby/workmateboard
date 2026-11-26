@@ -213,6 +213,9 @@ def _process_due_schedules(
                 job_payload=payload,
             )
             action = str(res.get("action") or "")
+            if action == "invalid_goal":
+                worker_logger.warning("schedule %s skipped: invalid goal %s", sid, res.get("error"))
+                continue
             if action != "created":
                 # 동일 scope 활성 run에 합류 — 스케줄은 claim됐으므로 재시도 없음
                 worker_logger.info(
@@ -634,6 +637,10 @@ def _create_and_run(
         version=WORKFLOWS[workflow].version,
         job_payload={"task": task},
     )
+    if res["action"] == "invalid_goal":
+        # 방어선 — 이 경로의 input_data는 goal_id를 복사하지 않으므로
+        # 실질 도달 불가. 도달 시 호출자의 실패/재시도 경로로 전파한다.
+        raise RuntimeError(f"invalid goal: {res.get('error')}")
     if res["action"] != "created":
         # 동일 scope 활성 run에 합류 — 새 실행 없이 기존 run id 반환
         return str(res.get("run_id") or "")

@@ -301,7 +301,7 @@ class AdminStoreMixin:
     def export_runs(self, since_iso: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT id,workflow_key,workflow_version,status,trace_id,error,"
-            "created_by,agent_id,created_at,updated_at FROM runs"
+            "created_by,agent_id,goal_id,created_at,updated_at FROM runs"
             " WHERE created_at >= ? ORDER BY created_at",
             (since_iso,),
         ).fetchall()

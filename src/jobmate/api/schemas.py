@@ -21,6 +21,9 @@ class RunCreateRequest(BaseModel):
     # agents 레지스트리 태깅 — runs.agent_id에 기록돼 에이전트별
     # runs_30d/cost_30d_usd 통계에 귀속된다. 미지정 시 NULL.
     agent_id: str = Field(default="", max_length=64)
+    # goals 계층 태깅 — runs.goal_id에 기록. 미지정 시 프로젝트의
+    # goal_id로 폴백하고, 그것도 없으면 NULL.
+    goal_id: str = Field(default="", max_length=64)
 
 
 class ApprovalRequest(BaseModel):
@@ -76,9 +79,11 @@ class ReportGenerateRequest(BaseModel):
 
 
 class RunPatchRequest(BaseModel):
-    """PATCH /runs/{id}, /agent-sessions/{key} — project 태그만 지원."""
+    """PATCH /runs/{id}, /agent-sessions/{key} — project/goal 태그만 지원."""
 
     project: str | None = Field(default=None, max_length=500)
+    # runs 전용 — agent-sessions PATCH는 project만 사용한다.
+    goal_id: str | None = Field(default=None, max_length=64)
 
 
 class UserRoleRequest(BaseModel):
@@ -93,6 +98,8 @@ class ProjectCreateRequest(BaseModel):
     description: str = Field(default="", max_length=2000)
     goal: str = Field(default="", max_length=500)
     target_count: int = Field(default=0, ge=0)
+    # goals.id 참조 — run 생성 시 goal_id 폴백 해석에 사용. null/빈 값 = 미연결.
+    goal_id: str | None = Field(default=None, max_length=64)
 
 
 class ProjectPatchRequest(BaseModel):
@@ -101,6 +108,7 @@ class ProjectPatchRequest(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     goal: str | None = Field(default=None, max_length=500)
     target_count: int | None = Field(default=None, ge=0)
+    goal_id: str | None = Field(default=None, max_length=64)
 
 
 class CommentCreateRequest(BaseModel):
@@ -128,6 +136,29 @@ class TriggerCreateRequest(BaseModel):
 class CustomWorkflowRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     spec: dict[str, Any] | str
+    # CAS — 현재 latest_revision과 다르면 409 revision_conflict.
+    # 생략 시 최신 리비전 위에 그대로 append(자동 저장과 동일).
+    base_revision: int | None = None
+    note: str = Field(default="", max_length=500)
+
+
+class GoalCreateRequest(BaseModel):
+    """POST /goals — title 필수, parent_id 선택(존재/비archived/무사이클)."""
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    parent_id: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
+
+
+class GoalPatchRequest(BaseModel):
+    """PATCH /goals/{id} — model_fields_set에 있는 필드만 부분 갱신.
+    parent_id=null/빈 문자열은 루트 해제."""
+
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    parent_id: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
 
 
 class CardCreateRequest(BaseModel):

@@ -202,12 +202,20 @@ def register(app: FastAPI, ctx: Any) -> None:
         lead = _lead_or_403(request)
         if isinstance(lead, JSONResponse):
             return lead
+        gid = (body.goal_id or "").strip()
+        if gid:
+            goal_row = store.get_goal(gid)
+            if goal_row is None:
+                return err(422, "validation", "goal not found", request)
+            if str(goal_row.get("status") or "") == "archived":
+                return err(422, "validation", "goal is archived", request)
         proj = store.create_project(
             body.name,
             color=body.color,
             description=body.description,
             goal=body.goal,
             target_count=body.target_count,
+            goal_id=gid or None,
             created_by=str(lead.get("email") or lead.get("id") or ""),
         )
         if proj is None:
@@ -241,6 +249,14 @@ def register(app: FastAPI, ctx: Any) -> None:
         if isinstance(lead, JSONResponse):
             return lead
         fields = body.model_dump(exclude_unset=True)
+        if "goal_id" in fields:
+            gid = str(fields["goal_id"] or "").strip()
+            if gid:
+                goal_row = store.get_goal(gid)
+                if goal_row is None:
+                    return err(422, "validation", "goal not found", request)
+                if str(goal_row.get("status") or "") == "archived":
+                    return err(422, "validation", "goal is archived", request)
         proj = store.update_project(project_id, **fields)
         if proj is None:
             return err(404, "not_found", "project not found or name conflict", request)
