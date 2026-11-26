@@ -15,6 +15,13 @@ from .store.db import Store
 
 _PERIOD_DAYS = {"daily": 1, "weekly": 7, "exec_daily": 1, "exec_weekly": 7}
 _EXEC_KINDS = ("exec_daily", "exec_weekly")
+REPORT_KIND_LABELS = {
+    "daily": "일일",
+    "exec_daily": "임원 일일",
+    "weekly": "주간",
+    "exec_weekly": "임원 주간",
+}
+_SEV_KO = {"high": "높음", "medium": "중간", "low": "낮음"}
 
 
 def _base_stats(store: Store, days: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -116,7 +123,7 @@ def _build_exec_report(store: Store, kind: str, days: int, now: datetime) -> dic
     if risk_items:
         sev = str(risk_items[0].get("severity") or "")
         highlights.append(
-            f"감지된 리스크 {len(risk_items)}건 (최고 심각도 {sev}): "
+            f"감지된 리스크 {len(risk_items)}건 (최고 심각도 {_SEV_KO.get(sev, sev)}): "
             f"{risk_items[0].get('title', '')}"
         )
     highlights.append(f"LLM 추정 비용 ${total_cost:.4f} (토큰 {total_in + total_out:,})")

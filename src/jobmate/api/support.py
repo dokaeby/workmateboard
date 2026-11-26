@@ -581,7 +581,7 @@ def _fire_trigger_action(
 
     run input/audit에는 세션 식별자(tool/session_key/project/status)만 넣고
     doing/ask/ended_summary 등 세션 본문은 절대 포함하지 않는다."""
-    from ..reports import build_report
+    from ..reports import REPORT_KIND_LABELS, build_report
 
     action = trig.get("action") or {}
     atype = str(action.get("type") or "")
@@ -644,7 +644,7 @@ def _fire_trigger_action(
         rid = store.save_report(kind, content)
         store.upsert_inbox_item(
             "report",
-            f"{kind} 리포트(트리거)",
+            f"{REPORT_KIND_LABELS.get(kind, kind)} 리포트(트리거)",
             body=(
                 f"runs={content['runs']['total']} failed={content['runs']['failed']} "
                 f"pending={content['approvals']['pending']}"
@@ -653,7 +653,10 @@ def _fire_trigger_action(
             dedupe_key=f"trigger-report:{tid}:{tool}:{skey}:{sess.get('status')}",
         )
         try:
-            messenger.notify(f"jobMate {kind} 리포트(트리거): run {content['runs']['total']}건")
+            messenger.notify(
+                f"jobMate {REPORT_KIND_LABELS.get(kind, kind)} 리포트(트리거): "
+                f"run {content['runs']['total']}건"
+            )
         except Exception:
             worker_logger.debug("messenger notify after trigger report failed", exc_info=True)
         worker_logger.info("trigger %s generated report id=%s kind=%s", tid, rid, kind)

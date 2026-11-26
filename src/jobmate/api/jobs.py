@@ -711,7 +711,7 @@ def _report_is_stale(store: Store, kind: str) -> bool:
 def _maybe_generate_reports(store: Store, settings: Settings, adapters: dict[str, Any]) -> None:
     """daily/exec_daily 20시간·weekly/exec_weekly 7일 주기로 자동 생성.
     생성 시 reports 테이블 저장 + 인박스 kind='report' + 메신저 알림(best-effort)."""
-    from ..reports import build_report
+    from ..reports import REPORT_KIND_LABELS, build_report
 
     for kind in ("daily", "exec_daily", "weekly", "exec_weekly"):
         try:
@@ -721,7 +721,7 @@ def _maybe_generate_reports(store: Store, settings: Settings, adapters: dict[str
             rid = store.save_report(kind, content)
             store.upsert_inbox_item(
                 "report",
-                f"{kind} 리포트 생성됨",
+                f"{REPORT_KIND_LABELS.get(kind, kind)} 리포트 생성됨",
                 body=(
                     f"runs={content['runs']['total']} failed={content['runs']['failed']} "
                     f"pending={content['approvals']['pending']}"
@@ -732,8 +732,9 @@ def _maybe_generate_reports(store: Store, settings: Settings, adapters: dict[str
             store.audit("", "system", "report_auto_generate", rid, {"kind": kind})
             worker_logger.info("auto report generated id=%s kind=%s", rid, kind)
             try:
+                kind_label = REPORT_KIND_LABELS.get(kind, kind)
                 messenger.notify(
-                    f"jobMate {kind} 리포트: run {content['runs']['total']}건 "
+                    f"jobMate {kind_label} 리포트: run {content['runs']['total']}건 "
                     f"(실패 {content['runs']['failed']}), "
                     f"승인 대기 {content['approvals']['pending']}"
                 )

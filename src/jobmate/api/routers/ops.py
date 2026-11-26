@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from ... import messenger
 from ...models import RunStatus
 from ...pricing import cost_usd
-from ...reports import build_report
+from ...reports import REPORT_KIND_LABELS, build_report
 from ...workflows import WORKFLOWS
 from ..schemas import (
     AskRequest,
@@ -336,7 +336,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         rid = store.save_report(body.kind, content)
         store.upsert_inbox_item(
             "report",
-            f"{body.kind} 리포트 생성됨",
+            f"{REPORT_KIND_LABELS.get(body.kind, body.kind)} 리포트 생성됨",
             body=f"runs={content['runs']['total']} failed={content['runs']['failed']}",
             link="/?view=reports",
             dedupe_key=f"report:{rid}",
@@ -344,8 +344,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         store.audit("", "api", "report_generate", rid, {"kind": body.kind})
         logger.info("report generated id=%s kind=%s", rid, body.kind)
         try:
+            kind_label = REPORT_KIND_LABELS.get(body.kind, body.kind)
             messenger.notify(
-                f"jobMate {body.kind} 리포트: run {content['runs']['total']}건 "
+                f"jobMate {kind_label} 리포트: run {content['runs']['total']}건 "
                 f"(실패 {content['runs']['failed']}), 승인 대기 {content['approvals']['pending']}"
             )
         except Exception:

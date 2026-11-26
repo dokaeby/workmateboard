@@ -286,7 +286,7 @@ def detect_risks(store: Store) -> dict[str, Any]:
     deduped: list[dict[str, Any]] = []
     for it in sorted(
         items,
-        key=lambda x: (_SEV_RANK.get(str(x["severity"]), 3), -(x["age_seconds"] or 0)),
+        key=lambda x: (_SEV_RANK.get(str(x["severity"]), 3), x["age_seconds"] or 0),
     ):
         k = (it["type"], it["ref_kind"], it["ref_id"])
         if k in seen:

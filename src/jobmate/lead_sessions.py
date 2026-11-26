@@ -99,25 +99,11 @@ def session_history(store: Store, tool: str, session_key: str) -> dict[str, Any]
     # 결정적 한국어 요약 — LLM 호출 없음
     tool = str(sess.get("tool") or "")
     parts = [f"이 세션({tool})은 {_fmt_duration(total_seconds)} 동안"]
-    state_str = ", ".join(
-        f"{k} {state_counts[k]}회"
-        for k in ("working", "decision", "rest", "ended")
-        if state_counts.get(k)
-    )
-    if state_str:
-        parts.append(f" {state_str}의 상태 전이를 거쳤고")
-    else:
-        parts.append(" 전이 이벤트가 거의 없었고")
     token_bits = []
     if tin:
         token_bits.append(f"입력 토큰 약 {tin / 1000:.1f}k")
     if tout:
         token_bits.append(f"출력 토큰 약 {tout / 1000:.1f}k")
-    if token_bits:
-        parts.append(", " + ", ".join(token_bits))
-    if est_cost is not None:
-        parts.append(f", 예상 비용 ${est_cost:.4f}")
-    parts.append(".")
     extras = []
     if decisions:
         extras.append(f"결정 요청 {decisions}회")
@@ -125,6 +111,22 @@ def session_history(store: Store, tool: str, session_key: str) -> dict[str, Any]
         extras.append(f"승인 응답 {approvals}회")
     if errors:
         extras.append(f"오류 {errors}건")
+    has_tail = bool(token_bits) or est_cost is not None or bool(extras)
+    state_str = ", ".join(
+        f"{k} {state_counts[k]}회"
+        for k in ("working", "decision", "rest", "ended")
+        if state_counts.get(k)
+    )
+    # 꼬리(토큰·비용·extras)가 없으면 연결어미 -고로 문장이 끊기지 않게 합니다체로 닫는다
+    if state_str:
+        parts.append(f" {state_str}의 상태 전이를 거쳤{'고' if has_tail else '습니다'}")
+    else:
+        parts.append(f" 전이 이벤트가 거의 없었{'고' if has_tail else '습니다'}")
+    if token_bits:
+        parts.append(", " + ", ".join(token_bits))
+    if est_cost is not None:
+        parts.append(f", 예상 비용 ${est_cost:.4f}")
+    parts.append(".")
     if extras:
         parts.append(" " + ", ".join(extras) + ".")
     summary = "".join(parts)

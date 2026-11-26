@@ -587,8 +587,8 @@ def radar_publish(ctx: FunctionContext) -> dict[str, Any]:
             f"{top.get('full_name', '')} ⭐{top.get('stars', 0)}",
             top.get("html_url", ""),
         )
-    if not written and repos:
-        _radar_notify(ctx, "SkillRadar 수집 실패", f"{date_str} 스냅샷 저장 실패")
+    # written이 비는 경우는 모든 플랫폼 스냅샷이 이미 있어 skip된 정상 중복
+    # 실행뿐이다(실제 저장 실패는 예외로 전파돼 run 실패로 알려진다).
     # KST 월요일 수집분에는 주간 digest 추가 발송
     if written and datetime.now(ZoneInfo("Asia/Seoul")).weekday() == 0:
         _radar_weekly_digest(ctx, date_str)

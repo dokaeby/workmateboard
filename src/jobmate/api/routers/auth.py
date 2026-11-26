@@ -296,7 +296,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(401, "unauthorized", "로그인이 필요합니다", request)
         owned = any(s["id"] == session_id for s in store.list_user_sessions(user["id"]))
         if not owned:
-            return err(404, "not_found", "session not found", request)
+            return err(404, "not_found", "세션을 찾을 수 없습니다", request)
         store.revoke_session(session_id)
         store.audit("", str(user.get("email") or "-"), "auth_session_revoke", session_id[:12], {})
         logger.info("session revoked: user=%s", user["id"])
