@@ -24,6 +24,23 @@
   --color-err-border: #fecaca;
 }
 
+/* 3D 보드 실행 중 노드의 컬러 오브와 동일한 무지개 스피너 */
+@keyframes jm-rainbow-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes jm-rainbow-hue {
+  to { filter: hue-rotate(360deg); }
+}
+.jm-spinner {
+  background: #cbd5e1; /* conic-gradient 미지원 폴백 */
+  background: conic-gradient(from 0deg,
+    transparent 0 8%, #8b5cf6 20%, #22d3ee 38%, #48f0a5 55%,
+    #f4b43c 72%, #ff5267 88%, transparent 100%);
+  animation:
+    jm-rainbow-spin 1.4s linear infinite,
+    jm-rainbow-hue 2.8s linear infinite;
+}
+
 html { color-scheme: light; }
 body {
   @apply bg-bg text-ink antialiased;

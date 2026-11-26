@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import type { ViewKey } from "../shared/api/types";
+import { Spinner } from "../shared/ui";
 import { VIEW_COMPONENTS } from "./viewComponents";
 
 /**
@@ -12,7 +13,7 @@ export function ViewLoader({ view }: { view: ViewKey }) {
   const C = VIEW_COMPONENTS[view];
   if (!C) return null;
   return (
-    <Suspense fallback={<div className="p-6 text-sm text-muted">로딩…</div>}>
+    <Suspense fallback={<Spinner />}>
       <C />
     </Suspense>
   );

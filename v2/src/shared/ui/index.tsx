@@ -69,10 +69,13 @@ export function Empty({ children }: { children: ReactNode }) {
 
 export function Spinner({ label }: { label?: string }) {
   const { t } = useI18n();
+  const text = label ?? t("ui.loading", "로딩…");
   return (
-    <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted">
-      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-border border-t-accent" />
-      {label ?? t("ui.loading", "로딩…")}
+    <div className="flex items-center justify-center gap-3 p-6" role="status">
+      <span className="jm-spinner inline-block h-9 w-9 flex-none rounded-full" aria-hidden="true" />
+      {label
+        ? <span className="text-sm text-muted">{label}</span>
+        : <span className="sr-only">{text}</span>}
     </div>
   );
 }
