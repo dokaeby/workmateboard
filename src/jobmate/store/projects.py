@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from .util import _iso, _now
+from .util import _iso, _now, clean_scope_id
 
 
 class ProjectStoreMixin:
@@ -121,6 +121,6 @@ class ProjectStoreMixin:
         with self.tx() as c:
             cur = c.execute(
                 "UPDATE runs SET project=? WHERE id=?",
-                (project.strip()[:200], run_id),
+                (clean_scope_id(project), run_id),
             )
         return cur.rowcount > 0

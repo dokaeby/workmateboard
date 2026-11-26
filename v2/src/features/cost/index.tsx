@@ -5,6 +5,7 @@ import { apiGet, apiHeaders } from "../../shared/api/client";
 import { useI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button } from "../../shared/ui";
 import { usd } from "../../shared/lib/format";
+import { BudgetSection } from "./budgets";
 import "./i18n";
 
 
@@ -111,7 +112,7 @@ export default function CostPage() {
 
   return (
     <div className="mx-auto max-w-5xl p-4">
-      <PageHead title={t("cost.title", "비용")} desc={t("cost.desc", "LLM/세션 비용 상세 — 월 예산은 설정에서 관리")}>
+      <PageHead title={t("cost.title", "비용")} desc={t("cost.desc", "LLM/세션 비용 상세 — 예산 정책은 아래에서 관리")}>
         <select
           value={days}
           onChange={(e) => setDays(e.target.value)}
@@ -198,6 +199,8 @@ export default function CostPage() {
           </Card>
         </>
       )}
+
+      <BudgetSection />
 
       <Card title={`${t("cost.llmTitle", "LLM 토큰 사용량")} (${llm.data?.days ?? 7}${t("common.days", "일")})`} className="mt-3">
         {llm.isLoading && <Spinner />}

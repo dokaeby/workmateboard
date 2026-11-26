@@ -138,6 +138,7 @@ export interface RunListItem {
   status: string;
   project?: string;
   created_at?: string;
+  coalesced_count?: number;
 }
 
 /** /workflows 응답 — office/triggers/playbooks 공용 (필드는 뷰마다 부분집합 사용). */

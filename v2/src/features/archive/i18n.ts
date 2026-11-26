@@ -37,6 +37,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "arch.shareCopied": "복사됨",
     "arch.shareOpen": "열기",
     "arch.shareExpires": "만료",
+    "arch.coalesced": "{n}건 병합",
   },
   en: {
     "arch.title": "Archive",
@@ -72,6 +73,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "arch.shareCopied": "Copied",
     "arch.shareOpen": "Open",
     "arch.shareExpires": "Expires",
+    "arch.coalesced": "{n} merged",
   },
 };
 

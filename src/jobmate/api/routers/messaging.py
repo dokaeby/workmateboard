@@ -50,6 +50,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _summarize_email = ctx._summarize_email
     _schedule_run_jobs = ctx._schedule_run_jobs
     _admin_user = ctx._admin_user
+    execute_run = ctx.execute_run
 
     # ---- calendar-agent: 멀티채널 웹훅·수신함·이벤트·알림예약 ----
     @app.post("/api/v1/webhooks/slack")
@@ -225,8 +226,19 @@ def register(app: FastAPI, ctx: Any) -> None:
             logger.warning("cron tick rejected: invalid credentials")
             return err(401, "unauthorized", "invalid cron credentials", request)
         _mark_cron_tick(store)
+
+        def _promote_schedule(new_run: Any, job_payload: dict[str, Any]) -> None:
+            """deferred wakeup promote 실행을 응답 후 BackgroundTasks로 위임.
+
+            서버리스에서 틱 핸들러 안에 run을 동기 실행하면 수 분짜리 run이
+            maxDuration을 넘어 함수가 죽고 run이 running에 고착된다.
+            _do_approve의 _sched_promoted와 동일한 패턴."""
+            background_tasks.add_task(
+                execute_run, new_run.id, new_run.workflow_key, job_payload, None
+            )
+
         # 고착 run 복구 + 보존 기간 정리 — 틱마다 호출하되 내부 스로틀 적용
-        _reap_stale_runs(store)
+        _reap_stale_runs(store, settings, llm, adapters, schedule=_promote_schedule)
         _retention_sweep(store)
         _process_pending_messages(store, settings, llm, adapters)
         _process_due_notification_jobs(store, adapters)
@@ -236,7 +248,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         _check_waiting_approvals(store, adapters)
         _maybe_poll_gmail(store, settings, adapters)
         radar_jobs: list = []
-        _maybe_daily_radar(store, settings, llm, adapters, defer=radar_jobs)
+        _maybe_daily_radar(
+            store, settings, llm, adapters, defer=radar_jobs, schedule=_promote_schedule
+        )
         _schedule_run_jobs(radar_jobs, background_tasks)
         trigger_jobs: list = []
         _maybe_check_triggers(store, settings, llm, adapters, defer=trigger_jobs)

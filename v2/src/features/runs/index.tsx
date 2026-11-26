@@ -263,6 +263,11 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
         <div className="flex items-center gap-2">
           <StatusBadge status={run.status} />
           <span className="text-sm font-medium">{run.workflow || run.workflow_key}</span>
+          {((run as unknown as { coalesced_count?: number }).coalesced_count ?? 0) > 0 && (
+            <Badge tone="muted">
+              {t("runs.coalesced", "{n}건 병합").replace("{n}", String((run as unknown as { coalesced_count?: number }).coalesced_count))}
+            </Badge>
+          )}
         </div>
         <Button variant="ghost" className="px-2 py-1 text-xs" onClick={onClose}>✕</Button>
       </div>
@@ -397,6 +402,9 @@ export default function RunsPage() {
                 <div className="text-xs text-muted">{r.id.slice(0, 8)} · {fmtTs(r.created_at)}</div>
               </div>
               {r.project && <Badge>{r.project}</Badge>}
+              {(r.coalesced_count ?? 0) > 0 && (
+                <Badge tone="muted">{t("runs.coalesced", "{n}건 병합").replace("{n}", String(r.coalesced_count))}</Badge>
+              )}
             </button>
           ))}
         </Card>

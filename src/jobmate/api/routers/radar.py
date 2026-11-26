@@ -286,6 +286,9 @@ def register(app: FastAPI, ctx: Any) -> None:
                 {"platform": p, "force": force, "auto_approve": auto_approve},
                 defer=jobs,
             )
-            ids.append(rid)
+            # 스코프드 예산 hard_stop 등으로 submit_run이 ""를 반환한 플랫폼은
+            # run이 생성되지 않았으므로 run_ids에 빈 문자열을 넣지 않는다.
+            if rid:
+                ids.append(rid)
         _schedule_run_jobs(jobs, background_tasks)
         return JSONResponse(status_code=202, content={"run_ids": ids, "platforms": platforms})

@@ -246,6 +246,34 @@ def test_retention_sweep_deletes_only_expired_terminal_data():
     assert rows[0]["processing_status"] == "processed"  # 행은 유지
 
 
+def test_retention_sweep_deletes_all_terminal_statuses():
+    """retention은 completed/failed 외의 종결 상태(rejected/cancelled/
+    budget_exhausted/needs_human)도 180일 경과 시 삭제하고,
+    waiting_approval 같은 비종결 상태는 보존한다."""
+    store = _store()
+    old = (datetime.now(UTC) - timedelta(days=200)).isoformat()
+
+    for i, st in enumerate(
+        (
+            RunStatus.REJECTED,
+            RunStatus.CANCELLED,
+            RunStatus.BUDGET_EXHAUSTED,
+            RunStatus.NEEDS_HUMAN,
+        )
+    ):
+        r = store.create_run("dev_review", "0.1.0", {"task": "t"}, trace_id=f"t{i}")
+        store.update_run(r.id, status=st)
+        _backdate(store, "UPDATE runs SET created_at=? WHERE id=?", r.id, old)
+
+    waiting = store.create_run("dev_review", "0.1.0", {"task": "t"}, trace_id="w")
+    store.update_run(waiting.id, status=RunStatus.WAITING_APPROVAL)
+    _backdate(store, "UPDATE runs SET created_at=? WHERE id=?", waiting.id, old)
+
+    counts = store.retention_sweep()
+    assert counts["runs"] == 4
+    assert store.get_run(waiting.id) is not None  # 승인 대기는 보존
+
+
 def test_retention_sweep_via_cron_tick_is_throttled():
     client, store, _ = _client()
     app_module._REAPER_STATE["last_at"] = 0.0

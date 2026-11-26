@@ -197,11 +197,14 @@ class WorkflowRunner:
             model=agent.model.model,
             prompt_version=prompt_version,
         )
+        # 실패한 시도도 토큰을 소비한다 — usage_acc에 누적해 except 경로에서도
+        # finish_stage에 기록한다(스코프드 예산의 stage_runs 집계 누락 방지).
+        usage_acc: dict[str, int] = {"tokens_in": 0, "tokens_out": 0}
         try:
             schema = SCHEMAS.get(agent.output_schema)
             user = self._build_user_prompt(state, stage, agent)
             out, usage, tool_execs = self._complete_stage_llm(
-                agent, schema, prompt_text, user, state, stage
+                agent, schema, prompt_text, user, state, stage, usage_acc=usage_acc
             )
             parsed = (
                 out
@@ -246,7 +249,25 @@ class WorkflowRunner:
                 update["escalate"] = ESCALATE_NEEDS_HUMAN
             return update
         except Exception as e:
-            self.store.finish_stage(stage_run.id, status=StageStatus.FAILED, error=str(e)[:500])
+            tok_in = int(usage_acc.get("tokens_in", 0) or 0)
+            tok_out = int(usage_acc.get("tokens_out", 0) or 0)
+            # tool-loop 중간 실패 등으로 소비된 토큰도 stage_runs에 남긴다 —
+            # scope_spend_usd가 stage_runs를 집계하므로 빠지면 예산 과소계상.
+            self.store.finish_stage(
+                stage_run.id,
+                status=StageStatus.FAILED,
+                error=str(e)[:500],
+                tokens_in=tok_in,
+                tokens_out=tok_out,
+            )
+            # 실패 시도 사용량도 run state 예산에 합산 — 재시도/종결 후
+            # budget_max_tokens·cost_budget 판정이 실소비를 반영하게 한다.
+            usage_update: dict[str, Any] = {
+                "tokens_in": state.get("tokens_in", 0) + tok_in,
+                "tokens_out": state.get("tokens_out", 0) + tok_out,
+                "cost_usd": state.get("cost_usd", 0.0)
+                + cost_usd(agent.model.model, tok_in, tok_out),
+            }
             self.store.audit(
                 run_id, f"agent:{agent.role}", "stage_error", stage.key, {"error": str(e)[:200]}
             )
@@ -259,10 +280,13 @@ class WorkflowRunner:
                 str(e)[:200],
             )
             if attempt >= agent.max_attempts:
-                return {"escalate": ESCALATE_FAILED}
+                return {"escalate": ESCALATE_FAILED, **usage_update}
             # 스키마/파싱 실패 — 재시도는 다음 attempt로 진행하기 위해
             # 에러 출력을 남기고 route가 재진입하도록 한다.
-            return {"stage_outputs": {stage.key: {"__retry__": True, "error": str(e)[:300]}}}
+            return {
+                "stage_outputs": {stage.key: {"__retry__": True, "error": str(e)[:300]}},
+                **usage_update,
+            }
 
     def _run_function_stage(self, state: HarnessState, stage: StageSpec) -> dict[str, Any]:
         run_id = state["run_id"]
@@ -296,7 +320,16 @@ class WorkflowRunner:
                 except (TypeError, ValueError):
                     fn_tokens_in = fn_tokens_out = 0
                     fn_cost = 0.0
-            self.store.finish_stage(stage_run.id, status=StageStatus.SUCCEEDED, output=out)
+            # function 단계 내부 LLM 호출 토큰도 stage_runs에 기록 —
+            # 스코프드 예산(scope_spend_usd)이 stage_runs를 집계하므로
+            # 여기서 빠지면 function 단계 지출이 예산에서 누락된다.
+            self.store.finish_stage(
+                stage_run.id,
+                status=StageStatus.SUCCEEDED,
+                output=out,
+                tokens_in=fn_tokens_in,
+                tokens_out=fn_tokens_out,
+            )
             update: dict[str, Any] = {
                 "stage_outputs": {stage.key: out},
                 "tokens_in": state.get("tokens_in", 0) + fn_tokens_in,
@@ -463,18 +496,24 @@ class WorkflowRunner:
         user: str,
         state: HarnessState,
         stage: StageSpec,
+        usage_acc: dict[str, int] | None = None,
     ) -> tuple[Any, dict[str, int], int]:
         """LLM 호출 + (agent.tools가 있으면) tool-call 루프.
 
         반환: (output, 누적 usage, 실행한 tool call 수).
         tools가 없는 에이전트는 기존과 동일하게 complete() 1회만 호출한다.
+        usage_acc를 넘기면 성공/실패와 무관하게 누적 사용량이 채워진다 —
+        호출부가 예외 경로에서도 소비된 토큰을 기록할 수 있게 하기 위함.
         """
         if not agent.tools:
             out, usage = self.llm.complete(
                 model=agent.model, system=system, user=user, schema=schema
             )
+            if usage_acc is not None:
+                usage_acc["tokens_in"] += usage.get("tokens_in", 0)
+                usage_acc["tokens_out"] += usage.get("tokens_out", 0)
             return out, usage, 0
-        return self._tool_loop(agent, schema, system, user, state, stage)
+        return self._tool_loop(agent, schema, system, user, state, stage, usage_acc=usage_acc)
 
     def _tool_loop(
         self,
@@ -484,10 +523,12 @@ class WorkflowRunner:
         user: str,
         state: HarnessState,
         stage: StageSpec,
+        usage_acc: dict[str, int] | None = None,
     ) -> tuple[Any, dict[str, int], int]:
         run_id = state["run_id"]
         tool_specs = self._tool_specs(agent)
-        usage_acc = {"tokens_in": 0, "tokens_out": 0}
+        if usage_acc is None:
+            usage_acc = {"tokens_in": 0, "tokens_out": 0}
         executed = 0
         convo = user
         out: Any = None

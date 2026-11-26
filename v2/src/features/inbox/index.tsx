@@ -20,6 +20,7 @@ const KIND_TONE: Record<string, "muted" | "ok" | "warn" | "err" | "accent"> = {
   schedule: "ok",
   report: "ok",
   budget_alert: "warn",
+  budget: "warn",
 };
 
 // 링크의 ?view= 파라미터 → ViewKey (레거시 VIEW_ALIASES: reports→inbox)
@@ -66,7 +67,7 @@ function inboxItemTitle(it: InboxItem, t: TFn): string {
 
 function kindLabel(kind: string, t: (k: string, f?: string) => string): string {
   const key = `k.${kind || "notification"}`;
-  const known = ["notification", "session_attention", "approval", "schedule", "report", "budget_alert"];
+  const known = ["notification", "session_attention", "approval", "schedule", "report", "budget_alert", "budget"];
   return known.includes(kind) ? t(key, kind) : kind || t("k.notification", "알림");
 }
 

@@ -10,7 +10,14 @@ from pydantic import BaseModel, Field
 class RunCreateRequest(BaseModel):
     workflow: str = "dev_review"
     task: str = Field(min_length=1, max_length=20_000)
+    # 프로젝트 태그 — runs.project 컬럼 + project 스코프 예산 귀속에 사용.
+    # 미지정 시 metadata.project로 폴백한다.
+    project: str = Field(default="", max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # wakeup coalescing — 동일 (workflow,input) 활성 run이 있으면 합류.
+    # force_new=true면 기존 run과 무관하게 deferred로 예약(종결 후 실행).
+    force_new: bool = False
+    idempotency_key: str = Field(default="", max_length=200)
 
 
 class ApprovalRequest(BaseModel):
@@ -130,3 +137,22 @@ class CardCreateRequest(BaseModel):
 class ShareCreateRequest(BaseModel):
     kind: Literal["run", "report", "insights"]
     ref_id: str = Field(default="", max_length=200)
+
+
+class BudgetPolicyRequest(BaseModel):
+    """PUT /budgets/policies/{scope_type}[/{scope_id}] — 부분 갱신.
+
+    amount_usd null/<=0이면 정책 비활성(is_active=0).
+    warn_percent/hard_stop_enabled/is_active의 명시 null은 미전송과
+    동일 — 기존 값을 유지한다(서비스 계층에서 UNSET으로 정규화)."""
+
+    amount_usd: float | None = Field(default=None, allow_inf_nan=False)
+    warn_percent: int | None = Field(default=None, ge=1, le=100)
+    hard_stop_enabled: bool | None = None
+    is_active: bool | None = None
+
+
+class BudgetIncidentResolveRequest(BaseModel):
+    action: Literal["keep_paused", "raise_budget_and_resume", "dismiss"]
+    amount_usd: float | None = Field(default=None, allow_inf_nan=False)
+    note: str = Field(default="", max_length=500)

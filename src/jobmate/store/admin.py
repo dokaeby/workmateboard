@@ -8,6 +8,12 @@ from typing import Any
 
 from .util import _clamp_limit, _iso, _loads, _now
 
+# retention 삭제 대상 run 상태 — wakeups._TERMINAL_STATUSES와 동일 집합.
+# 고정 SQL 조각(리터럴)이라 f-string 삽입해도 인젝션 위험이 없다.
+_TERMINAL_RUN_STATUSES_SQL = (
+    "('completed','failed','rejected','cancelled','budget_exhausted','needs_human')"
+)
+
 
 class AdminStoreMixin:
     def retention_sweep(self, now: datetime | None = None) -> dict[str, int]:
@@ -16,11 +22,17 @@ class AdminStoreMixin:
         - audit_events: created_at < now-90d 삭제
         - llm_usage: created_at < now-180d 삭제
         - auth_sessions: expires_at < now 삭제(만료 세션)
-        - runs/stage_runs: completed|failed 이고 created_at < now-180d 삭제
+        - runs/stage_runs: 종결 상태(completed|failed|rejected|cancelled|
+          budget_exhausted|needs_human — wakeups._TERMINAL_STATUSES와 동일)이고
+          created_at < now-180d 삭제
           (진행 중 queued/running/waiting_* 는 절대 삭제하지 않는다)
         - message_extractions: processed 이고 created_at < now-30d면
           source_text만 비움(행은 유지 — 재처리 방지용 키/상태 보존)
         - agent_session_events: created_at < now-30d 삭제
+        - wakeup_requests: finished_at < now-90d 삭제
+          (미완료 queued/deferred는 진행 중 요청일 수 있어 보존)
+        - budget_incidents: open 아닌 행 created_at < now-180d 삭제
+          (open 인시던트는 정책 감시 중이므로 보존)
         반환값: 테이블별 삭제/정리 건수."""
         now = now or _now()
         d30 = _iso(now - timedelta(days=30))
@@ -47,31 +59,41 @@ class AdminStoreMixin:
             # IN 리스트 대신 동일 조건의 서브쿼리로 지워 바인딩 변수 수를
             # 일정하게 유지한다(삭제 대상 수와 무관하게 단일 문장).
             cur = c.execute(
-                "DELETE FROM stage_runs WHERE run_id IN "
-                "(SELECT id FROM runs WHERE status IN ('completed','failed')"
+                "DELETE FROM stage_runs WHERE run_id IN "  # noqa: S608
+                f"(SELECT id FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL}"
                 " AND created_at < ?)",
                 (d180,),
             )
             counts["stage_runs"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute(
-                "DELETE FROM approvals WHERE run_id IN "
-                "(SELECT id FROM runs WHERE status IN ('completed','failed')"
+                "DELETE FROM approvals WHERE run_id IN "  # noqa: S608
+                f"(SELECT id FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL}"
                 " AND created_at < ?)",
                 (d180,),
             )
             counts["approvals"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute(
-                "DELETE FROM run_comments WHERE run_id IN "
-                "(SELECT id FROM runs WHERE status IN ('completed','failed')"
+                "DELETE FROM run_comments WHERE run_id IN "  # noqa: S608
+                f"(SELECT id FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL}"
                 " AND created_at < ?)",
                 (d180,),
             )
             counts["run_comments"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute(
-                "DELETE FROM runs WHERE status IN ('completed','failed') AND created_at < ?",
+                f"DELETE FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL} AND created_at < ?",  # noqa: S608
                 (d180,),
             )
             counts["runs"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM wakeup_requests WHERE finished_at IS NOT NULL AND finished_at < ?",
+                (d90,),
+            )
+            counts["wakeup_requests"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM budget_incidents WHERE status <> 'open' AND created_at < ?",
+                (d180,),
+            )
+            counts["budget_incidents"] = int(getattr(cur, "rowcount", 0) or 0)
         return counts
 
     # ---- agent_sessions 브릿지/헬스 집계 ----

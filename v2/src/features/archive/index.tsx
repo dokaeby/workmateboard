@@ -16,6 +16,7 @@ interface ArchiveItem {
   snippet?: string;
   created_at?: string;
   link?: string;
+  coalesced_count?: number;
 }
 interface ArchiveResponse { items?: ArchiveItem[]; query?: string }
 
@@ -203,6 +204,9 @@ export default function ArchivePage() {
                 ? t(KIND_LABEL_KEY[it.kind], KIND_LABEL_FALLBACK[it.kind] || it.kind)
                 : it.kind || "-"}
             </Badge>
+            {(it.coalesced_count ?? 0) > 0 && (
+              <Badge tone="muted">{t("arch.coalesced", "{n}건 병합").replace("{n}", String(it.coalesced_count))}</Badge>
+            )}
             <span className="ml-auto text-xs text-muted">{fmtTs(it.created_at)}</span>
           </div>
           <div className="text-sm font-medium text-ink">{it.title || t("arch.noTitle", "(제목 없음)")}</div>

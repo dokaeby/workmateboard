@@ -171,14 +171,17 @@ class RadarStoreMixin:
             {"endpoint": r["endpoint"], "keys": _loads(decrypt_str(r["keys_json"]))} for r in rows
         ]
 
-    def cleanup_radar_waits(self) -> int:
+    def cleanup_radar_waits(self, reaped_out: list[str] | None = None) -> int:
         """skill_radar의 waiting_approval 잔여 run을 cancelled 처리하고
         관련 인박스 승인 알림을 삭제한다.
 
         radar는 모든 실행 경로(daily 자동수집/cron refresh/수동 refresh)에서
         auto_approve=True로 무인 발행되므로, 승인 대기에 남은 run은
-        auto_approve 도입 이전의 비정상 잔여물이다."""
+        auto_approve 도입 이전의 비정상 잔여물이다.
+        reaped_out이 주어지면 취소된 run id를 append한다 — 호출자가
+        wakeup finalize(on_run_finished)로 deferred promote를 이어가게 하기 위함."""
         now = _iso(_now())
+        cancelled: list[str] = []
         with self.tx() as c:
             rows = c.execute(
                 "SELECT id FROM runs WHERE workflow_key='skill_radar' AND status='waiting_approval'"
@@ -186,11 +189,15 @@ class RadarStoreMixin:
             if not rows:
                 return 0
             for r in rows:
+                rid = str(r["id"])
                 c.execute(
                     "UPDATE runs SET status='cancelled', error=?, updated_at=? WHERE id=?",
-                    ("radar_auto_cleanup: approval was not required", now, r["id"]),
+                    ("radar_auto_cleanup: approval was not required", now, rid),
                 )
+                cancelled.append(rid)
             c.execute(
                 "DELETE FROM inbox_items WHERE kind='approval' AND title LIKE '%skill_radar%'"
             )
-            return len(rows)
+        if reaped_out is not None:
+            reaped_out.extend(cancelled)
+        return len(cancelled)

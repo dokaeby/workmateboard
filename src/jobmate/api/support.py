@@ -8,7 +8,6 @@ import os
 import re
 import threading
 import time
-import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -155,18 +154,30 @@ _REAPER_INTERVAL_S = 60.0  # cron tick이 분 단위로 와도 루프 중복 호
 _REAPER_STATE: dict[str, Any] = {"last_at": 0.0, "last_reaped": 0, "last_sweep_at": ""}
 
 
-def _reap_stale_runs(store: Store) -> int:
+def _reap_stale_runs(
+    store: Store,
+    settings: Settings | None = None,
+    llm: Any | None = None,
+    adapters: dict[str, Any] | None = None,
+    schedule: Any | None = None,
+) -> int:
     """30분 이상 갱신이 없는 queued/running run을 failed로 마감.
 
     재시작/강제종료로 고착된 run 복구용 — waiting_approval은 사람 승인
-    대기라 제외. 인스턴스당 60초에 1회로 스로틀한다."""
+    대기라 제외. 인스턴스당 60초에 1회로 스로틀한다.
+    settings/llm/adapters가 주어지면 마감된 run의 wakeup finalize
+    (deferred promote 포함)도 수행한다 — 없으면 deferred wakeup이 굶는다.
+    schedule은 _promote_deferred_runs로 전달 — cron tick HTTP 핸들러는
+    BackgroundTasks 기반 스케줄러를 넘겨 promote 실행이 요청 처리를
+    블로킹하지 않게 한다."""
     now = time.time()
     if now - float(_REAPER_STATE.get("last_at") or 0.0) < _REAPER_INTERVAL_S:
         return 0
     _REAPER_STATE["last_at"] = now
     cutoff = (datetime.now(UTC) - timedelta(minutes=_STALE_RUN_MINUTES)).isoformat()
+    reaped_ids: list[str] = []
     try:
-        n = store.fail_stale_runs(cutoff, error="stale_timeout")
+        n = store.fail_stale_runs(cutoff, error="stale_timeout", reaped_out=reaped_ids)
     except Exception:
         worker_logger.exception("stale run reaper failed")
         return 0
@@ -174,6 +185,17 @@ def _reap_stale_runs(store: Store) -> int:
     _REAPER_STATE["last_sweep_at"] = datetime.now(UTC).isoformat()
     if n:
         worker_logger.info("stale run reaper closed %d runs", n)
+    if reaped_ids and settings is not None:
+        # jobs.py는 support를 import하므로 순환 방지로 지연 import
+        from .jobs import _promote_deferred_runs
+
+        for rid in reaped_ids:
+            try:
+                _promote_deferred_runs(store, settings, llm, adapters or {}, rid, schedule=schedule)
+            except Exception:
+                worker_logger.warning(
+                    "wakeup finalize after stale reap failed run=%s", rid, exc_info=True
+                )
     return n
 
 
@@ -599,13 +621,37 @@ def _fire_trigger_action(
     def _launch(workflow: str, payload: dict[str, Any]) -> None:
         if workflow not in WORKFLOWS:
             raise ValueError(f"unknown workflow {workflow}")
-        run = store.create_run(
-            workflow,
-            WORKFLOWS[workflow].version,
-            payload,
-            trace_id=uuid.uuid4().hex,
+        # 스코프드 예산 — hard_stop 초과 시 트리거 발사 보류(예외 없이 스킵)
+        from .. import budget_scope, wakeups
+
+        blocks = budget_scope.evaluate_admission(store, workflow, str(payload.get("project") or ""))
+        if blocks:
+            store.audit(
+                "",
+                "trigger",
+                "trigger_budget_exceeded",
+                tid,
+                {"workflow": workflow, "scope": blocks[0]["scope"]},
+            )
+            worker_logger.warning(
+                "trigger %s blocked: budget exceeded scope=%s", tid, blocks[0]["scope"]
+            )
+            return
+        res = wakeups.admit_run(
+            store,
+            workflow_key=workflow,
+            input_data=payload,
+            source="trigger",
             created_by=f"trigger:{tid}",
+            version=WORKFLOWS[workflow].version,
+            job_payload={"task": payload.get("task", "")},
         )
+        if res["action"] != "created":
+            worker_logger.info(
+                "trigger %s %s into run=%s", tid, res["action"], res.get("run_id") or "-"
+            )
+            return
+        run = res["run"]
         job = (run.id, workflow, {"task": payload.get("task", "")}, None)
         if defer is not None:
             defer.append(job)
@@ -621,13 +667,15 @@ def _fire_trigger_action(
         worker_logger.info("trigger %s launched run=%s workflow=%s", tid, run.id, workflow)
 
     if atype == "run_workflow":
-        _launch(
-            str(action.get("workflow") or ""),
-            {
-                "task": f"trigger {tid}: {tool}/{skey[:12]}",
-                "trigger": trigger_meta,
-            },
-        )
+        payload: dict[str, Any] = {
+            "task": f"trigger {tid}: {tool}/{skey[:12]}",
+            "trigger": trigger_meta,
+        }
+        # 세션의 project 태그를 run input에 전파 — project 스코프 예산
+        # 귀속과 _launch의 예산 평가가 세션 프로젝트를 보게 한다.
+        if sess.get("project"):
+            payload["project"] = str(sess["project"])
+        _launch(str(action.get("workflow") or ""), payload)
     elif atype == "run_playbook":
         pb = store.get_playbook(str(action.get("playbook_id") or ""))
         if pb is None:

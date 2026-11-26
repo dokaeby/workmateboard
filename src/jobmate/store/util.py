@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
+
+_CTRL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def clean_scope_id(scope_id: str) -> str:
+    """scope_id/project 태그 정규화 — 제어문자 제거(로그 위조 방지) + 길이 제한.
+
+    budget policy의 scope_id와 run.project가 동일 규칙을 공유해야
+    스코프드 예산 귀속(project 스코프)이 일치한다. budget_scope.clean_scope_id는
+    이 함수의 재수출이다."""
+    return _CTRL_CHARS_RE.sub("", str(scope_id or "")).strip()[:200]
 
 
 def _now() -> datetime:

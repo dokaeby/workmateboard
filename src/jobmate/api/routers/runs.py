@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -15,6 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ... import budget_scope, wakeups
 from ...models import StageStatus
 from ...workflows import WORKFLOWS
 from ..jobs import _parse_diff_files
@@ -84,28 +84,104 @@ def register(app: FastAPI, ctx: Any) -> None:
                     "monthly LLM budget exceeded",
                     request,
                 )
-        run = store.create_run(
-            body.workflow,
-            WORKFLOWS[body.workflow].version,
-            {"task": body.task, **({"meta": body.metadata} if body.metadata else {})},
-            trace_id=uuid.uuid4().hex,
+        # 스코프드 예산 정책(global/project/workflow) — hard_stop 초과 시
+        # run 생성 거부. 레거시 prefs.monthly_budget_usd 검사와 병행한다.
+        # project는 명시 필드를 우선하고 metadata.project로 폴백 —
+        # runs.project 컬럼/input.project에 넣어야 생성 시 예산 귀속과
+        # 지출 집계가 일치한다. budget policy scope_id와 동일 정규화 적용.
+        project = budget_scope.clean_scope_id(body.project or "")
+        if not project and isinstance(body.metadata, dict):
+            project = budget_scope.clean_scope_id(str(body.metadata.get("project") or ""))
+        input_data: dict[str, Any] = {"task": body.task}
+        if project:
+            input_data["project"] = project
+        if body.metadata:
+            input_data["meta"] = body.metadata
+        blocks = budget_scope.evaluate_admission(store, body.workflow, project)
+        if blocks:
+            _audit_api(
+                request,
+                "run_budget_exceeded",
+                body.workflow,
+                {"blocks": blocks[:5]},
+            )
+            logger.warning(
+                "run rejected: scoped budget exceeded workflow=%s blocks=%s",
+                body.workflow,
+                blocks[:3],
+            )
+            return err(
+                429,
+                "budget_exceeded",
+                f"budget exceeded: {blocks[0]['scope']} "
+                f"(spend ${blocks[0]['month_spend_usd']:.4f} / "
+                f"limit ${blocks[0]['amount_usd']:.4f})",
+                request,
+            )
+        res = wakeups.admit_run(
+            store,
+            workflow_key=body.workflow,
+            input_data=input_data,
+            source="api",
+            idempotency_key=body.idempotency_key,
+            force_new=body.force_new,
             created_by=_actor_label(request),
+            version=WORKFLOWS[body.workflow].version,
+            job_payload={"task": body.task},
         )
-        logger.info("run created id=%s workflow=%s", run.id, body.workflow)
-        _schedule_run_jobs([(run.id, body.workflow, {"task": body.task}, None)], background_tasks)
-        return JSONResponse(status_code=202, content={"id": run.id, "status": run.status.value})
+        action = str(res.get("action") or "")
+        if action == "conflict":
+            # 동일 idempotency_key가 다른 입력으로 이미 사용됨
+            return err(
+                409,
+                "idempotency_conflict",
+                "idempotency_key already used with a different request",
+                request,
+            )
+        if action == "created":
+            run = res["run"]
+            logger.info("run created id=%s workflow=%s", run.id, body.workflow)
+            _schedule_run_jobs(
+                [(run.id, body.workflow, {"task": body.task}, None)], background_tasks
+            )
+            return JSONResponse(status_code=202, content={"id": run.id, "status": run.status.value})
+        if action in ("coalesced", "replayed"):
+            run = res.get("run")
+            status = run.status.value if run is not None else "unknown"
+            logger.info("run %s workflow=%s wakeup=%s", action, body.workflow, res.get("wakeup_id"))
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "id": str(res.get("run_id") or ""),
+                    "status": status,
+                    "action": action,
+                },
+            )
+        # deferred — 동일 scope 활성 run 종료 후 promote
+        return JSONResponse(
+            status_code=202,
+            content={
+                "id": "",
+                "status": "deferred",
+                "action": "deferred",
+                "wakeup_id": str(res.get("wakeup_id") or ""),
+            },
+        )
 
     @app.get("/api/v1/runs")
     def list_runs(limit: int = 50, workflow: str | None = None) -> list[dict[str, Any]]:
+        runs = store.list_runs(max(1, min(limit, 500)), workflow=workflow)
+        coalesced = store.coalesced_counts_for_runs([r.id for r in runs])
         return [
             {
                 "id": r.id,
                 "workflow": r.workflow_key,
                 "status": r.status.value,
                 "project": r.project,
+                "coalesced_count": coalesced.get(r.id, 0),
                 "created_at": r.created_at.isoformat(),
             }
-            for r in store.list_runs(max(1, min(limit, 500)), workflow=workflow)
+            for r in runs
         ]
 
     @app.get("/api/v1/runs/stats")
@@ -140,6 +216,21 @@ def register(app: FastAPI, ctx: Any) -> None:
             "sample_rate": os.environ.get("JOBMATE_LANGSMITH_SAMPLE_RATE", "1.0"),
         }
         return JSONResponse(content=data)
+
+    @app.get("/api/v1/wakeups")
+    def list_wakeups(
+        request: Request,
+        run_id: str | None = None,
+        status: str | None = None,
+        source: str | None = None,
+        limit: int = 50,
+    ) -> JSONResponse:
+        """wakeup_requests 감사 조회 — run 생성 코얼레싱/디퍼 이력."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        items = store.list_wakeups(limit=limit, run_id=run_id, status=status, source=source)
+        return JSONResponse(content={"items": items})
 
     @app.get("/api/v1/runs/{run_id}")
     def get_run(run_id: str, request: Request) -> JSONResponse:
@@ -255,14 +346,22 @@ def register(app: FastAPI, ctx: Any) -> None:
         )
 
     @app.post("/api/v1/runs/{run_id}/approve")
-    def approve(run_id: str, body: ApprovalRequest, request: Request) -> JSONResponse:
+    def approve(
+        run_id: str, body: ApprovalRequest, request: Request, background_tasks: BackgroundTasks
+    ) -> JSONResponse:
         # 승인/거절은 사이드이펙트를 재개하므로 승인 대기열(/approvals)과
         # 동일하게 lead 이상만 허용한다. 메신저 커맨드 경로는 _do_approve를
         # 직접 호출하므로 영향 없음.
         gated = _lead_gate(request)
         if gated is not None:
             return gated
-        result = _do_approve(run_id, body.decision, body.comment, actor=_actor_label(request))
+        result = _do_approve(
+            run_id,
+            body.decision,
+            body.comment,
+            actor=_actor_label(request),
+            background_tasks=background_tasks,
+        )
         if not result["ok"]:
             code = (
                 "not_found"
@@ -323,7 +422,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         run = store.get_run(run_id)
         if run is None:
             return err(404, "not_found", "run not found", request)
-        project = "" if body.project is None else body.project.strip()[:200]
+        project = "" if body.project is None else budget_scope.clean_scope_id(body.project)
         if not store.set_run_project(run_id, project):
             return err(404, "not_found", "run not found", request)
         _audit_api(request, "run_project_set", run_id, {"project": project})

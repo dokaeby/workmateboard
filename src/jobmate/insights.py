@@ -218,7 +218,9 @@ def archive_search(store: Store, query: str, kind: str, limit: int) -> dict[str,
             )
 
     if kind in ("", "run"):
-        for run in store.list_runs(limit=200):
+        arch_runs = store.list_runs(limit=200)
+        coalesced = store.coalesced_counts_for_runs([r.id for r in arch_runs])
+        for run in arch_runs:
             task = str((run.input or {}).get("task") or "")
             title = f"{run.workflow_key}: {task[:60]}" if task else run.workflow_key
             created = run.created_at.isoformat() if run.created_at else ""
@@ -230,6 +232,7 @@ def archive_search(store: Store, query: str, kind: str, limit: int) -> dict[str,
                     "title": title,
                     "snippet": snippet,
                     "created_at": created,
+                    "coalesced_count": coalesced.get(run.id, 0),
                     "link": "runs",
                 }
             )

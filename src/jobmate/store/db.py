@@ -17,6 +17,7 @@ from ..models import RunStatus as RunStatus
 from ..models import StageStatus as StageStatus
 from .admin import AdminStoreMixin
 from .agent_sessions import AgentSessionStoreMixin
+from .budgets import BudgetStoreMixin
 from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
 from .inbox import InboxStoreMixin
@@ -25,6 +26,7 @@ from .radar import RadarStoreMixin
 from .runs import RunStoreMixin
 from .usage import UsageStoreMixin
 from .users import UserStoreMixin
+from .wakeups import WakeupStoreMixin
 
 logger = logging.getLogger("jobmate.store")
 
@@ -463,6 +465,57 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
+
+-- budget_policies: 스코프별 월간 USD 예산 (global/project/workflow)
+CREATE TABLE IF NOT EXISTS budget_policies (
+  id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  window_kind TEXT NOT NULL DEFAULT 'calendar_month_utc',
+  amount_usd REAL NOT NULL,
+  warn_percent INTEGER NOT NULL DEFAULT 80,
+  hard_stop_enabled INTEGER NOT NULL DEFAULT 1,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(scope_type, scope_id)
+);
+
+-- budget_incidents: 예산 임계(warn/hard) 초과 사건 — 정책+윈도우+임계당 open 1건
+CREATE TABLE IF NOT EXISTS budget_incidents (
+  id TEXT PRIMARY KEY,
+  policy_id TEXT NOT NULL,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  window_start TEXT NOT NULL,
+  threshold_type TEXT NOT NULL,
+  amount_limit REAL NOT NULL,
+  amount_observed REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_budget_incidents_policy
+  ON budget_incidents(policy_id, status);
+
+-- wakeup_requests: run 생성 단일 비행 + 동일 입력 코얼레싱 감사
+CREATE TABLE IF NOT EXISTS wakeup_requests (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL DEFAULT 'api',
+  scope_key TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued',
+  coalesced_count INTEGER NOT NULL DEFAULT 0,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  run_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  claimed_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wakeup_scope ON wakeup_requests(scope_key, status);
+CREATE INDEX IF NOT EXISTS idx_wakeup_run ON wakeup_requests(run_id);
+CREATE INDEX IF NOT EXISTS idx_wakeup_idem ON wakeup_requests(idempotency_key);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -884,6 +937,57 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
+
+-- budget_policies: 스코프별 월간 USD 예산 (global/project/workflow)
+CREATE TABLE IF NOT EXISTS budget_policies (
+  id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  window_kind TEXT NOT NULL DEFAULT 'calendar_month_utc',
+  amount_usd DOUBLE PRECISION NOT NULL,
+  warn_percent INTEGER NOT NULL DEFAULT 80,
+  hard_stop_enabled INTEGER NOT NULL DEFAULT 1,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(scope_type, scope_id)
+);
+
+-- budget_incidents: 예산 임계(warn/hard) 초과 사건 — 정책+윈도우+임계당 open 1건
+CREATE TABLE IF NOT EXISTS budget_incidents (
+  id TEXT PRIMARY KEY,
+  policy_id TEXT NOT NULL,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  window_start TEXT NOT NULL,
+  threshold_type TEXT NOT NULL,
+  amount_limit DOUBLE PRECISION NOT NULL,
+  amount_observed DOUBLE PRECISION NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_budget_incidents_policy
+  ON budget_incidents(policy_id, status);
+
+-- wakeup_requests: run 생성 단일 비행 + 동일 입력 코얼레싱 감사
+CREATE TABLE IF NOT EXISTS wakeup_requests (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL DEFAULT 'api',
+  scope_key TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued',
+  coalesced_count INTEGER NOT NULL DEFAULT 0,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  run_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  claimed_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wakeup_scope ON wakeup_requests(scope_key, status);
+CREATE INDEX IF NOT EXISTS idx_wakeup_run ON wakeup_requests(run_id);
+CREATE INDEX IF NOT EXISTS idx_wakeup_idem ON wakeup_requests(idempotency_key);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -962,6 +1066,8 @@ class Store(
     AdminStoreMixin,
     BuilderStoreMixin,
     ProjectStoreMixin,
+    BudgetStoreMixin,
+    WakeupStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -993,6 +1099,8 @@ class Store(
         self._migrate_approval_columns()
         self._migrate_user_columns()
         self._migrate_run_columns()
+        self._migrate_budget_incident_index()
+        self._migrate_wakeup_idempotency_index()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -1055,6 +1163,76 @@ class Store(
             "runs",
             {"created_by": "TEXT NOT NULL DEFAULT ''", "project": "TEXT NOT NULL DEFAULT ''"},
         )
+
+    def _migrate_budget_incident_index(self) -> None:
+        """open 인시던트 (policy, window, threshold) 부분 UNIQUE 인덱스.
+
+        SCHEMA에 넣지 않고 여기서 생성하는 이유: 기존 DB에 중복 open
+        인시던트가 있으면 executescript 전체가 실패해 기동이 멈춘다.
+        여기서는 중복을 먼저 정리하고, 그래도 실패하면 경고만 남긴다 —
+        has_open_budget_incident 사전 검사가 논리적 중복을 계속 막는다."""
+        try:
+            rows = self._conn.execute(
+                "SELECT id, policy_id, window_start, threshold_type"
+                " FROM budget_incidents WHERE status='open'"
+                " ORDER BY created_at, id"
+            ).fetchall()
+            seen: set[tuple[Any, Any, Any]] = set()
+            for r in rows:
+                key = (r["policy_id"], r["window_start"], r["threshold_type"])
+                if key in seen:
+                    self.resolve_budget_incident(
+                        str(r["id"]), "resolved", note="dedupe before unique index"
+                    )
+                else:
+                    seen.add(key)
+            with self.tx() as c:
+                c.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_incidents_open"
+                    " ON budget_incidents(policy_id, window_start, threshold_type)"
+                    " WHERE status='open'"
+                )
+        except Exception as e:
+            logger.warning("budget_incidents open-unique index skipped: %s", e)
+
+    def _migrate_wakeup_idempotency_index(self) -> None:
+        """idempotency_key 부분 UNIQUE 인덱스 — 동시 동일 키 요청의 이중 run 방지.
+
+        SCHEMA에 넣지 않는 이유는 _migrate_budget_incident_index와 동일 —
+        기존 DB에 중복 키가 있으면 executescript 전체가 실패해 기동이 멈춘다.
+        여기서는 키를 비워 최신 행만 남기고(감사 행은 보존) 인덱스를 만든다.
+        인덱스 생성마저 실패하면 경고만 남기고 진행한다 —
+        admit_run의 replay 사전 검사와 IntegrityError 재조회가 계속 동작한다."""
+        try:
+            rows = self._conn.execute(
+                "SELECT id, idempotency_key FROM wakeup_requests"
+                " WHERE idempotency_key <> '' ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+            seen: set[str] = set()
+            dup_ids: list[str] = []
+            for r in rows:
+                key = str(r["idempotency_key"])
+                if key in seen:
+                    dup_ids.append(str(r["id"]))
+                else:
+                    seen.add(key)
+            if dup_ids:
+                with self.tx() as c:
+                    for did in dup_ids:
+                        c.execute(
+                            "UPDATE wakeup_requests SET idempotency_key='' WHERE id=?", (did,)
+                        )
+                logger.info(
+                    "wakeup_requests idempotency dedupe: cleared %d duplicate keys",
+                    len(dup_ids),
+                )
+            with self.tx() as c:
+                c.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_wakeup_idem_uniq"
+                    " ON wakeup_requests(idempotency_key) WHERE idempotency_key <> ''"
+                )
+        except Exception as e:
+            logger.warning("wakeup_requests idempotency unique index skipped: %s", e)
 
     @property
     def _conn(self) -> Any:

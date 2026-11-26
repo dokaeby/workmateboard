@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -97,13 +96,46 @@ def register(app: FastAPI, ctx: Any) -> None:
         payload = dict(pb.get("input") or {})
         payload.setdefault("task", str(pb.get("name") or pb["id"]))
         payload["playbook_id"] = pb["id"]
-        run = store.create_run(
-            wf,
-            WORKFLOWS[wf].version,
-            payload,
-            trace_id=uuid.uuid4().hex,
+        # POST /runs와 동일한 스코프드 예산 + wakeup 코얼레싱 경로
+        from ... import budget_scope, wakeups
+
+        blocks = budget_scope.evaluate_admission(store, wf, str(payload.get("project") or ""))
+        if blocks:
+            _audit_api(request, "playbook_budget_exceeded", pb["id"], {"scope": blocks[0]["scope"]})
+            return err(
+                429,
+                "budget_exceeded",
+                f"budget exceeded: {blocks[0]['scope']}",
+                request,
+            )
+        res = wakeups.admit_run(
+            store,
+            workflow_key=wf,
+            input_data=payload,
+            source="api",
             created_by=_actor_label(request),
+            version=WORKFLOWS[wf].version,
+            job_payload={"task": payload["task"]},
         )
+        action = str(res.get("action") or "")
+        if action != "created":
+            run = res.get("run")
+            _audit_api(
+                request,
+                "playbook_run",
+                pb["id"],
+                {"run_id": res.get("run_id"), "workflow": wf, "action": action},
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "run_id": str(res.get("run_id") or ""),
+                    "status": run.status.value if run is not None else action,
+                    "workflow": wf,
+                    "action": action,
+                },
+            )
+        run = res["run"]
         _audit_api(request, "playbook_run", pb["id"], {"run_id": run.id, "workflow": wf})
         logger.info("playbook run created playbook=%s run=%s workflow=%s", pb["id"], run.id, wf)
         _schedule_run_jobs([(run.id, wf, {"task": payload["task"]}, None)], background_tasks)

@@ -311,3 +311,119 @@ def test_create_and_run_marks_failed_on_invoke_error(tmp_path, monkeypatch):
         assert "invoke exploded" in (runs[0].error or "")
     finally:
         store.close()
+
+
+# ---- deferred promote schedule 콜백 / budget_exceeded 비일시 처리 ----
+
+
+def test_promote_deferred_runs_uses_schedule_callback(tmp_path):
+    """_promote_deferred_runs에 schedule을 넘기면 promote된 run 실행이
+    콜백으로 위임된다 — cron tick의 BackgroundTasks 경로."""
+    from jobmate import wakeups
+
+    store = _store(tmp_path)
+    try:
+        r1 = wakeups.admit_run(
+            store,
+            workflow_key="dev_review",
+            input_data={"task": "dup"},
+            source="api",
+            version="1",
+        )
+        d1 = wakeups.admit_run(
+            store,
+            workflow_key="dev_review",
+            input_data={"task": "dup"},
+            source="api",
+            version="1",
+            force_new=True,
+        )
+        store.update_run(r1["run_id"], status=RunStatus.COMPLETED)
+
+        scheduled: list[tuple[str, dict]] = []
+        app_mod._promote_deferred_runs(
+            store,
+            Settings(db_path=str(tmp_path / "p.db")),
+            None,
+            {},
+            r1["run_id"],
+            schedule=lambda run, jp: scheduled.append((run.id, jp)),
+        )
+        assert len(scheduled) == 1
+        new_run_id, job_payload = scheduled[0]
+        assert new_run_id != r1["run_id"]
+        assert job_payload == {"task": "dup"}
+        # deferred wakeup이 새 run을 가리키고 queued로 전이됐지만
+        # 실행은 스케줄러(BackgroundTasks) 책임 — 여기선 호출만 검증.
+        w = store.get_wakeup(d1["wakeup_id"])
+        assert w["run_id"] == new_run_id and w["status"] == "queued"
+        # 새 run은 아직 queued — 스케줄 콜백이 실제 실행을 담당
+        assert store.get_run(new_run_id).status == RunStatus.QUEUED
+    finally:
+        store.close()
+
+
+def test_process_message_job_budget_exceeded_is_terminal(tmp_path, monkeypatch):
+    """budget_exceeded는 비일시 오류 — 메시지를 재시도 소진시키지 않고
+    명확한 사유의 failed로 terminal 마감한다."""
+    import jobmate.budget_scope as bs
+
+    store = _store(tmp_path)
+    try:
+        assert store.save_message_extraction("slack", "s1", "th", {}, "pending", source_text="hi")
+        row = next(r for r in store.pending_messages() if r["source_id"] == "s1")
+        monkeypatch.setattr(
+            bs,
+            "evaluate_admission",
+            lambda *a, **k: [{"scope": "global:all", "scope_type": "global"}],
+        )
+        app_mod._process_message_job(
+            store, Settings(db_path=str(tmp_path / "m.db")), None, {}, dict(row)
+        )
+        msg = next(m for m in store.list_message_extractions("slack") if m["source_id"] == "s1")
+        assert msg["processing_status"] == "failed"
+        assert "budget_exceeded" in (msg.get("error_message") or "")
+        assert not msg.get("retry_at")  # 재시도 예약 없음
+        assert store.list_runs() == []  # run 미생성
+    finally:
+        store.close()
+
+
+def test_daily_radar_platform_failure_does_not_abort_cycle(tmp_path, monkeypatch):
+    """_maybe_daily_radar 비-defer 경로에서 한 플랫폼의 실패
+    (budget_exceeded 포함)가 나머지 플랫폼과 last_radar_date 기록을
+    막지 않는다."""
+    from datetime import datetime as _dt
+
+    store = _store(tmp_path)
+    try:
+        auto = store.get_automation()
+        auto["radar_enabled"] = True
+        store.set_automation(auto)
+
+        calls: list[str] = []
+
+        def fake_create(store_, settings, llm, adapters, workflow, task, ctx):
+            calls.append(str(ctx.get("platform")))
+            if ctx.get("platform") == "claude":
+                raise app_mod.BudgetExceededError("budget_exceeded: global:all")
+            return "run-x"
+
+        monkeypatch.setattr(app_mod, "_create_and_run", fake_create)
+
+        class FakeDT(_dt):
+            @classmethod
+            def now(cls, tz=None):  # noqa: ANN001
+                # KST 07:00 — radar 수집 시간대
+                return _dt(2025, 6, 1, 7, 0, tzinfo=tz)
+
+        monkeypatch.setattr(app_mod, "datetime", FakeDT)
+
+        settings = Settings(db_path=str(tmp_path / "r.db"), radar_platforms=["claude", "chatgpt"])
+        app_mod._maybe_daily_radar(store, settings, None, {"github": object()})
+
+        # 실패한 플랫폼 이후도 계속 진행 + 사이클은 완료 기록된다
+        assert calls == ["claude", "chatgpt"]
+        assert store.get_automation()["last_radar_date"] == "2025-06-01"
+    finally:
+        store.close()

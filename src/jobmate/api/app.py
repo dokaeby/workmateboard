@@ -166,9 +166,20 @@ def create_app(
             "created_at": run.created_at.isoformat(),
             "updated_at": run.updated_at.isoformat(),
             "project": run.project,
+            "coalesced_count": store.coalesced_counts_for_runs([run_id]).get(run_id, 0),
             "stages": [s.model_dump(mode="json") for s in store.get_stage_runs(run_id)],
             "approvals": [a.model_dump(mode="json") for a in store.get_approvals(run_id)],
             "audit": [a.model_dump(mode="json") for a in store.get_audit(run_id)],
+            "wakeups": [
+                {
+                    "id": w["id"],
+                    "source": w["source"],
+                    "status": w["status"],
+                    "coalesced_count": w["coalesced_count"],
+                    "created_at": w["created_at"],
+                }
+                for w in store.list_wakeups_for_run(run_id)
+            ],
         }
 
     def execute_run(
@@ -206,13 +217,47 @@ def create_app(
         defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
         created_by: str = "",
     ) -> str:
-        run = store.create_run(
-            workflow,
-            WORKFLOWS[workflow].version,
-            {"task": task},
-            trace_id=uuid.uuid4().hex,
+        # wakeup coalescing — 동일 (workflow,input) 활성 run이 있으면
+        # 새 run 없이 기존 run id를 반환한다(호출자는 job을 예약하지 않음).
+        from .. import budget_scope
+        from .. import wakeups as _wakeups
+
+        # 스코프드 예산 — POST /runs·스케줄·트리거와 동일하게 admit 전에
+        # hard_stop 초과를 검사한다. 차단 시 run을 만들지 않고 ""를 반환
+        # (호출자: 메신저 start는 빈 id를 거절 메시지로 처리).
+        project = str((ctx or {}).get("project") or "")
+        blocks = budget_scope.evaluate_admission(store, workflow, project)
+        if blocks:
+            store.audit(
+                "",
+                created_by or "api",
+                "run_budget_exceeded",
+                workflow,
+                {"blocks": blocks[:5], "source": "submit_run"},
+            )
+            logger.warning(
+                "submit_run rejected: budget exceeded workflow=%s scope=%s",
+                workflow,
+                blocks[0]["scope"],
+            )
+            return ""
+        # ctx.project는 예산 평가에만 쓰고 run input에는 기록되지 않아
+        # project 스코프 지출 귀속에서 빠졌다 — input에도 동일하게 넣는다.
+        input_data: dict[str, Any] = {"task": task}
+        if project:
+            input_data["project"] = project
+        res = _wakeups.admit_run(
+            store,
+            workflow_key=workflow,
+            input_data=input_data,
+            source="api",
             created_by=created_by,
+            version=WORKFLOWS[workflow].version,
+            job_payload={"task": task},
         )
+        if res["action"] != "created":
+            return str(res.get("run_id") or "")
+        run = res["run"]
         job = (run.id, workflow, {"task": task}, ctx)
         if defer is not None:
             defer.append(job)
@@ -502,7 +547,13 @@ def create_app(
             ]
         }
 
-    def _do_approve(run_id: str, decision: str, comment: str, actor: str = "api") -> dict[str, Any]:
+    def _do_approve(
+        run_id: str,
+        decision: str,
+        comment: str,
+        actor: str = "api",
+        background_tasks: BackgroundTasks | None = None,
+    ) -> dict[str, Any]:
         """승인/거절 공통 경로 — API 엔드포인트와 메신저 커맨드가 공유.
         반환: {"ok": True, "run": detail} 또는 {"ok": False, "status": int, "error": str}."""
         run = store.get_run(run_id)
@@ -562,6 +613,27 @@ def create_app(
         store.mark_inbox_read_dedupe(f"approval:{run_id}")
         store.audit(run_id, actor, f"run_{decision}", run_id, {"comment": comment[:200]})
         logger.info("run %s resume decision=%s actor=%s", run_id, decision, actor)
+        # resume이 run을 종결시켰으면 wakeup 마감 + deferred promote
+        try:
+            from .. import wakeups as _wakeups
+
+            def _sched_promoted(new_run: Any, job_payload: dict[str, Any]) -> None:
+                if os.environ.get("VERCEL") and background_tasks is not None:
+                    # 서버리스 — 응답 후 thread는 freeze되므로 background
+                    # task로 실행해 함수 수명을 연장한다.
+                    background_tasks.add_task(
+                        execute_run, new_run.id, new_run.workflow_key, job_payload, None
+                    )
+                    return
+                threading.Thread(
+                    target=execute_run,
+                    args=(new_run.id, new_run.workflow_key, job_payload, None),
+                    daemon=True,
+                ).start()
+
+            _wakeups.on_run_finished(store, run_id, schedule=_sched_promoted)
+        except Exception:
+            logger.warning("wakeup finalize failed run=%s", run_id, exc_info=True)
         return {"ok": True, "run": run_detail(run_id) or {}}
 
     # ---- workflow schedules (주기적 run 자동 생성) ----
@@ -769,7 +841,13 @@ def create_app(
             if not target:
                 _messenger_reply(provider, chat_id, "승인 대기 중인 run이 없습니다.")
                 return True
-            res = _do_approve(target, "approve", "messenger", actor="messenger")
+            res = _do_approve(
+                target,
+                "approve",
+                "messenger",
+                actor="messenger",
+                background_tasks=background_tasks,
+            )
             if res["ok"]:
                 _messenger_reply(provider, chat_id, f"run {target}을(를) 승인했습니다.")
             else:
@@ -788,6 +866,10 @@ def create_app(
                 return True
             jobs: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] = []
             rid = submit_run(wf, task, defer=jobs)
+            if not rid:
+                # 스코프드 예산 hard_stop 등으로 run 생성이 거부됨
+                _messenger_reply(provider, chat_id, "예산 한도 초과로 run 생성을 거부했습니다.")
+                return True
             _schedule_run_jobs(jobs, background_tasks)
             _messenger_reply(provider, chat_id, f"run 생성: {rid} ({wf})")
             logger.info("messenger start run=%s workflow=%s provider=%s", rid, wf, provider)
@@ -1256,6 +1338,9 @@ padding:32px;max-width:360px;text-align:center">
         auth as _r_auth,
     )
     from .routers import (
+        budgets as _r_budgets,
+    )
+    from .routers import (
         builder as _r_builder,
     )
     from .routers import (
@@ -1294,6 +1379,7 @@ padding:32px;max-width:360px;text-align:center">
     _r_auth.register(app, ctx)
     _r_misc.register(app, ctx)
     _r_builder.register(app, ctx)
+    _r_budgets.register(app, ctx)
     return app
 
 

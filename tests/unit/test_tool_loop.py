@@ -267,6 +267,38 @@ def test_tool_results_wrapped_as_untrusted(tmp_path):
     assert "ignore" not in str(audits[0].detail).lower() or "patterns" in audits[0].detail
 
 
+def test_failed_stage_records_consumed_tokens(tmp_path):
+    """tool-loop 도중 LLM이 실패해도 그 시도까지 누적된 토큰이 FAILED
+    stage_run에 기록되고 run state 예산에도 합산된다."""
+    from jobmate.models import StageStatus
+
+    (tmp_path / "x.txt").write_text("x")
+    calls = {"n": 0}
+
+    def handler(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "x.txt"}}]
+            }
+        raise RuntimeError("llm boom")
+
+    llm = FakeLLM(handler=handler)
+    runner, store, run = _make(tmp_path, ["read_file"], llm)
+    state = runner.invoke(run.id, {"task": "t"})
+
+    stages = store.get_stage_runs(run.id)
+    failed = [s for s in stages if s.status == StageStatus.FAILED]
+    assert failed, "expected failed stage_runs"
+    # 첫 attempt는 tool-call 1회 성공(10/10) 후 두 번째 호출에서 실패 → 10/10 기록
+    assert failed[0].tokens_in == 10 and failed[0].tokens_out == 10
+    # 이후 attempt는 첫 호출에서 바로 실패 → 토큰 0
+    assert all(s.tokens_in == 0 for s in failed[1:])
+    # run state에도 실패 시도 사용량이 합산됐다 (FakeLLM은 호출당 10/10)
+    assert state.get("tokens_in") == 10
+    assert state.get("tokens_out") == 10
+
+
 def test_function_stage_usage_counted_in_state(tmp_path):
     """function 단계가 반환한 tokens_in/out이 run state 예산에 합산된다."""
     from jobmate.engine import functions as fn_mod

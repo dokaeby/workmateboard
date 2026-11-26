@@ -8,7 +8,7 @@ import uuid
 from typing import Any, Literal
 
 from ..models import Approval, AuditEvent, Run, RunStatus, StageRun, StageStatus
-from .util import _clamp_limit, _dt, _iso, _loads, _now
+from .util import _clamp_limit, _dt, _iso, _loads, _now, clean_scope_id
 
 
 class RunStoreMixin:
@@ -21,11 +21,13 @@ class RunStoreMixin:
         metadata: dict[str, Any] | None = None,
         created_by: str = "",
     ) -> Run:
-        # input.project 자유 태그를 컬럼으로도 유지 (PATCH /runs/{id}와 동일 경로)
+        # input.project 자유 태그를 컬럼으로도 유지 (PATCH /runs/{id}와 동일 경로).
+        # budget policy scope_id와 동일 정규화(clean_scope_id)를 적용해야
+        # project 스코프 예산 귀속이 정책 생성 시 입력과 일치한다.
         project = ""
         pv = input_data.get("project")
         if isinstance(pv, str):
-            project = pv.strip()[:200]
+            project = clean_scope_id(pv)
         run = Run(
             id=uuid.uuid4().hex[:12],
             workflow_key=workflow_key,
@@ -121,12 +123,19 @@ class RunStoreMixin:
             )
         return cur.rowcount > 0
 
-    def fail_stale_runs(self, stale_before_iso: str, error: str = "stale_timeout") -> int:
+    def fail_stale_runs(
+        self,
+        stale_before_iso: str,
+        error: str = "stale_timeout",
+        reaped_out: list[str] | None = None,
+    ) -> int:
         """updated_at이 stale_before_iso보다 오래된 queued/running run을 failed로 마감.
 
         재시작/강제종료로 running에 고착된 run 복구용. waiting_approval 등
         사람 승인 대기 상태는 정상 대기이므로 절대 건드리지 않는다.
         각 run의 아직 running인 stage_runs도 failed로 정리하고 audit을 남긴다.
+        reaped_out이 주어지면 마감된 run id를 append한다 — 호출자가
+        wakeup finalize(on_run_finished) 등 후속 처리를 하기 위함.
         반환값: 마감된 run 수."""
         now = _iso(_now())
         reaped: list[str] = []
@@ -152,6 +161,8 @@ class RunStoreMixin:
                 )
         for rid in reaped:
             self.audit(rid, "system", "run_stale_reaped", rid, {"error": error})
+        if reaped_out is not None:
+            reaped_out.extend(reaped)
         return len(reaped)
 
     def _row_to_run(self, row: Any) -> Run:

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
-import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .. import messenger
+from .. import budget_scope, messenger, wakeups
 from ..config import Settings
 from ..engine.trace import job_traceable
 from ..models import RunStatus
@@ -29,7 +29,76 @@ from .support import (
 logger = logging.getLogger("jobmate.api")
 worker_logger = logging.getLogger("jobmate.worker")
 
+
+class BudgetExceededError(RuntimeError):
+    """스코프드 예산 hard_stop으로 run 생성이 차단됨.
+
+    월간 지출 윈도우가 리셋되기 전까지 재시도해도 같은 결과이므로
+    일시적 오류와 구분한다 — 메시지 intake 재시도 소진/ radar 사이클
+    중단을 막기 위해 호출자가 이 타입을 잡아 terminal 처리한다."""
+
+
 # ---------- automation worker ----------
+
+
+def _promote_deferred_runs(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    run_id: str,
+    schedule: Any = None,
+) -> None:
+    """run 종결 후 wakeup 마감 + deferred promote — 실패해도 run 결과에 영향 없음.
+
+    schedule(run, job_payload) 콜백이 주어지면 promote된 run의 실행을
+    그쪽에 위임한다 — cron tick 같은 HTTP 핸들러는 FastAPI
+    BackgroundTasks를 넘겨 서버리스 maxDuration 안에서 수 분짜리 run이
+    요청 처리 중 동기 실행되지 않게 한다. 미지정 시 VERCEL에서는
+    post-response 컨텍스트(background task/worker thread) 안에서만
+    호출된다는 전제로 동기 실행하고, 그 외는 daemon thread로 실행한다."""
+
+    def _sched(new_run: Any, job_payload: dict[str, Any]) -> None:
+        if schedule is not None:
+            schedule(new_run, job_payload)
+            return
+        if os.environ.get("VERCEL"):
+            # 서버리스 — 응답 후 daemon thread는 freeze돼 실행되지 않을 수
+            # 있으므로 현재 job 컨텍스트(background task/틱) 안에서 동기
+            # 실행한다. 호출 체인(_execute_run_job → promote → _execute_run_job)
+            # 이 중첩되지만 deferred 체인은 단일 비행이라 깊이가 제한적이다.
+            # HTTP 요청 핸들러 안에서 이 경로에 도달하면 안 된다 — 그런
+            # 호출자는 반드시 schedule을 넘겨야 한다.
+            _execute_run_job(
+                store,
+                settings,
+                llm,
+                adapters,
+                new_run.id,
+                new_run.workflow_key,
+                job_payload,
+                None,
+            )
+            return
+        threading.Thread(
+            target=_execute_run_job,
+            args=(
+                store,
+                settings,
+                llm,
+                adapters,
+                new_run.id,
+                new_run.workflow_key,
+                job_payload,
+                None,
+            ),
+            daemon=True,
+        ).start()
+
+    try:
+        wakeups.on_run_finished(store, run_id, schedule=_sched)
+    except Exception:
+        worker_logger.warning("wakeup finalize failed run=%s", run_id, exc_info=True)
 
 
 def _execute_run_job(
@@ -41,12 +110,17 @@ def _execute_run_job(
     workflow: str,
     payload: dict[str, Any],
     ctx: dict[str, Any] | None = None,
+    schedule: Any = None,
 ) -> None:
-    """run 1건을 동기 실행 — automation loop/스레드/cron tick 공용."""
+    """run 1건을 동기 실행 — automation loop/스레드/cron tick 공용.
+
+    schedule은 _promote_deferred_runs로 전달 — HTTP 핸들러가 이 run을
+    동기 실행할 때(현재는 없음) chained promote도 요청 밖으로 빼야 한다."""
     # 동시 run 세마포어 — 슬롯 대기 후 실행. 타임아웃 시 run을 failed로 마감.
     if not _acquire_run_slot(run_id):
         store.update_run(run_id, status=RunStatus.FAILED, error="concurrency_timeout")
         store.audit(run_id, "system", "run_queue_timeout", run_id, {})
+        _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
         return
     try:
         try:
@@ -58,11 +132,14 @@ def _execute_run_job(
             store.update_run(run_id, status=RunStatus.FAILED, error=str(e)[:500])
             store.audit(run_id, "system", "runner_error", "", {"error": str(e)[:300]})
             logger.warning("run %s failed: %s", run_id, str(e)[:200])
-            return
+            # promote는 슬롯 해제 후로 미룬다 — finally에서 release된 뒤
+            # 아래 공통 경로가 수행. 여기서 호출하면 중첩 실행이 추가 슬롯을
+            # 필요로 해 체인 깊이만큼 세마포어를 잠식한다.
     finally:
         _run_slots().release()
     run = store.get_run(run_id)
     logger.info("run %s finished status=%s", run_id, getattr(run, "status", "?"))
+    _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
 
 
 @job_traceable("jobmate.process_due_schedules")
@@ -97,13 +174,52 @@ def _process_due_schedules(
                 continue
             payload = dict(sched.get("input") or {})
             payload.setdefault("task", f"scheduled {workflow}")
-            run = store.create_run(
-                workflow,
-                WORKFLOWS[workflow].version,
-                payload,
-                trace_id=uuid.uuid4().hex,
-                created_by=f"schedule:{sid}",
+            # 스코프드 예산 — hard_stop 초과 시 이번 발사만 건너뛴다
+            # (스케줄 자체는 claim돼 next_run_at이 진행됨).
+            blocks = budget_scope.evaluate_admission(
+                store, workflow, str(payload.get("project") or "")
             )
+            if blocks:
+                store.audit(
+                    "",
+                    "system",
+                    "schedule_budget_exceeded",
+                    sid,
+                    {"workflow": workflow, "scope": blocks[0]["scope"]},
+                )
+                worker_logger.warning(
+                    "schedule %s skipped: budget exceeded scope=%s", sid, blocks[0]["scope"]
+                )
+                try:
+                    store.upsert_inbox_item(
+                        "budget",
+                        f"예산 초과로 스케줄 건너뜀: {workflow}",
+                        body=(
+                            f"scope={blocks[0]['scope']} spend=${blocks[0]['month_spend_usd']:.4f}"
+                        ),
+                        link="/?view=cost",
+                        dedupe_key=f"schedule-budget:{sid}:{datetime.now(UTC):%Y-%m}",
+                    )
+                except Exception as e:
+                    worker_logger.debug("inbox schedule-budget item failed: %s", str(e)[:200])
+                continue
+            res = wakeups.admit_run(
+                store,
+                workflow_key=workflow,
+                input_data=payload,
+                source="schedule",
+                created_by=f"schedule:{sid}",
+                version=WORKFLOWS[workflow].version,
+                job_payload=payload,
+            )
+            action = str(res.get("action") or "")
+            if action != "created":
+                # 동일 scope 활성 run에 합류 — 스케줄은 claim됐으므로 재시도 없음
+                worker_logger.info(
+                    "schedule %s %s into run=%s", sid, action, res.get("run_id") or "-"
+                )
+                continue
+            run = res["run"]
             store.audit(
                 run.id,
                 "system",
@@ -387,7 +503,7 @@ def _automation_loop(
     while not stop.is_set():
         try:
             _mark_cron_tick(store)
-            _reap_stale_runs(store)
+            _reap_stale_runs(store, settings, llm, adapters)
             _retention_sweep(store)
             _process_pending_messages(store, settings, llm, adapters)
             _process_due_notification_jobs(store, adapters)
@@ -460,6 +576,14 @@ def _process_message_job(
             store, settings, llm, adapters, "gmail_calendar", "message intake", ctx
         )
         store.finish_message(provider, source_id, "processed", f"run:{run_id}", attempts=attempts)
+    except BudgetExceededError as e:
+        # 스코프드 예산 hard_stop — 월간 윈도우 리셋 전 재시도는 무의미한
+        # 비일시 오류. attempts를 소진해 'max attempts'로 끝나는 대신
+        # 사유가 명확한 budget_exceeded로 terminal failed 마감한다.
+        worker_logger.warning(
+            "message %s:%s blocked by budget: %s", provider, source_id, str(e)[:200]
+        )
+        store.finish_message(provider, source_id, "failed", str(e)[:200], attempts=attempts)
     except Exception as e:
         worker_logger.warning(
             "message %s:%s processing failed (attempt %s): %s",
@@ -488,13 +612,32 @@ def _create_and_run(
     task: str,
     ctx: dict[str, Any] | None = None,
 ) -> str:
-    run = store.create_run(
-        workflow,
-        WORKFLOWS[workflow].version,
-        {"task": task},
-        trace_id=uuid.uuid4().hex,
+    # 스코프드 예산 — 차단 시 예외를 던져 호출자(메시지 재시도/ radar 로그) 경로에 맡긴다
+    # 코얼레싱 scope input에 메시지 식별자를 포함한다 — task가 상수
+    # ("message intake" 등)인 경로에서 서로 다른 메시지가 하나의 run으로
+    # 합쳐져 후속 메시지가 처리 없이 processed 마킹되는 데이터 유실을 막는다.
+    input_data: dict[str, Any] = {"task": task}
+    if ctx:
+        for k in ("source_provider", "source_id", "gmail_message_id", "platform", "project"):
+            v = ctx.get(k)
+            if v:
+                input_data[k] = str(v)[:200]
+    blocks = budget_scope.evaluate_admission(store, workflow, str(input_data.get("project") or ""))
+    if blocks:
+        raise BudgetExceededError(f"budget_exceeded: {blocks[0]['scope']}")
+    res = wakeups.admit_run(
+        store,
+        workflow_key=workflow,
+        input_data=input_data,
+        source="automation",
         created_by="system:intake",
+        version=WORKFLOWS[workflow].version,
+        job_payload={"task": task},
     )
+    if res["action"] != "created":
+        # 동일 scope 활성 run에 합류 — 새 실행 없이 기존 run id 반환
+        return str(res.get("run_id") or "")
+    run = res["run"]
     # 동시 run 세마포어 — 메시지 폭주 시 LLM 동시 호출 상한.
     # 타임아웃 시 run을 failed로 마감하고 호출자(_process_message_job)의
     # 재시도 경로로 예외를 전파한다.
@@ -503,7 +646,9 @@ def _create_and_run(
             store.update_run(run.id, status=RunStatus.FAILED, error="concurrency_timeout")
         except Exception:
             logger.warning("run %s FAILED 마킹 실패", run.id, exc_info=True)
+        _promote_deferred_runs(store, settings, llm, adapters, run.id)
         raise RuntimeError(f"run {run.id} concurrency slot timeout")
+    invoke_error: Exception | None = None
     try:
         try:
             # build_runner 실패도 run을 pending/running에 고착시키지 않도록 try 안에서 호출
@@ -518,11 +663,16 @@ def _create_and_run(
             except Exception:
                 logger.warning("run %s FAILED 마킹 실패", run.id, exc_info=True)
             logger.warning("run %s invoke failed: %s", run.id, str(e)[:200])
-            raise
+            # promote는 슬롯 해제 후 공통 경로로 미룬다 — 슬롯 보유 중
+            # 중첩 promote하면 체인 깊이만큼 세마포어를 잠식한다.
+            invoke_error = e
     finally:
         _run_slots().release()
     done = store.get_run(run.id)
     logger.info("run %s finished status=%s", run.id, getattr(done, "status", "?"))
+    _promote_deferred_runs(store, settings, llm, adapters, run.id)
+    if invoke_error is not None:
+        raise invoke_error
     return run.id
 
 
@@ -637,12 +787,25 @@ def _maybe_daily_radar(
     llm: Any,
     adapters: dict[str, Any],
     defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
+    schedule: Any = None,
 ) -> None:
-    """KST 06:00 이후 최초 1회 radar 자동 수집 (자동화 플래그)."""
-    # radar는 항상 auto_approve — 과거 잔여 waiting_approval run/인박스 알림 정리
-    cleaned = store.cleanup_radar_waits()
+    """KST 06:00 이후 최초 1회 radar 자동 수집 (자동화 플래그).
+
+    schedule은 _promote_deferred_runs로 전달 — cron tick HTTP 핸들러가
+    호출할 때 deferred promote 실행을 BackgroundTasks로 위임하기 위함."""
+    # radar는 항상 auto_approve — 과거 잔여 waiting_approval run/인박스 알림 정리.
+    # 취소된 run의 wakeup finalize도 여기서 수행해야 deferred promote가 굶지 않는다.
+    radar_reaped: list[str] = []
+    cleaned = store.cleanup_radar_waits(reaped_out=radar_reaped)
     if cleaned:
         logger.info("radar stale waiting_approval cleaned: %d", cleaned)
+        for rid in radar_reaped:
+            try:
+                _promote_deferred_runs(store, settings, llm, adapters, rid, schedule=schedule)
+            except Exception:
+                worker_logger.warning(
+                    "wakeup finalize after radar cleanup failed run=%s", rid, exc_info=True
+                )
     auto = store.get_automation()
     if not auto.get("radar_enabled"):
         return
@@ -667,17 +830,43 @@ def _maybe_daily_radar(
         if not store.radar_snapshot_exists(p, today):
             task = f"radar daily {p}"
             ctx = {"platform": p, "force": False, "auto_approve": True}
-            if defer is not None:
-                run = store.create_run(
-                    "skill_radar",
-                    WORKFLOWS["skill_radar"].version,
-                    {"task": task},
-                    trace_id=uuid.uuid4().hex,
-                    created_by="radar",
-                )
-                defer.append((run.id, "skill_radar", {"task": task}, ctx))
-            else:
-                _create_and_run(store, settings, llm, adapters, "skill_radar", task, ctx)
+            try:
+                if defer is not None:
+                    # defer 경로는 job을 직접 예약하므로 여기서 admit —
+                    # _create_and_run은 내부에서 다시 admit하므로 호출하지 않는다.
+                    # 스코프드 예산도 여기서 검사한다(_create_and_run 우회 경로).
+                    blocks = budget_scope.evaluate_admission(
+                        store, "skill_radar", str(ctx.get("project") or "")
+                    )
+                    if blocks:
+                        worker_logger.warning(
+                            "radar %s deferred: budget exceeded scope=%s",
+                            p,
+                            blocks[0]["scope"],
+                        )
+                        continue
+                    res = wakeups.admit_run(
+                        store,
+                        workflow_key="skill_radar",
+                        input_data={"task": task},
+                        source="automation",
+                        created_by="radar",
+                        version=WORKFLOWS["skill_radar"].version,
+                        job_payload={"task": task},
+                    )
+                    if res["action"] == "created":
+                        defer.append((res["run"].id, "skill_radar", {"task": task}, ctx))
+                    else:
+                        worker_logger.info(
+                            "radar %s %s into run=%s", p, res["action"], res.get("run_id") or "-"
+                        )
+                else:
+                    _create_and_run(store, settings, llm, adapters, "skill_radar", task, ctx)
+            except Exception as e:
+                # 플랫폼 1개의 실패(예산 차단 BudgetExceededError 포함)가
+                # 나머지 플랫폼 수집과 last_radar_date 기록을 막지 않게 한다.
+                worker_logger.warning("radar %s collect failed: %s", p, str(e)[:200])
+                continue
             scheduled.append(p)
     auto["last_radar_date"] = today
     store.set_automation(auto)
