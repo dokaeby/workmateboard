@@ -50,29 +50,35 @@ export async function api<T = unknown>(
         : "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요",
     );
   }
-  if (r.status === 401) {
-    // 세션 만료 — 앱 셸이 auth 상태로 전환하도록 이벤트 발생.
-    // /auth/sessions는 쿠키 세션 전용 엔드포인트라 X-API-Key 인증에서는
-    // 항상 401이 정상 — 전역 로그아웃 이벤트에서 제외한다.
-    if (!path.startsWith("/auth/sessions")) {
-      window.dispatchEvent(new CustomEvent("jm:unauthorized"));
-    }
-    throw new ApiError(
-      401,
-      "unauthorized",
-      en() ? "Sign-in required — refresh and sign in again" : "로그인이 필요합니다 — 새로고침 후 로그인해주세요",
-    );
-  }
   const text = await r.text();
   let data: unknown = {};
   if (text) {
     try { data = JSON.parse(text); } catch { data = {}; }
   }
+  const j = data as { error?: { code?: string; message?: string } | string };
+  const errObj = typeof j?.error === "object" ? j.error : undefined;
+  const srvMsg = errObj?.message || (typeof j?.error === "string" ? j.error : "") || "";
+  const srvCode = errObj?.code || "";
+  if (r.status === 401) {
+    // 세션 만료 — 앱 셸이 auth 상태로 전환하도록 이벤트 발생.
+    // /auth/* 는 인증 플로우·세션 전용 엔드포인트가 혼재하고, API 키/로컬
+    // 의사 인증 사용자는 /auth/sessions 등이 항상 401을 반환한다 —
+    // 상태만으로 세션 만료와 구분할 수 없으므로 /auth/* 401은 이벤트를
+    // 발생시키지 않는다. 세션 만료는 /auth/me가 null을 반환하거나
+    // 일반 API의 401로 감지된다.
+    if (!path.startsWith("/auth/")) {
+      window.dispatchEvent(new CustomEvent("jm:unauthorized"));
+    }
+    throw new ApiError(
+      401,
+      srvCode || "unauthorized",
+      srvMsg ||
+        (en() ? "Sign-in required — refresh and sign in again" : "로그인이 필요합니다 — 새로고침 후 로그인해주세요"),
+    );
+  }
   if (!r.ok) {
-    const j = data as { error?: { code?: string; message?: string } | string };
-    const errObj = typeof j?.error === "object" ? j.error : undefined;
-    const msg = errObj?.message || (typeof j?.error === "string" ? j.error : "") || r.statusText;
-    const code = errObj?.code || "";
+    const msg = srvMsg || r.statusText;
+    const code = srvCode;
     if (r.status === 429) {
       throw new ApiError(
         429,

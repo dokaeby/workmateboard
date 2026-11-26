@@ -294,34 +294,93 @@ function MobileBar() {
   );
 }
 
-/** 미인증 화면 — Google 로그인 + API 키 입력 (레거시 index.html 인증 오버레이 이식). */
-function LoginOverlay({ authError }: { authError?: string | null }) {
+/** 미인증 화면 — Google OAuth + 이메일 회원가입/로그인 (세션 쿠키 인증).
+ *  X로 닫으면 앱 셸은 유지하고 하단 배너로 재로그인을 유도한다(레거시 auth-close 패리티). */
+function LoginOverlay({ authError, onClose }: { authError?: string | null; onClose: () => void }) {
   const { t } = useI18n();
-  const [key, setKey] = useState("");
-  const [keyErr, setKeyErr] = useState("");
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
+  const [needVerify, setNeedVerify] = useState(false);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
 
-  const submitKey = async (e: React.FormEvent) => {
+  useEffect(() => {
+    apiGet<{ google_enabled?: boolean }>("/auth/config")
+      .then((d) => setGoogleEnabled(d.google_enabled === true))
+      .catch(() => setGoogleEnabled(false));
+  }, []);
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const k = key.trim();
-    if (!k || busy) return;
+    if (busy || !email.trim() || !password) return;
     setBusy(true);
-    setKeyErr("");
-    localStorage.setItem("jobmate_api_key", k);
+    setErr("");
+    setNotice("");
+    setNeedVerify(false);
     try {
-      // 키 검증 — /auth/me가 200이면 reload로 앱 진입
-      await apiGet<{ user?: unknown }>("/auth/me");
-      window.location.reload();
-    } catch {
-      localStorage.removeItem("jobmate_api_key");
-      setKeyErr(t("auth.keyFail", "API 키가 올바르지 않습니다"));
+      if (mode === "login") {
+        await apiPost("/auth/login", { email: email.trim(), password });
+        window.location.reload();
+        return;
+      }
+      const res = await apiPost<{ email_verification_pending?: boolean; verify_email_sent?: boolean }>(
+        "/auth/signup",
+        { email: email.trim(), password, display_name: name.trim(), agree_terms: agree },
+      );
+      if (res?.email_verification_pending) {
+        // 세션 미발급 — 인증 메일 확인 후 로그인해야 한다.
+        // 메일 발송 실패(verify_email_sent=false)면 재발송 경로를 바로 연다.
+        setNeedVerify(true);
+        setNotice(
+          res.verify_email_sent === false
+            ? t("auth.verifySendFail", "인증 메일 발송에 실패했습니다 — 아래 버튼으로 재발송하세요")
+            : t("auth.verifySent", "인증 메일을 보냈습니다 — 메일의 링크를 클릭한 뒤 로그인하세요"),
+        );
+        setMode("login");
+      } else {
+        window.location.reload();
+      }
+    } catch (e2) {
+      if (e2 instanceof ApiError && e2.code === "email_not_verified") setNeedVerify(true);
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    } finally {
       setBusy(false);
     }
   };
 
+  const resendVerify = async () => {
+    try {
+      const res = await apiPost<{ sent?: boolean }>("/auth/verify/resend", { email: email.trim() });
+      setNotice(
+        res?.sent === false
+          ? t("auth.resendNone", "발송되지 않았습니다 — 이미 인증됐거나 가입된 이메일이 아닐 수 있습니다")
+          : t("auth.resendDone", "인증 메일을 재발송했습니다"),
+      );
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+    }
+  };
+
+  const inputCls =
+    "w-full rounded-[10px] border border-border bg-bg px-3 py-2 text-sm text-ink outline-none focus:border-accent";
+
   return (
     <div className="flex h-dvh items-center justify-center bg-bg p-4">
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-8 text-center shadow-sm">
+      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-surface p-8 text-center shadow-sm">
+        <button
+          type="button"
+          onClick={onClose}
+          title={t("auth.close", "닫기")}
+          aria-label={t("auth.close", "닫기")}
+          className="absolute right-3 top-3 border-none bg-transparent px-1.5 text-lg leading-none text-muted hover:text-ink"
+        >
+          ✕
+        </button>
         <div className="mb-1 text-xl font-bold text-accent">jobMate</div>
         <p className="mb-6 text-sm text-muted">
           {t("auth.required", "로그인이 필요합니다 — 세션이 만료됐거나 로그인이 필요해요.")}
@@ -331,36 +390,98 @@ function LoginOverlay({ authError }: { authError?: string | null }) {
             {t(`auth.err.${authError}`, authError)}
           </p>
         )}
-        <a
-          href="/api/v1/auth/google"
-          className="mb-4 block rounded-[10px] border border-border-strong bg-surface px-4 py-2.5 font-semibold text-ink no-underline transition-colors hover:bg-surface-hover"
-        >
-          {t("auth.google", "Google로 계속하기")}
-        </a>
-        <form onSubmit={submitKey} className="text-left">
-          <label className="mb-1 block text-xs font-medium text-muted" htmlFor="jm-api-key">
-            {t("auth.apiKey", "API 키")}
+        {googleEnabled && (
+          <a
+            href="/api/v1/auth/google"
+            className="mb-4 block rounded-[10px] border border-border-strong bg-surface px-4 py-2.5 font-semibold text-ink no-underline transition-colors hover:bg-surface-hover"
+          >
+            {t("auth.google", "Google로 로그인")}
+          </a>
+        )}
+        <form onSubmit={submit} className="text-left">
+          {mode === "signup" && (
+            <>
+              <label className="mb-1 block text-xs font-medium text-muted" htmlFor="jm-name">
+                {t("auth.displayName", "표시 이름 (선택)")}
+              </label>
+              <input
+                id="jm-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoComplete="nickname"
+                className={inputCls + " mb-3"}
+              />
+            </>
+          )}
+          <label className="mb-1 block text-xs font-medium text-muted" htmlFor="jm-email">
+            {t("auth.email", "이메일")}
           </label>
-          <div className="flex gap-2">
-            <input
-              id="jm-api-key"
-              type="password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={t("auth.apiKeyPh", "JOBMATE_API_KEY")}
-              autoComplete="off"
-              className="min-w-0 flex-1 rounded-[10px] border border-border bg-bg px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-            />
+          <input
+            id="jm-email"
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            className={inputCls + " mb-3"}
+          />
+          <label className="mb-1 block text-xs font-medium text-muted" htmlFor="jm-password">
+            {t("auth.password", "비밀번호")}
+          </label>
+          <input
+            id="jm-password"
+            type="password"
+            required
+            minLength={mode === "signup" ? 8 : undefined}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete={mode === "signup" ? "new-password" : "current-password"}
+            className={inputCls + " mb-3"}
+          />
+          {mode === "signup" && (
+            <label className="mb-3 flex items-start gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={agree}
+                onChange={(e) => setAgree(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>{t("auth.agreeTerms", "이용약관 및 개인정보처리방침에 동의합니다")}</span>
+            </label>
+          )}
+          {err && <p className="mb-2 text-xs text-err">{err}</p>}
+          {notice && <p className="mb-2 text-xs text-accent">{notice}</p>}
+          {needVerify && (
             <button
-              type="submit"
-              disabled={busy || !key.trim()}
-              className="shrink-0 rounded-[10px] border border-border-strong bg-surface px-3 py-2 text-sm font-semibold text-ink transition-colors hover:bg-surface-hover disabled:opacity-50"
+              type="button"
+              onClick={resendVerify}
+              className="mb-2 text-xs font-medium text-accent underline"
             >
-              {t("auth.login", "로그인")}
+              {t("auth.resendVerify", "인증 메일 재발송")}
             </button>
-          </div>
-          {keyErr && <p className="mt-2 text-xs text-err">{keyErr}</p>}
+          )}
+          <button
+            type="submit"
+            disabled={busy || !email.trim() || !password || (mode === "signup" && !agree)}
+            className="w-full rounded-[10px] border border-border-strong bg-accent px-4 py-2.5 font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {busy
+              ? t("common.loading", "로딩…")
+              : mode === "login"
+                ? t("auth.login", "로그인")
+                : t("auth.signup", "회원가입")}
+          </button>
         </form>
+        <button
+          type="button"
+          onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); setNotice(""); setNeedVerify(false); }}
+          className="mt-4 text-xs text-muted underline"
+        >
+          {mode === "login"
+            ? t("auth.toSignup", "계정이 없나요? 회원가입")
+            : t("auth.toLogin", "이미 계정이 있나요? 로그인")}
+        </button>
       </div>
     </div>
   );
@@ -369,10 +490,20 @@ function LoginOverlay({ authError }: { authError?: string | null }) {
 export default function App() {
   const { view, setView, role, setRole, setPrefs } = useAppStore();
   const [unauth, setUnauth] = useState(false);
-  // ?auth_error= OAuth 실패 코드는 마운트 시 1회만 읽는다 (이펙트 내 동기 setState 회피)
-  const [authError] = useState<string | null>(
-    () => new URLSearchParams(window.location.search).get("auth_error"),
-  );
+  // 로그인 오버레이를 X로 닫은 상태 — 앱 셸은 유지하고 배너로 재유도
+  const [authDismissed, setAuthDismissed] = useState(false);
+  // ?auth_error= OAuth 실패 코드는 마운트 시 1회만 읽고 URL에서 제거한다 —
+  // 남겨두면 이후 무관한 로그인 화면에 같은 오류가 반복 표시된다.
+  const [authError] = useState<string | null>(() => {
+    const q = new URLSearchParams(window.location.search);
+    const code = q.get("auth_error");
+    if (code) {
+      q.delete("auth_error");
+      const qs = q.toString();
+      window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    }
+    return code;
+  });
 
   // 딥링크 파라미터 — /?view=X 리다이렉트 복원
   useEffect(() => {
@@ -414,7 +545,11 @@ export default function App() {
   const { t } = useI18n();
 
   // /auth/me가 401로 null을 반환했거나 세션 만료 이벤트가 오면 로그인 화면
-  if (unauth || (me.isFetched && me.data === null)) return <LoginOverlay authError={authError} />;
+  // (X로 닫은 authDismissed 상태에서는 오버레이 대신 하단 배너만 표시)
+  const needsAuth = unauth || (me.isFetched && me.data === null);
+  if (needsAuth && !authDismissed) {
+    return <LoginOverlay authError={authError} onClose={() => setAuthDismissed(true)} />;
+  }
 
   return (
     <div className="flex h-dvh flex-col">
@@ -433,6 +568,19 @@ export default function App() {
         </div>
       </div>
       <MobileBar />
+      {/* 로그인 오버레이를 닫은 상태 — 하단 배너로 재로그인 유도 (레거시 #auth-needed 패리티) */}
+      {needsAuth && authDismissed && (
+        <div className="fixed inset-x-0 bottom-0 z-50 flex items-center justify-center gap-3 border-t border-err-border bg-err-soft px-4 py-2.5 text-sm text-err">
+          <span>{t("auth.banner", "로그인이 필요합니다 — 일부 기능을 사용할 수 없습니다")}</span>
+          <button
+            type="button"
+            onClick={() => setAuthDismissed(false)}
+            className="rounded-md border border-err-border bg-surface px-3 py-1 text-xs font-semibold text-ink hover:bg-surface-hover"
+          >
+            {t("auth.reopen", "로그인")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
