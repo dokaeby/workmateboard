@@ -43,6 +43,7 @@ export interface ApprovalRequestItem {
   summary?: string;
   resource_type?: string;
   resource_id?: string;
+  safe_payload?: Record<string, unknown>;
   task_id?: string;
   run_id?: string;
   expires_at?: string | null;

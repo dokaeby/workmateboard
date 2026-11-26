@@ -135,7 +135,12 @@ def backfill_cost_events(store: Store, *, batch: int = _BACKFILL_BATCH) -> dict[
         model = str(r.get("model") or "")
         # stage_run.model은 llm 단계의 agent.model.model — function 단계는
         # ''라 unpriced로 기록된다(억지 단가 금지).
-        emit_stage_cost_event(
+        bkey = f"backfill:stage:{sid}"
+        # 이미 백필 키가 있으면 emit은 replay만 반환한다 — created는
+        # 실제 INSERT된 행만 세야 하므로 시도 횟수가 아니라 생성 여부로 센다.
+        if store.get_cost_event_by_key(bkey) is not None:
+            continue
+        row = emit_stage_cost_event(
             store,
             run_id=str(r.get("run_id") or ""),
             stage_run_id=sid,
@@ -144,9 +149,10 @@ def backfill_cost_events(store: Store, *, batch: int = _BACKFILL_BATCH) -> dict[
             tokens_in=int(r.get("tokens_in") or 0),
             tokens_out=int(r.get("tokens_out") or 0),
             occurred_at=str(r.get("finished_at") or r.get("started_at") or "") or None,
-            idempotency_key=f"backfill:stage:{sid}",
+            idempotency_key=bkey,
         )
-        created += 1
+        if row is not None:
+            created += 1
     return {"scanned": len(rows), "created": created}
 
 

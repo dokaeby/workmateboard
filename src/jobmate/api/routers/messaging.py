@@ -246,6 +246,14 @@ def register(app: FastAPI, ctx: Any) -> None:
         _process_due_schedules(store, settings, llm, adapters, defer=schedule_jobs)
         _schedule_run_jobs(schedule_jobs, background_tasks)
         _check_waiting_approvals(store, adapters)
+        # watchdog 1 cycle — spec 2차 E. 서버리스 tick에서도 automation
+        # loop과 동일 규칙으로 감지/복구/escalation을 수행한다.
+        try:
+            from ...services import watchdog as _watchdog
+
+            _watchdog.run_cycle(store)
+        except Exception:
+            logger.warning("cron tick watchdog cycle failed", exc_info=True)
         _maybe_poll_gmail(store, settings, adapters)
         radar_jobs: list = []
         _maybe_daily_radar(

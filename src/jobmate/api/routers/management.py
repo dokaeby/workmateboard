@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -18,11 +19,14 @@ from ... import budget_scope
 from ...models import (
     AgentKind,
     AgentStatus,
+    ApprovalRisk,
     TaskStatus,
     can_transition_agent,
     canonical_agent_status,
 )
 from ...services import agent_management as mgmt
+from ...services import approvals as approvals_svc
+from ...services import watchdog as watchdog_svc
 from ..schemas import (
     AgentHeartbeatRequest,
     AgentTransitionRequest,
@@ -30,8 +34,11 @@ from ..schemas import (
     CostEventCreateRequest,
     ManagementAgentCreateRequest,
     ManagementAgentPatchRequest,
+    ManagementApprovalCreateRequest,
+    ManagementApprovalDecisionRequest,
     ManagementTaskCreateRequest,
     ManagementTaskPatchRequest,
+    RecoveryActionResolveRequest,
     TaskAssignRequest,
     TaskCheckoutRequest,
     TaskReleaseRequest,
@@ -39,14 +46,26 @@ from ..schemas import (
 
 logger = logging.getLogger("jobmate.api")
 
+# ---- cost-events 외부 보고 검증 상수 (H1) ----
+# occurred_at은 서버 시각 기준 과거 24h / 미래 5min을 벗어나면 거부한다 —
+# 과거 날짜로 백데이트해 월간 예산 윈도우 집계를 회피하는 것을 막는다.
+_COST_EVENT_MAX_PAST = timedelta(hours=24)
+_COST_EVENT_MAX_FUTURE = timedelta(minutes=5)
+# 내부 원장 키 네임스페이스 — 외부 보고자가 이 prefix를 선점하면 실제 지출
+# 기록(emit의 `cost:{stage_run_id}`, 백필의 `backfill:stage:{id}`)이
+# idempotency UNIQUE에 의해 영구 억제되므로 예약 키는 거부한다.
+_COST_EVENT_RESERVED_KEY_PREFIXES = ("cost:", "backfill:")
+
 
 def register(app: FastAPI, ctx: Any) -> None:
     store = ctx.store
     err = ctx.err
     _lead_gate = ctx._lead_gate
     _explicit_lead_user = ctx._explicit_lead_user
+    _admin_gate = ctx._admin_gate
     _audit_api = ctx._audit_api
     _actor_label = ctx._actor_label
+    _do_approve = ctx._do_approve
     _run_rate_limited = ctx._run_rate_limited
     _monthly_budget_usd = ctx._monthly_budget_usd
     _mtd_llm_cost_usd = ctx._mtd_llm_cost_usd
@@ -309,9 +328,21 @@ def register(app: FastAPI, ctx: Any) -> None:
                         "monthly LLM budget exceeded",
                         request,
                     )
-            # 스코프드 예산(global/project/workflow/agent) — hard_stop 차단.
+            # 스코프드 예산(global/project/workflow/agent/task) — hard_stop 차단.
             # wake는 project 태그가 없으므로 project=""로 심사한다.
-            blocks = budget_scope.evaluate_admission(store, workflow, "", agent_id=agent_id)
+            # task_id는 body.task_id를 넘겨 task 스코프 정책이 task-bound
+            # wake에도 평가되게 한다 — task 컨텍스트가 없는 다른 run 생성
+            # 경로(POST /runs 등)에는 task 정책이 적용되지 않는 것이 정상.
+            # wake_agent와 동일하게 identifier('WMB-1')를 canonical id로
+            # 해석해 cost_events.task_id(uuid)와 정책 scope_id가 일치하게 한다.
+            wake_task_id = (body.task_id or "").strip()
+            if wake_task_id:
+                _t = store.get_task(wake_task_id)
+                if _t is not None:
+                    wake_task_id = str(_t["id"])
+            blocks = budget_scope.evaluate_admission(
+                store, workflow, "", agent_id=agent_id, task_id=wake_task_id
+            )
             if blocks:
                 _audit_api(
                     request,
@@ -563,17 +594,111 @@ def register(app: FastAPI, ctx: Any) -> None:
         """외부 runner의 비용 보고 — 머신 API 키 전용(세션 쿠키 불가).
 
         spec 2차 A: 정수 microusd만 허용(스키마 StrictInt + store 재검증),
-        idempotency_key UNIQUE로 재전송 중복 청구를 막는다."""
+        idempotency_key UNIQUE로 재전송 중복 청구를 막는다.
+
+        주의(H1): 외부 보고의 cost_status='reported'는 호출자가 주장하는
+        값이다 — provider 청구서를 서버가 검증하지 않으므로 원장에는
+        'caller-asserted'로 취급한다. estimated(자체 rate card)와 달리
+        reported 금액의 정확성은 외부 runner 신뢰에 의존한다."""
         gate = _machine_gate(request)
         if gate is not None:
             return gate
+        # ---- 외부 입력 검증 (H1) — 원장 무결성 ----
+        # 1) idempotency_key: 공백-only 거부 + 내부 예약 prefix(cost:/backfill:)
+        #    선점 거부 — 실제 지출 기록이 UNIQUE 충돌로 영구 억제되는 것을 막는다.
+        idem_key = (body.idempotency_key or "").strip()
+        if not idem_key:
+            return err(422, "validation", "idempotency_key must not be blank", request)
+        if idem_key.lower().startswith(_COST_EVENT_RESERVED_KEY_PREFIXES):
+            return err(
+                422,
+                "reserved_idempotency_key",
+                "idempotency_key uses a reserved internal prefix (cost:/backfill:)",
+                request,
+            )
+        # 2) occurred_at: ISO-8601 파싱 + 서버 시각 기준 클램프 — 과거
+        #    백데이팅으로 월간 예산 윈도우 집계를 회피하는 것을 막는다.
+        occurred_at = (body.occurred_at or "").strip() or None
+        if occurred_at is not None:
+            try:
+                occ_dt = datetime.fromisoformat(occurred_at)
+            except ValueError:
+                return err(422, "validation", "occurred_at must be ISO-8601", request)
+            if occ_dt.tzinfo is None:
+                occ_dt = occ_dt.replace(tzinfo=UTC)
+            now_dt = datetime.now(UTC)
+            if now_dt - occ_dt > _COST_EVENT_MAX_PAST:
+                return err(
+                    422,
+                    "validation",
+                    "occurred_at is more than 24h in the past",
+                    request,
+                )
+            if occ_dt - now_dt > _COST_EVENT_MAX_FUTURE:
+                return err(
+                    422,
+                    "validation",
+                    "occurred_at is more than 5min in the future",
+                    request,
+                )
+            # UTC로 정규화 — 'Z'와 '+00:00'이 혼재해도 occurred_at 범위
+            # 문자열 비교(occurred_from/to)가 어긋나지 않게 한다.
+            occurred_at = occ_dt.astimezone(UTC).isoformat()
+        # 3) 참조 무결성 — 존재하지 않는 run/stage_run/task/agent 태그를
+        #    원장에 기록하지 않는다. stage_run은 run_id가 함께 오면 소속도 검증.
+        run_id = (body.run_id or "").strip() or None
+        stage_run_id = (body.stage_run_id or "").strip() or None
+        task_id = (body.task_id or "").strip() or None
+        agent_id = (body.agent_id or "").strip()
+        if run_id is not None and store.get_run(run_id) is None:
+            return err(404, "not_found", "run not found", request)
+        if stage_run_id is not None:
+            sr = store.get_stage_run(stage_run_id)
+            if sr is None:
+                return err(404, "not_found", "stage_run not found", request)
+            if run_id is not None and sr.run_id != run_id:
+                return err(
+                    422,
+                    "validation",
+                    "stage_run_id does not belong to run_id",
+                    request,
+                )
+            # M6 — stage_run_id만 태그된 외부 이벤트도 run 스코프 집계
+            # (workflow/project/agent 귀속)가 되도록 run_id를 서버에서
+            # 유도한다. run_id를 채우면 cost_events_spend_microusd의
+            # runs JOIN과 agent 폴백이 그대로 적용된다.
+            if run_id is None and getattr(sr, "run_id", None):
+                run_id = str(sr.run_id)
+        if run_id is not None:
+            if agent_id == "":
+                # agent 스코프는 ce.agent_id → runs.agent_id 폴백이 있어
+                # run_id 유도만으로도 잡히지만, 명시 태깅이 다른 소비자
+                # (export/대시보드)에도 귀속을 전파한다.
+                run_obj = store.get_run(run_id)
+                new_agent = getattr(run_obj, "agent_id", "") if run_obj is not None else ""
+                if new_agent and store.get_agent(new_agent) is not None:
+                    agent_id = str(new_agent)
+            if task_id is None:
+                # task 스코프는 ce.task_id 직접 매칭 — run이 단일 task에만
+                # 귀속될 때만 유도한다(다대다 run에 임의 task를 박지 않음).
+                try:
+                    tr_list = store.task_runs_for_run(run_id)
+                except Exception:
+                    tr_list = []
+                task_ids = {str(t.get("task_id") or "") for t in tr_list} - {""}
+                if len(task_ids) == 1:
+                    task_id = task_ids.pop()
+        if task_id is not None and store.get_task(task_id) is None:
+            return err(404, "not_found", "task not found", request)
+        if agent_id and store.get_agent(agent_id) is None:
+            return err(404, "not_found", "agent not found", request)
         try:
             row, created = store.record_cost_event(
-                idempotency_key=body.idempotency_key,
-                agent_id=body.agent_id,
-                task_id=body.task_id,
-                run_id=body.run_id,
-                stage_run_id=body.stage_run_id,
+                idempotency_key=idem_key,
+                agent_id=agent_id,
+                task_id=task_id,
+                run_id=run_id,
+                stage_run_id=stage_run_id,
                 provider=body.provider,
                 model=body.model,
                 billing_type=body.billing_type,
@@ -584,7 +709,7 @@ def register(app: FastAPI, ctx: Any) -> None:
                 cost_microusd=body.cost_microusd,
                 pricing_source=body.pricing_source,
                 pricing_version=body.pricing_version,
-                occurred_at=body.occurred_at,
+                occurred_at=occurred_at,
             )
         except ValueError as e:
             return err(422, "validation", str(e), request)
@@ -597,10 +722,10 @@ def register(app: FastAPI, ctx: Any) -> None:
                 "cost event accepted id=%s key=%s agent=%s run=%s stage_run=%s "
                 "provider=%s model=%s status=%s microusd=%s",
                 row.get("id"),
-                body.idempotency_key[:80],
-                body.agent_id[:40] or "-",
-                body.run_id or "-",
-                body.stage_run_id or "-",
+                idem_key[:80],
+                agent_id[:40] or "-",
+                run_id or "-",
+                stage_run_id or "-",
                 body.provider[:40] or "-",
                 body.model[:60] or "-",
                 body.cost_status,
@@ -611,7 +736,7 @@ def register(app: FastAPI, ctx: Any) -> None:
                 "mgmt_cost_event_create",
                 str(row.get("id") or ""),
                 {
-                    "key": body.idempotency_key[:80],
+                    "key": idem_key[:80],
                     "cost_status": body.cost_status,
                     "model": body.model[:60],
                 },
@@ -691,3 +816,219 @@ def register(app: FastAPI, ctx: Any) -> None:
         frm = occurred_from or request.query_params.get("from")
         to = occurred_to or request.query_params.get("to")
         return JSONResponse(content=store.cost_summary(st, sid, occurred_from=frm, occurred_to=to))
+
+    # ==================== approvals (spec 2차 D) ====================
+
+    @app.post("/api/v1/management/approvals", status_code=201)
+    def mgmt_create_approval(
+        body: ManagementApprovalCreateRequest, request: Request
+    ) -> JSONResponse:
+        """범용 승인 요청 생성 — lead 이상. safe_payload의 secret-like
+        key는 서비스가 422로 거부한다."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        try:
+            row, _created = approvals_svc.request_approval(
+                store,
+                action_type=body.action_type,
+                risk_level=body.risk_level,
+                summary=body.summary,
+                safe_payload=body.safe_payload,
+                requested_by=_actor_label(request),
+                requested_by_agent_id=body.requested_by_agent_id,
+                task_id=body.task_id,
+                run_id=body.run_id,
+                resource_type=body.resource_type,
+                resource_id=body.resource_id,
+                expires_at=body.expires_at,
+            )
+        except mgmt.ManagementError as e:
+            return err(e.status_code, e.code, e.message, request)
+        if row is None:
+            return err(500, "internal_error", "approval request not created", request)
+        # spec H: approval requested 로그 — id/action/risk(금액·본문 금지).
+        logger.info(
+            "approval requested id=%s action=%s risk=%s by=%s",
+            row.get("id"),
+            row.get("action_type"),
+            row.get("risk_level"),
+            _actor_label(request),
+        )
+        _audit_api(
+            request,
+            "mgmt_approval_create",
+            str(row.get("id") or ""),
+            {
+                "action_type": row.get("action_type"),
+                "risk_level": row.get("risk_level"),
+                "resource": f"{row.get('resource_type')}:{row.get('resource_id')}",
+            },
+        )
+        return JSONResponse(status_code=201, content=row)
+
+    @app.get("/api/v1/management/approvals")
+    def mgmt_list_approvals(
+        request: Request,
+        status: str | None = None,
+        action_type: str | None = None,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        limit: int = 100,
+    ) -> JSONResponse:
+        """승인 요청 조회 — lead 이상. 최신순, 읽기 전 만료 sweep."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        items = approvals_svc.list_approvals(
+            store,
+            status=status,
+            action_type=action_type,
+            run_id=run_id,
+            task_id=task_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            limit=limit,
+        )
+        return JSONResponse(content={"items": items})
+
+    @app.post("/api/v1/management/approvals/{approval_id}/decision")
+    def mgmt_decide_approval(
+        approval_id: str, body: ManagementApprovalDecisionRequest, request: Request
+    ) -> JSONResponse:
+        """승인 결정 — pending에서 CAS로 단 한 번만 성공.
+
+        high/critical risk는 _explicit_lead_user(세션 lead/admin 또는
+        로컬 개발 admin)가 필요 — 유효 API 키(머신)만으로는 결정 불가."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        existing = store.get_approval_request(approval_id)
+        if existing is None:
+            return err(404, "not_found", "approval request not found", request)
+        # C1 — 저장된 risk_level이 action_type 최소치를 밑도는 레거시
+        # row도 사람 결정을 요구한다(생성 시 보정 이전 데이터 대비).
+        risk = approvals_svc.effective_risk_level(
+            str(existing.get("action_type") or ""),
+            str(existing.get("risk_level") or ""),
+        )
+        explicit_user = _explicit_lead_user(request)
+        if risk in (ApprovalRisk.HIGH.value, ApprovalRisk.CRITICAL.value):
+            if explicit_user is None:
+                logger.warning(
+                    "high-risk approval decision rejected: machine-only auth id=%s",
+                    approval_id,
+                )
+                return err(
+                    403,
+                    "explicit_lead_required",
+                    "high/critical risk approvals require a logged-in lead/admin",
+                    request,
+                )
+        decided_by = ""
+        if explicit_user is not None:
+            decided_by = str(explicit_user.get("email") or explicit_user.get("id") or "lead")[:200]
+        else:
+            decided_by = _actor_label(request)
+        try:
+            row = approvals_svc.decide_approval(
+                store,
+                approval_id,
+                body.decision,
+                decided_by=decided_by,
+                decision_comment=body.comment,
+                actor=_actor_label(request),
+                resume_fn=_do_approve,
+            )
+        except mgmt.ManagementError as e:
+            return err(e.status_code, e.code, e.message, request)
+        _audit_api(
+            request,
+            f"mgmt_approval_{body.decision}",
+            approval_id,
+            {
+                "action_type": row.get("action_type"),
+                "risk_level": row.get("risk_level"),
+                "decided_by": decided_by[:80],
+            },
+        )
+        return JSONResponse(content=row)
+
+    # ==================== recovery-actions (spec 2차 E) ====================
+
+    @app.get("/api/v1/management/recovery-actions")
+    def mgmt_list_recovery_actions(
+        request: Request,
+        status: str | None = None,
+        kind: str | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
+        limit: int = 100,
+    ) -> JSONResponse:
+        """watchdog 복구 액션 조회 — lead 이상. 최신순."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        items = store.list_recovery_actions(
+            status=status,
+            kind=kind,
+            source_type=source_type,
+            source_id=source_id,
+            limit=limit,
+        )
+        return JSONResponse(content={"items": items})
+
+    @app.post("/api/v1/management/recovery-actions/{recovery_id}/resolve")
+    def mgmt_resolve_recovery(
+        recovery_id: str, body: RecoveryActionResolveRequest, request: Request
+    ) -> JSONResponse:
+        """복구 액션 수동 종결(resolved|cancelled) — lead 이상."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        rec = store.get_recovery_action(recovery_id)
+        if rec is None:
+            return err(404, "not_found", "recovery action not found", request)
+        note = body.note.strip()[:500]
+        ok = store.set_recovery_status(
+            recovery_id,
+            body.status,
+            resolution_note=note or f"manual {body.status} by {_actor_label(request)}",
+        )
+        if not ok:
+            return err(
+                409,
+                "invalid_transition",
+                f"recovery action is {rec.get('status')}; cannot set {body.status}",
+                request,
+            )
+        _audit_api(
+            request,
+            f"mgmt_recovery_{body.status}",
+            recovery_id,
+            {"kind": rec.get("kind"), "source": f"{rec.get('source_type')}:{rec.get('source_id')}"},
+        )
+        logger.info("recovery %s id=%s by=%s", body.status, recovery_id, _actor_label(request))
+        return JSONResponse(content=store.get_recovery_action(recovery_id) or {})
+
+    # ==================== watchdog (spec 2차 E) ====================
+
+    @app.post("/api/v1/management/watchdog/run")
+    def mgmt_watchdog_run(request: Request) -> JSONResponse:
+        """watchdog 1 cycle 수동 실행 — admin 전용(운영 cron과 동일 service).
+
+        운영 tick(_automation_loop/cron_tick)과 같은 run_cycle을 쓰므로
+        감지·복구·escalation 규칙이 동일하다."""
+        gate = _admin_gate(request)
+        if gate is not None:
+            return gate
+        try:
+            counts = watchdog_svc.run_cycle(store)
+        except Exception as e:
+            logger.warning("manual watchdog run failed: %s", str(e)[:200])
+            return err(500, "internal_error", "watchdog cycle failed", request)
+        _audit_api(request, "mgmt_watchdog_run", "", counts)
+        logger.info("manual watchdog run counts=%s", counts)
+        return JSONResponse(content=counts)

@@ -122,7 +122,10 @@ def scope_spend_microusd(
 def scope_spend_usd(
     store: Store, scope_type: str, scope_id: str = "", month: str | None = None
 ) -> float:
-    """스코프의 당월 비용 USD — microusd 권위값의 표시용 파생(레거시 호환)."""
+    """스코프의 당월 비용 USD — microusd 권위값의 표시용 파생(레거시 호환).
+
+    참고: 현재 프로덕션 호출자 없음(테스트만 사용) — 신규 코드는
+    scope_spend_microusd를 사용할 것."""
     return scope_spend_microusd(store, scope_type, scope_id, month) / MICROUSD_PER_USD
 
 

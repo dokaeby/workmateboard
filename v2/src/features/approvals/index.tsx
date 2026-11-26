@@ -184,6 +184,12 @@ function ApprovalRequestRow({
           {a.expires_at ? <> · {t("appr.expiresAt", "만료")} {fmtTs(a.expires_at)}</> : null}
           {restricted ? <> · <span className="text-warn">{t("appr.riskRestricted", "높은 위험 — 리드 이상 권한 필요")}</span></> : null}
         </div>
+        {a.safe_payload && Object.keys(a.safe_payload).length > 0 ? (
+          <div className="mt-0.5 truncate font-mono text-[11px] text-muted">
+            {t("appr.payload", "페이로드")}:{" "}
+            {JSON.stringify(a.safe_payload).slice(0, 200)}
+          </div>
+        ) : null}
       </div>
       <div className="flex gap-1.5">
         {decidable && (

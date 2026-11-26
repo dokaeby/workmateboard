@@ -531,6 +531,14 @@ def _automation_loop(
             _process_due_notification_jobs(store, adapters)
             _process_due_schedules(store, settings, llm, adapters)
             _check_waiting_approvals(store, adapters)
+            # watchdog 1 cycle — spec 2차 E. 감지/복구/escalation은 내부에서
+            # batch 상한(JOBMATE_WATCHDOG_BATCH)과 중복 방지를 적용한다.
+            try:
+                from ..services import watchdog as _watchdog
+
+                _watchdog.run_cycle(store)
+            except Exception:
+                worker_logger.warning("watchdog cycle failed", exc_info=True)
             _maybe_poll_gmail(store, settings, adapters)
             _maybe_daily_radar(store, settings, llm, adapters)
             _maybe_check_triggers(store, settings, llm, adapters)

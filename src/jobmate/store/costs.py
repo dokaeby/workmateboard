@@ -234,8 +234,12 @@ class CostStoreMixin:
         return [self._cost_event_json(r) for r in self._conn.execute(sql, params).fetchall()]
 
     # ---- 스코프별 원장 지출 (budget_scope microusd 경로의 원시 합계) ----
-    def _cost_scope_joins(self, scope_type: str, scope_id: str) -> tuple[str, list[Any]]:
-        """cost_events 스코프 필터 — runs LEFT JOIN으로 workflow/project 귀속.
+    def _cost_scope_joins(self, scope_type: str, scope_id: str) -> tuple[str, str, list[Any]]:
+        """cost_events 스코프 필터 — (join_sql, where_cond, params) 반환.
+
+        스코프 조건은 반드시 WHERE 절에 둬야 한다 — JOIN ... ON에 넣으면
+        LEFT JOIN 특성상 매칭 실패 행이 r.* = NULL로 살아남아 모든 비-global
+        스코프가 전체 합계를 반환하는 버그가 된다(H-원장 스코프 누수).
 
         agent 스코프는 ce.agent_id를 우선하고 비어 있으면 runs.agent_id로
         폴백한다(외부 runner 이벤트가 run만 태깅한 경우 귀속 유지)."""
@@ -256,10 +260,10 @@ class CostStoreMixin:
             cond = " AND ce.task_id = ?"
             params.append(sid)
         elif scope_type != "global":
-            # 알 수 없는 scope_type은 전체 합계를 반환하지 않고 0행 —
-            # 잘못된 스코프가 전체 예산을 소비한 것처럼 보이는 것을 막는다.
+            # 알 수 없는 scope_type/빈 scope_id는 전체 합계를 반환하지 않고
+            # 0행 — 잘못된 스코프가 전체 예산을 소비한 것처럼 보이는 것을 막는다.
             cond = " AND 1=0"
-        return join + cond, params
+        return join, cond, params
 
     def cost_events_spend_microusd(
         self,
@@ -274,13 +278,14 @@ class CostStoreMixin:
         (unpriced_cost_event_count)로 다룬다 — '모름'과 '0원'을 구분."""
         if scope_type not in _COST_SCOPE_TYPES:
             return 0
-        scope_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
+        join_sql, cond_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
         sql = (
-            "SELECT COALESCE(SUM(ce.cost_microusd),0) AS s FROM cost_events ce"  # noqa: S608 - scope_sql은 고정 fragment + 바운드 파라미터
-            + scope_sql
+            "SELECT COALESCE(SUM(ce.cost_microusd),0) AS s FROM cost_events ce"  # noqa: S608 - join/cond는 고정 fragment + 바운드 파라미터
+            + join_sql
             + " WHERE ce.cost_microusd IS NOT NULL"
+            + cond_sql
         )
-        # scope_sql의 ? 는 WHERE 절보다 앞에 위치하므로 scope_params를 먼저 둔다.
+        # cond_sql의 ? 는 WHERE 절 선두에 위치하므로 scope_params를 먼저 둔다.
         params: list[Any] = list(scope_params)
         if since_iso:
             sql += " AND ce.occurred_at >= ?"
@@ -304,13 +309,14 @@ class CostStoreMixin:
         """기간 내 unpriced(cost_microusd IS NULL) 이벤트 수 — 스코프 귀속."""
         if scope_type not in _COST_SCOPE_TYPES:
             return 0
-        scope_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
+        join_sql, cond_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
         sql = (
-            "SELECT COUNT(*) AS n FROM cost_events ce"  # noqa: S608 - scope_sql은 고정 fragment + 바운드 파라미터
-            + scope_sql
+            "SELECT COUNT(*) AS n FROM cost_events ce"  # noqa: S608 - join/cond는 고정 fragment + 바운드 파라미터
+            + join_sql
             + " WHERE 1=1"
+            + cond_sql
         )
-        # scope_sql의 ? 는 WHERE 절보다 앞에 위치하므로 scope_params를 먼저 둔다.
+        # cond_sql의 ? 는 WHERE 절 선두에 위치하므로 scope_params를 먼저 둔다.
         params: list[Any] = list(scope_params)
         if since_iso:
             sql += " AND ce.occurred_at >= ?"
@@ -336,17 +342,17 @@ class CostStoreMixin:
         """GET /management/costs/summary용 — 스코프·기간 합계.
 
         total_microusd는 priced 이벤트만 합산하고 unpriced는 별도 카운트 —
-        '미가격'을 0원으로 뭉개지 않는다. *_usd 필드는 표시 호환용 파생값."""
-        if scope_type not in _COST_SCOPE_TYPES:
-            scope_type = "global"
-            scope_id = ""
-        scope_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
+        '미가격'을 0원으로 뭉개지 않는다. *_usd 필드는 표시 호환용 파생값.
+        알 수 없는 scope_type은 sibling 함수들과 동일하게 0행 결과를 반환한다
+        (_cost_scope_joins가 'AND 1=0'을 붙인다) — global로 강제 변환해
+        전체 합계를 보여주지 않는다."""
+        join_sql, cond_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
         sql = (
-            "SELECT ce.cost_status AS cost_status, COUNT(*) AS n,"  # noqa: S608 - scope_sql은 고정 fragment + 바운드 파라미터
+            "SELECT ce.cost_status AS cost_status, COUNT(*) AS n,"  # noqa: S608 - join/cond는 고정 fragment + 바운드 파라미터
             " COALESCE(SUM(ce.cost_microusd),0) AS s"
-            " FROM cost_events ce" + scope_sql + " WHERE 1=1"
+            " FROM cost_events ce" + join_sql + " WHERE 1=1" + cond_sql
         )
-        # scope_sql의 ? 는 WHERE 절보다 앞에 위치하므로 scope_params를 먼저 둔다.
+        # cond_sql의 ? 는 WHERE 절 선두에 위치하므로 scope_params를 먼저 둔다.
         params: list[Any] = list(scope_params)
         if occurred_from:
             sql += " AND ce.occurred_at >= ?"
@@ -365,6 +371,34 @@ class CostStoreMixin:
             by_status[st] = {"count": n, "microusd": s}
             total_n += n
             total_mu += s
+        # by_agent — 비용 뷰(v2)가 기대하는 에이전트별 집계. 귀속 표현식은
+        # _cost_scope_joins의 agent 스코프와 동일하게 맞춘다(ce.agent_id 우선,
+        # 비어 있으면 runs.agent_id 폴백). unpriced 이벤트만 있는 에이전트도
+        # unpriced_count와 함께 포함한다 — '미가격'을 누락시키지 않는다.
+        agent_expr = "COALESCE(NULLIF(ce.agent_id,''), r.agent_id, '')"
+        agent_sql = (
+            f"SELECT {agent_expr} AS agent_id,"  # noqa: S608 - agent_expr는 고정 fragment
+            " COALESCE(SUM(ce.cost_microusd),0) AS s,"
+            " SUM(CASE WHEN ce.cost_microusd IS NULL THEN 1 ELSE 0 END) AS unpriced"
+            " FROM cost_events ce" + join_sql + " WHERE 1=1" + cond_sql
+        )
+        # WHERE 절은 by_status 쿼리와 동일 — params는 이미 scope_params +
+        # occurred_from/to 순으로 바인드돼 있으므로 값을 다시 append하지 않는다.
+        if occurred_from:
+            agent_sql += " AND ce.occurred_at >= ?"
+        if occurred_to:
+            agent_sql += " AND ce.occurred_at < ?"
+        agent_params: list[Any] = list(params)
+        agent_sql += f" GROUP BY {agent_expr} ORDER BY s DESC, agent_id LIMIT 50"  # noqa: S608
+        by_agent: list[dict[str, Any]] = []
+        for r in self._conn.execute(agent_sql, agent_params).fetchall():
+            by_agent.append(
+                {
+                    "agent_id": str(r["agent_id"] or ""),
+                    "total_microusd": int(r["s"] or 0),
+                    "unpriced_count": int(r["unpriced"] or 0),
+                }
+            )
         return {
             "scope_type": scope_type,
             "scope_id": scope_id if scope_type != "global" else "",
@@ -375,6 +409,7 @@ class CostStoreMixin:
             "total_usd": total_mu / 1_000_000,
             "unpriced_count": by_status.get("unpriced", {}).get("count", 0),
             "by_status": by_status,
+            "by_agent": by_agent,
         }
 
     def uncovered_stage_spend_rows(
@@ -385,7 +420,16 @@ class CostStoreMixin:
         runner가 방출한 cost 이벤트(stage_run_id 연결)와 백필 행이 있는
         stage_run은 제외해 이중 계상을 막는다. 남은 행은 cost 원장이 아직
         없는 레거시/외부 경로의 사용량 — budget_scope가 rate card로
-        microusd 환산해 원장 지출에 합산한다."""
+        microusd 환산해 원장 지출에 합산한다.
+
+        알려진 브리지 갭(수용): run_id는 있지만 stage_run_id가 없는 외부
+        cost_events는 해당 stage_run의 토큰 기반 미커버 행과 별개로 합산돼
+        이중 계상될 수 있다 — 외부 runner가 stage_run_id를 태깅하도록
+        유도하는 것이 완전한 해법이다.
+
+        월 경계 차이(수용): 원장 이벤트는 occurred_at으로, 이 함수의 미커버
+        행은 sr.started_at으로 기간을 자른다 — 경계 시각의 stage_run은
+        원장/미커버 집계가 어긋날 수 있으나 드물고 허용 범위로 본다."""
         if scope_type not in _COST_SCOPE_TYPES:
             return []
         sql = (

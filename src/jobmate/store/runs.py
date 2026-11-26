@@ -348,6 +348,11 @@ class RunStoreMixin:
         ).fetchall()
         return [self._row_to_stage(r) for r in rows]
 
+    def get_stage_run(self, stage_run_id: str) -> StageRun | None:
+        """stage_run 단건 조회 — cost-events 외부 보고의 참조 무결성 검증용."""
+        row = self._conn.execute("SELECT * FROM stage_runs WHERE id=?", (stage_run_id,)).fetchone()
+        return self._row_to_stage(row) if row else None
+
     def latest_stage(self, run_id: str, stage_key: str) -> StageRun | None:
         rows = self.get_stage_runs(run_id)
         matched = [r for r in rows if r.stage_key == stage_key]

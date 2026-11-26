@@ -90,7 +90,25 @@ def test_agent_crud(tmp_path: Path) -> None:
     # PATCH unknown → 404
     assert client.patch("/api/v1/agents/nope", json={"role": "x"}).status_code == 404
 
-    # DELETE → 소프트 삭제(archived), 행은 보존
+    # DELETE → 승인된 agent_terminate 없이는 409 approval_required
+    # (spec 2차 D — archived는 canonical terminated). 승인 후에는 200.
+    r = client.delete(f"/api/v1/agents/{a['id']}")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "approval_required"
+    ar = client.post(
+        "/api/v1/management/approvals",
+        json={
+            "action_type": "agent_terminate",
+            "resource_type": "agent",
+            "resource_id": a["id"],
+            "safe_payload": {"agent_id": a["id"]},
+        },
+    )
+    assert ar.status_code == 201
+    d = client.post(
+        f"/api/v1/management/approvals/{ar.json()['id']}/decision",
+        json={"decision": "approve"},
+    )
+    assert d.status_code == 200
     r = client.delete(f"/api/v1/agents/{a['id']}")
     assert r.status_code == 200 and r.json()["status"] == "archived"
     assert store.get_agent(a["id"])["status"] == "archived"
@@ -145,7 +163,7 @@ def test_agent_validation(tmp_path: Path) -> None:
 
 
 def test_reports_to_org_rules(tmp_path: Path) -> None:
-    client, _ = _env(tmp_path)
+    client, store = _env(tmp_path)
     lead = _mk(client, "Lead")
     dev = _mk(client, "Dev", reports_to=lead["id"])
     assert dev["reports_to"] == lead["id"]
@@ -181,7 +199,7 @@ def test_reports_to_org_rules(tmp_path: Path) -> None:
     assert r.status_code == 200
 
     # archived 에이전트는 reports_to 대상 불가
-    client.delete(f"/api/v1/agents/{c['id']}")
+    assert store.archive_agent(c["id"])
     r = client.post(
         "/api/v1/agents",
         json={"name": "new", "adapter_type": "claude", "reports_to": c["id"]},
@@ -196,11 +214,11 @@ def test_reports_to_org_rules(tmp_path: Path) -> None:
 def test_archived_parent_noop_patch_allowed(tmp_path: Path) -> None:
     """archived 상위를 가진 행의 다른 필드 PATCH는 reports_to를 재전송해도
     200이어야 한다 — 새로 archived를 상위로 지정하는 것만 422."""
-    client, _ = _env(tmp_path)
+    client, store = _env(tmp_path)
     parent = _mk(client, "Parent")
     child = _mk(client, "Child", reports_to=parent["id"])
     # 상위를 archived로
-    assert client.delete(f"/api/v1/agents/{parent['id']}").status_code == 200
+    assert store.archive_agent(parent["id"])
 
     # 프론트가 현재 reports_to를 함께 재전송하는 PATCH → 200 (회귀)
     r = client.patch(
@@ -216,7 +234,7 @@ def test_archived_parent_noop_patch_allowed(tmp_path: Path) -> None:
 
     # 다른 archived 에이전트를 새 상위로 지정 → 422
     other = _mk(client, "Other")
-    assert client.delete(f"/api/v1/agents/{other['id']}").status_code == 200
+    assert store.archive_agent(other["id"])
     r = client.patch(f"/api/v1/agents/{child['id']}", json={"reports_to": other["id"]})
     assert r.status_code == 422 and "archived" in r.json()["error"]["message"]
 
@@ -338,7 +356,7 @@ def test_run_agent_id_tagging(tmp_path: Path) -> None:
     assert run is not None and run.agent_id == a["id"]
 
     # terminated(구 archived) 에이전트는 신규 run 태깅 불가 → 422
-    assert client.delete(f"/api/v1/agents/{a['id']}").status_code == 200
+    assert store.archive_agent(a["id"])
     r = client.post(
         "/api/v1/runs",
         json={"workflow": "dev_review", "task": "t2", "agent_id": a["id"]},
@@ -403,11 +421,29 @@ def test_agents_auth_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         == 403
     )
 
-    # lead는 생성/수정/삭제 가능
+    # lead는 생성/수정 가능 — 삭제(archive=terminated)는 승인 필요(spec 2차 D)
     r = lead.post("/api/v1/agents", json={"name": "L", "adapter_type": "devin"})
     assert r.status_code == 201
     aid = r.json()["id"]
     assert lead.patch(f"/api/v1/agents/{aid}", json={"status": "paused"}).status_code == 200
+    assert lead.delete(f"/api/v1/agents/{aid}").status_code == 409
+    ar = lead.post(
+        "/api/v1/management/approvals",
+        json={
+            "action_type": "agent_terminate",
+            "resource_type": "agent",
+            "resource_id": aid,
+            "safe_payload": {"agent_id": aid},
+        },
+    )
+    assert ar.status_code == 201
+    assert (
+        lead.post(
+            f"/api/v1/management/approvals/{ar.json()['id']}/decision",
+            json={"decision": "approve"},
+        ).status_code
+        == 200
+    )
     assert lead.delete(f"/api/v1/agents/{aid}").status_code == 200
 
 
@@ -447,7 +483,7 @@ def test_patch_agent_cannot_resurrect_terminated(tmp_path: Path) -> None:
     """H2 — terminated(archived) 에이전트는 어떤 상태로도 되돌릴 수 없다."""
     client, store = _env(tmp_path)
     a = _mk(client, "Dev")
-    assert client.delete(f"/api/v1/agents/{a['id']}").status_code == 200
+    assert store.archive_agent(a["id"])
     assert store.get_agent(a["id"])["status"] == "archived"
 
     # 부활 시도 → 409
@@ -484,7 +520,7 @@ def test_agents_status_filter_accepts_canonical_vocab(tmp_path: Path) -> None:
     a = _mk(client, "IdleOne")
     store.update_agent(a["id"], status="idle")
     b = _mk(client, "Gone")
-    assert client.delete(f"/api/v1/agents/{b['id']}").status_code == 200
+    assert store.archive_agent(b["id"])
 
     # canonical 신규 상태 필터
     items = client.get("/api/v1/agents?status=idle").json()["items"]

@@ -187,6 +187,61 @@ def test_cost_summary():
     assert summ["by_status"]["estimated"]["microusd"] == 1000
 
 
+def test_cost_summary_by_agent():
+    """M2 — by_agent 집계: ce.agent_id 우선, runs.agent_id 폴백,
+    unpriced 이벤트만 있는 에이전트도 unpriced_count로 포함."""
+    s = _store()
+    s.record_cost_event(
+        idempotency_key="ba1",
+        agent_id="a1",
+        cost_status="estimated",
+        cost_microusd=1000,
+    )
+    s.record_cost_event(
+        idempotency_key="ba2",
+        agent_id="a1",
+        cost_status="unpriced",
+        input_tokens=5,
+    )
+    # agent_id 미태깅이지만 run.agent_id=a2로 귀속되는 이벤트
+    run = s.create_run("dev_review", "1", {"task": "t"}, "tr-ba", agent_id="a2")
+    s.record_cost_event(
+        idempotency_key="ba3",
+        run_id=run.id,
+        agent_id="",
+        cost_status="estimated",
+        cost_microusd=500,
+    )
+    summ = s.cost_summary()
+    by = {a["agent_id"]: a for a in summ["by_agent"]}
+    assert by["a1"] == {"agent_id": "a1", "total_microusd": 1000, "unpriced_count": 1}
+    assert by["a2"] == {"agent_id": "a2", "total_microusd": 500, "unpriced_count": 0}
+    # total_microusd 내림차순 정렬
+    assert summ["by_agent"][0]["agent_id"] == "a1"
+    # agent 스코프 summary의 by_agent는 해당 에이전트만 반환
+    summ_a1 = s.cost_summary("agent", "a1")
+    assert [a["agent_id"] for a in summ_a1["by_agent"]] == ["a1"]
+
+
+def test_cost_summary_unknown_scope_returns_zeros():
+    """L3 — 알 수 없는 scope_type은 sibling 함수들과 동일하게 0행.
+    global로 강제 변환해 전체 합계를 보여주지 않는다."""
+    s = _store()
+    s.record_cost_event(
+        idempotency_key="g1",
+        agent_id="a1",
+        cost_status="estimated",
+        cost_microusd=100,
+    )
+    summ = s.cost_summary("bogus", "x")
+    assert summ["total_microusd"] == 0
+    assert summ["event_count"] == 0
+    assert summ["by_status"] == {}
+    assert summ["by_agent"] == []
+    # global은 여전히 정상 집계
+    assert s.cost_summary()["total_microusd"] == 100
+
+
 # ---------------- emit / backfill ----------------
 
 
@@ -477,3 +532,23 @@ def test_budget_policy_request_microusd_fields():
         BudgetPolicyRequest(unpriced_usage_policy="bogus")
     with pytest.raises(pydantic.ValidationError):
         BudgetIncidentResolveRequest(action="dismiss", amount_microusd=-1)
+
+
+def test_management_agent_microusd_strict_int():
+    """L4 — monthly_budget_microusd는 다른 microusd 필드와 동일하게 StrictInt."""
+    import pydantic
+
+    from jobmate.api.schemas import (
+        ManagementAgentCreateRequest,
+        ManagementAgentPatchRequest,
+    )
+
+    ok = ManagementAgentCreateRequest(name="x", adapter_type="claude", monthly_budget_microusd=1000)
+    assert ok.monthly_budget_microusd == 1000
+    for bad in (1.5, "100", True, -1):
+        with pytest.raises(pydantic.ValidationError):
+            ManagementAgentCreateRequest(
+                name="x", adapter_type="claude", monthly_budget_microusd=bad
+            )
+        with pytest.raises(pydantic.ValidationError):
+            ManagementAgentPatchRequest(monthly_budget_microusd=bad)

@@ -316,6 +316,9 @@ class BudgetStoreMixin:
         return cur.rowcount
 
     # ---- 스코프별 월간 지출 원시 행 (비용 환산은 jobmate.budget_scope) ----
+    # 참고: 현재 프로덕션 호출자 없음 — 신규 지출 합계는
+    # budget_scope.scope_spend_microusd(cost_events 원장 + 미커버 stage_rows)
+    # 경로를 사용할 것. 이 메서드는 stage_runs만 보므로 원장 이벤트를 놓친다.
     def budget_spend_rows(
         self, since_iso: str, scope_type: str = "global", scope_id: str = ""
     ) -> list[dict[str, Any]]:

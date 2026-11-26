@@ -111,6 +111,65 @@ class BillingType(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ApprovalStatus(StrEnum):
+    """approval_requests.status 어휘 (paperclip spec 2차 D)."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class ApprovalRisk(StrEnum):
+    """approval_requests.risk_level 어휘 — high/critical은 로그인된 사람만 결정."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ApprovalActionType(StrEnum):
+    """approval_requests.action_type 어휘 (paperclip spec 2차 D)."""
+
+    RUN_RESUME = "run_resume"
+    BUDGET_RAISE = "budget_raise"
+    AGENT_HIRE = "agent_hire"
+    AGENT_TERMINATE = "agent_terminate"
+    EXTERNAL_SEND = "external_send"
+    DEPLOY = "deploy"
+    DESTRUCTIVE_TOOL = "destructive_tool"
+    RECOVERY = "recovery"
+
+
+class RecoveryKind(StrEnum):
+    """recovery_actions.kind 어휘 (paperclip spec 2차 E)."""
+
+    STALE_HEARTBEAT = "stale_heartbeat"
+    STRANDED_TASK = "stranded_task"
+    STUCK_RUN = "stuck_run"
+    MISSING_COST = "missing_cost"
+    FAILED_RESUME = "failed_resume"
+
+
+class RecoveryStatus(StrEnum):
+    """recovery_actions.status 어휘 — active|escalated는 source당 1건만 허용."""
+
+    ACTIVE = "active"
+    ESCALATED = "escalated"
+    RESOLVED = "resolved"
+    CANCELLED = "cancelled"
+
+
+class RecoveryOwnerType(StrEnum):
+    """recovery_actions.owner_type 어휘."""
+
+    SYSTEM = "system"
+    AGENT = "agent"
+    HUMAN = "human"
+
+
 class BudgetWindowKind(StrEnum):
     """budget_policies.window_kind 어휘 (paperclip spec 2차 B)."""
 

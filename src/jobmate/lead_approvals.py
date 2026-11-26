@@ -78,6 +78,38 @@ def approval_queue(store: Store) -> dict[str, Any]:
             }
         )
 
+    # 범용 승인 요청(approval_requests, spec 2차 D) — run/session 승인과
+    # 같은 큐에 pending만 노출한다. high/critical은 UI에서 배지로 구분.
+    for a in store.list_approval_requests(status="pending", limit=200):
+        created = a.get("created_at")
+        project = ""
+        rid = str(a.get("run_id") or "")
+        if rid:
+            run = store.get_run(rid)
+            if run is not None:
+                project = _run_project(run)
+        action = str(a.get("action_type") or "")
+        summary = str(a.get("summary") or "")[:80]
+        items.append(
+            {
+                "kind": "approval_request",
+                "id": str(a.get("id") or ""),
+                "title": summary or f"승인 요청: {action}",
+                "action_type": action,
+                "risk_level": str(a.get("risk_level") or ""),
+                "resource_type": str(a.get("resource_type") or ""),
+                "resource_id": str(a.get("resource_id") or ""),
+                # 승인자가 무엇을 승인하는지 보게 action 관련 payload를
+                # 노출한다 — secret-like key는 생성 시 이미 거부됐고
+                # URL userinfo도 스크럽된 값만 저장된다.
+                "safe_payload": a.get("safe_payload") or {},
+                "waiting_since": str(created or ""),
+                "age_seconds": _age_seconds(created, now),
+                "project": project,
+                "status": "pending",
+            }
+        )
+
     for t in store.list_triggers():
         if not str(t.get("last_error") or "").strip():
             continue

@@ -1,6 +1,7 @@
 """management 1차 API 테스트 — /api/v1/management 엔드포인트 + 머신 인증."""
 
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -774,3 +775,141 @@ def test_heartbeat_detail_secrets_redacted(monkeypatch):
     assert detail["api_key"] == "REDACTED"
     assert detail["nested"]["token"] == "REDACTED"  # noqa: S105 — dict 키 조회 비교
     assert detail["note"] == "ok"
+
+
+# ---- cost ledger (2차) — 외부 보고 검증 (H1) ----
+
+
+def _post_cost_event(client: TestClient, **over) -> object:
+    body = {
+        "idempotency_key": "ext-1",
+        "cost_status": "unpriced",
+        "input_tokens": 10,
+        "output_tokens": 5,
+        **over,
+    }
+    return client.post("/api/v1/management/cost-events", json=body)
+
+
+def test_cost_event_rejects_reserved_key_prefixes():
+    """H1 — 내부 원장 키 prefix(cost:/backfill:) 선점은 422."""
+    client, _ = _client()
+    for key in ("cost:stage-1", "backfill:stage:x", "  Cost:Mixed  "):
+        r = _post_cost_event(client, idempotency_key=key)
+        assert r.status_code == 422, (key, r.text)
+        assert r.json()["error"]["code"] == "reserved_idempotency_key"
+    # 공백-only 키도 거부
+    r = _post_cost_event(client, idempotency_key="   ")
+    assert r.status_code == 422
+    # 정상 외부 키는 통과 — 원장에 기록됨
+    r = _post_cost_event(client, idempotency_key="runner-abc")
+    assert r.status_code == 201, r.text
+
+
+def test_cost_event_occurred_at_validation():
+    """H1 — occurred_at은 ISO-8601 + 24h 과거/5min 미래 클램프."""
+    client, _ = _client()
+    # garbage
+    r = _post_cost_event(client, occurred_at="not-a-date")
+    assert r.status_code == 422
+    # 24h 초과 과거 — 예산 윈도우 백데이팅 회피 차단
+    old = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+    r = _post_cost_event(client, occurred_at=old)
+    assert r.status_code == 422
+    # 5min 초과 미래
+    future = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+    r = _post_cost_event(client, occurred_at=future)
+    assert r.status_code == 422
+    # 유효한 최근 시각 — UTC로 정규화돼 기록된다
+    recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    r = _post_cost_event(client, occurred_at=recent)
+    assert r.status_code == 201, r.text
+    assert r.json()["occurred_at"].endswith("+00:00")
+
+
+def test_cost_event_referential_integrity():
+    """H1 — 존재하지 않는 run/stage_run/task/agent 참조는 거부."""
+    client, store = _client()
+    run = store.create_run("dev_review", "0.1.0", {"task": "x"}, "tr-ref")
+    sr = store.start_stage(run.id, "llm", 1, {})
+    task = _mk_task(client, title="ref task")
+    agent = _mk_agent(client, name="ref-agent")
+
+    # 존재하지 않는 참조 → 404
+    assert _post_cost_event(client, run_id="no-such-run").status_code == 404
+    assert _post_cost_event(client, stage_run_id="no-such-stage").status_code == 404
+    assert _post_cost_event(client, task_id="no-such-task").status_code == 404
+    assert _post_cost_event(client, agent_id="no-such-agent").status_code == 404
+    # stage_run이 다른 run 소속 → 422
+    other_run = store.create_run("dev_review", "0.1.0", {"task": "y"}, "tr-ref2")
+    r = _post_cost_event(client, run_id=other_run.id, stage_run_id=sr.id)
+    assert r.status_code == 422
+    # 정상 참조 조합 → 201
+    r = _post_cost_event(
+        client,
+        idempotency_key="refs-ok",
+        run_id=run.id,
+        stage_run_id=sr.id,
+        task_id=task["id"],
+        agent_id=agent["id"],
+    )
+    assert r.status_code == 201, r.text
+
+
+def test_cost_event_stage_run_only_derives_run_attribution():
+    """M6 — stage_run_id만 태그된 외부 이벤트도 run_id/agent_id가
+    서버에서 유도돼 스코프 집계(workflow/project/agent)에서 누락되지 않는다."""
+    client, store = _client()
+    agent = _mk_agent(client, name="m6-agent")
+    run = store.create_run("dev_review", "0.1.0", {"task": "x"}, "tr-m6", agent_id=agent["id"])
+    sr = store.start_stage(run.id, "llm", 1, {})
+    r = _post_cost_event(
+        client,
+        idempotency_key="m6-derive",
+        stage_run_id=sr.id,
+        cost_status="reported",
+        cost_microusd=100,
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["run_id"] == run.id
+    assert r.json()["agent_id"] == agent["id"]
+
+
+def test_workflow_wake_blocked_by_task_scope_budget():
+    """M1 — task 스코프 예산 정책이 task-bound wake의 admission에 적용된다."""
+    from jobmate import budget_scope
+
+    budget_scope._spend_cache.clear()
+    try:
+        client, store = _client()
+        agent = _mk_agent(
+            client,
+            name="dev",
+            kind="workflow",
+            adapter_config={"workflow": "dev_review"},
+        )
+        task = _mk_task(client, title="task-scoped", status="todo")
+        # task에 귀속된 원장 지출 — task 스코프 한도(0.5 USD) 초과 상태
+        spend_run = store.create_run(
+            "dev_review", "0.1.0", {"task": "x"}, "tr-tspend", agent_id=agent["id"]
+        )
+        store.record_cost_event(
+            idempotency_key="task-scope-spend",
+            task_id=task["id"],
+            run_id=spend_run.id,
+            cost_status="estimated",
+            cost_microusd=1_000_000,
+        )
+        budget_scope.upsert_policy(
+            store, "task", task["id"], amount_microusd=500_000, hard_stop_enabled=True
+        )
+        before = len(store.list_runs())
+        r = client.post(
+            f"/api/v1/management/agents/{agent['id']}/wake",
+            json={"task_id": task["id"], "idempotency_key": "task-budget-k1"},
+        )
+        assert r.status_code == 429, r.text
+        assert r.json()["error"]["code"] == "budget_exceeded"
+        assert len(store.list_runs()) == before  # run 미생성
+    finally:
+        budget_scope._spend_cache.clear()

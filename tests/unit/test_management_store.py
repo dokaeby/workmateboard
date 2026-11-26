@@ -144,7 +144,7 @@ def test_agent_transition_service_409():
     assert ei.value.status_code == 409
     out = mgmt.transition_agent(store, a["id"], "paused")
     assert out["status"] == "paused"
-    mgmt.transition_agent(store, a["id"], "terminated")
+    mgmt.transition_agent(store, a["id"], "terminated", terminate_authorized=True)
     with pytest.raises(mgmt.ManagementError) as ei2:
         mgmt.transition_agent(store, a["id"], "active")  # terminal 출발 불가
     assert ei2.value.status_code == 409
@@ -522,7 +522,7 @@ def test_heartbeat_updates_seen_and_status():
     assert out["status"] == "running"
     assert out["last_seen_at"]
     # terminated agent는 heartbeat 거부
-    mgmt.transition_agent(store, a["id"], "terminated")
+    mgmt.transition_agent(store, a["id"], "terminated", terminate_authorized=True)
     with pytest.raises(mgmt.ManagementError) as ei:
         mgmt.heartbeat(store, a["id"], status="working")
     assert ei.value.status_code == 409

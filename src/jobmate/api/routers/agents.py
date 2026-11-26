@@ -15,7 +15,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ... import agents as agents_svc
-from ...models import AgentStatus, can_transition_agent, canonical_agent_status
+from ...models import (
+    AgentStatus,
+    ApprovalActionType,
+    can_transition_agent,
+    canonical_agent_status,
+)
 from ...services import agent_management as mgmt
 from ..schemas import AgentCreateRequest, AgentPatchRequest
 
@@ -127,6 +132,21 @@ def register(app: FastAPI, ctx: Any) -> None:
                     f"cannot transition agent from {frm} to {to_canon}",
                     request,
                 )
+            # spec 2차 D — terminated 전이는 승인된 agent_terminate
+            # approval_request가 필요하다(서비스 transition_agent와 동일 규칙).
+            if (
+                to_canon == AgentStatus.TERMINATED.value
+                and to_canon != frm
+                and not store.has_decided_approval(
+                    ApprovalActionType.AGENT_TERMINATE.value, "agent", agent_id
+                )
+            ):
+                return err(
+                    409,
+                    "approval_required",
+                    "agent terminate requires an approved agent_terminate approval_request",
+                    request,
+                )
         verr = agents_svc.validate_agent_fields(store, fields, agent_id=agent_id)
         if verr is not None:
             code = 409 if verr == agents_svc.ERR_NAME_CONFLICT else 422
@@ -183,15 +203,39 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.delete("/api/v1/agents/{agent_id}")
     def delete_agent(agent_id: str, request: Request) -> JSONResponse:
-        """소프트 삭제 — status='archived'. runs 참조 이력은 보존."""
+        """소프트 삭제 — status='archived'(canonical terminated). runs 참조 이력은 보존.
+
+        spec 2차 D: archived는 terminated 별칭이므로 PATCH/transition과 동일하게
+        승인된 agent_terminate approval_request를 요구한다 — 이미 terminal인
+        agent의 archive는 no-op이라 허용한다."""
         gate = _lead_gate(request)
         if gate is not None:
             return gate
         agent = store.get_agent(agent_id)
         if agent is None:
             return err(404, "not_found", "agent not found", request)
+        frm = canonical_agent_status(agent.get("status"))
+        if frm != AgentStatus.TERMINATED.value and not store.has_decided_approval(
+            ApprovalActionType.AGENT_TERMINATE.value, "agent", agent_id
+        ):
+            return err(
+                409,
+                "approval_required",
+                "agent terminate requires an approved agent_terminate approval_request",
+                request,
+            )
         if not store.archive_agent(agent_id):
             return err(404, "not_found", "agent not found", request)
+        # transition/PATCH와 동일한 agent_events 흔적 — archive 경로도 기록.
+        if frm != AgentStatus.TERMINATED.value:
+            mgmt.emit_event(
+                store,
+                "agent_status_changed",
+                agent_id=agent_id,
+                actor=_actor_label(request),
+                summary=f"agent {frm} -> terminated (archive)",
+                detail={"from": frm, "to": "terminated", "via": "delete"},
+            )
         _audit_api(request, "agent_archive", agent_id, {"name": agent["name"][:80]})
         logger.info("agent archived id=%s name=%s", agent_id, agent["name"])
         return JSONResponse(content={"ok": True, "status": "archived"})

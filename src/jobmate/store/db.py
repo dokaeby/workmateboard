@@ -26,6 +26,7 @@ from .comms import CommsStoreMixin
 from .costs import CostStoreMixin
 from .evals import EvalStoreMixin
 from .goals import GoalStoreMixin
+from .governance import GovernanceStoreMixin
 from .inbox import InboxStoreMixin
 from .management import ManagementStoreMixin
 from .projects import ProjectStoreMixin
@@ -706,6 +707,59 @@ CREATE INDEX IF NOT EXISTS idx_cost_events_task ON cost_events(task_id, occurred
 CREATE INDEX IF NOT EXISTS idx_cost_events_run ON cost_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_cost_events_stage ON cost_events(stage_run_id);
 CREATE INDEX IF NOT EXISTS idx_cost_events_occurred ON cost_events(occurred_at);
+
+-- agent-management 2차 (paperclip spec D): 범용 승인 요청 — 기존
+-- approvals(run 승인)와 별개의 durable 승인함. safe_payload는 JSON
+-- TEXT — secret-like key는 서비스 계층이 저장 전에 거부한다.
+-- status: pending|approved|rejected|expired|cancelled.
+CREATE TABLE IF NOT EXISTS approval_requests (
+  id TEXT PRIMARY KEY,
+  action_type TEXT NOT NULL,
+  risk_level TEXT NOT NULL DEFAULT 'medium',
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_by_agent_id TEXT,
+  requested_by TEXT NOT NULL DEFAULT '',
+  task_id TEXT,
+  run_id TEXT,
+  resource_type TEXT NOT NULL DEFAULT '',
+  resource_id TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  safe_payload TEXT NOT NULL DEFAULT '{}',
+  expires_at TEXT,
+  decided_by TEXT,
+  decision_comment TEXT NOT NULL DEFAULT '',
+  decided_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_run ON approval_requests(run_id);
+
+-- agent-management 2차 (paperclip spec E): watchdog 복구 액션 —
+-- source당 active|escalated 1건 제한은 부분 UNIQUE 인덱스
+-- (_migrate_recovery_actions_index)가 담당한다. 스키마에 인라인하지
+-- 않는 이유는 _migrate_budget_incident_index와 동일 — 더티 DB의 중복
+-- 행이 executescript 전체를 실패시키는 것을 막기 위함.
+CREATE TABLE IF NOT EXISTS recovery_actions (
+  id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  next_attempt_at TEXT,
+  timeout_at TEXT,
+  owner_type TEXT NOT NULL DEFAULT 'system',
+  outcome TEXT NOT NULL DEFAULT '',
+  resolution_note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_actions_status ON recovery_actions(status);
+CREATE INDEX IF NOT EXISTS idx_recovery_actions_source
+  ON recovery_actions(source_type, source_id);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -1343,6 +1397,53 @@ CREATE INDEX IF NOT EXISTS idx_cost_events_task ON cost_events(task_id, occurred
 CREATE INDEX IF NOT EXISTS idx_cost_events_run ON cost_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_cost_events_stage ON cost_events(stage_run_id);
 CREATE INDEX IF NOT EXISTS idx_cost_events_occurred ON cost_events(occurred_at);
+
+-- agent-management 2차 (paperclip spec D): SQLite판과 동일 구조
+CREATE TABLE IF NOT EXISTS approval_requests (
+  id TEXT PRIMARY KEY,
+  action_type TEXT NOT NULL,
+  risk_level TEXT NOT NULL DEFAULT 'medium',
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_by_agent_id TEXT,
+  requested_by TEXT NOT NULL DEFAULT '',
+  task_id TEXT,
+  run_id TEXT,
+  resource_type TEXT NOT NULL DEFAULT '',
+  resource_id TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  safe_payload TEXT NOT NULL DEFAULT '{}',
+  expires_at TEXT,
+  decided_by TEXT,
+  decision_comment TEXT NOT NULL DEFAULT '',
+  decided_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_run ON approval_requests(run_id);
+
+-- agent-management 2차 (paperclip spec E): SQLite판과 동일 구조 —
+-- 부분 UNIQUE 인덱스는 _migrate_recovery_actions_index에서 생성.
+CREATE TABLE IF NOT EXISTS recovery_actions (
+  id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  next_attempt_at TEXT,
+  timeout_at TEXT,
+  owner_type TEXT NOT NULL DEFAULT 'system',
+  outcome TEXT NOT NULL DEFAULT '',
+  resolution_note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_actions_status ON recovery_actions(status);
+CREATE INDEX IF NOT EXISTS idx_recovery_actions_source
+  ON recovery_actions(source_type, source_id);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1428,6 +1529,7 @@ class Store(
     EvalStoreMixin,
     ManagementStoreMixin,
     CostStoreMixin,
+    GovernanceStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -1467,6 +1569,7 @@ class Store(
         self._migrate_workflow_version_columns()
         self._migrate_agent_management_columns()
         self._migrate_cost_ledger_columns()
+        self._migrate_recovery_actions_index()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -1565,6 +1668,51 @@ class Store(
                 )
         except Exception as e:
             logger.warning("budget_incidents open-unique index skipped: %s", e)
+
+    def _migrate_recovery_actions_index(self) -> None:
+        """(source_type, source_id)당 active|escalated 1건 부분 UNIQUE 인덱스.
+
+        SCHEMA에 넣지 않는 이유는 _migrate_budget_incident_index와 동일 —
+        기존 DB에 중복 open 행이 있으면 executescript 전체가 실패해
+        기동이 멈춘다. 여기서는 최신 행만 active|escalated로 남기고
+        나머지는 cancelled로 정리한 뒤 인덱스를 만든다. 인덱스 생성마저
+        실패하면 경고만 남기고 진행한다 — create_recovery_action의
+        사전 조회+integrity 재조회가 논리적 중복을 계속 막는다."""
+        try:
+            rows = self._conn.execute(
+                "SELECT id, source_type, source_id FROM recovery_actions"
+                " WHERE status IN ('active','escalated')"
+                " ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+            seen: set[tuple[Any, Any]] = set()
+            dup_ids: list[str] = []
+            for r in rows:
+                key = (r["source_type"], r["source_id"])
+                if key in seen:
+                    dup_ids.append(str(r["id"]))
+                else:
+                    seen.add(key)
+            if dup_ids:
+                now = _iso(_now())
+                with self.tx() as c:
+                    for did in dup_ids:
+                        c.execute(
+                            "UPDATE recovery_actions SET status='cancelled',"
+                            " resolution_note='dedupe before unique index',"
+                            " updated_at=? WHERE id=? AND status IN ('active','escalated')",
+                            (now, did),
+                        )
+                logger.info(
+                    "recovery_actions dedupe: cancelled %d duplicate open rows", len(dup_ids)
+                )
+            with self.tx() as c:
+                c.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_actions_open"
+                    " ON recovery_actions(source_type, source_id)"
+                    " WHERE status IN ('active','escalated')"
+                )
+        except Exception as e:
+            logger.warning("recovery_actions open-unique index skipped: %s", e)
 
     def _migrate_wakeup_idempotency_index(self) -> None:
         """idempotency_key 부분 UNIQUE 인덱스 — 동시 동일 키 요청의 이중 run 방지.

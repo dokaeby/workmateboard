@@ -22,6 +22,7 @@ from ..models import (
     AgentEventType,
     AgentKind,
     AgentStatus,
+    ApprovalActionType,
     RunStatus,
     TaskStatus,
     can_transition_agent,
@@ -201,14 +202,32 @@ def _require_task(store: Store, task_id: str) -> dict[str, Any]:
 
 
 def transition_agent(
-    store: Store, agent_id: str, to_status: str, *, actor: str = ""
+    store: Store,
+    agent_id: str,
+    to_status: str,
+    *,
+    actor: str = "",
+    terminate_authorized: bool = False,
 ) -> dict[str, Any]:
-    """agent status 전이 — allowlist 위반/terminal 출발은 409."""
+    """agent status 전이 — allowlist 위반/terminal 출발은 409.
+
+    terminated 전이는 spec 2차 D의 agent_terminate 승인이 필요하다 —
+    approved approval_request(agent/agent_id)가 있거나, 승인 부수효과
+    경로가 terminate_authorized=True로 호출할 때만 허용한다."""
     agent = _require_agent(store, agent_id)
     to = canonical_agent_status(to_status)
     if to not in AGENT_STATUS_VALUES or to == "archived":
         raise ManagementError(422, "validation", f"invalid agent status: {to_status}")
     frm = canonical_agent_status(agent.get("status"))
+    if to == AgentStatus.TERMINATED.value and to != frm and not terminate_authorized:
+        if not store.has_decided_approval(
+            ApprovalActionType.AGENT_TERMINATE.value, "agent", agent_id
+        ):
+            raise ManagementError(
+                409,
+                "approval_required",
+                "agent terminate requires an approved agent_terminate approval_request",
+            )
     if not can_transition_agent(frm, to):
         raise ManagementError(
             409,

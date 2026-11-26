@@ -300,10 +300,10 @@ class ManagementAgentCreateRequest(BaseModel):
     reports_to: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=20)
     monthly_budget_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    # 저장 전용 예산 컬럼 — 집행은 2차 비용 원장에서 수행 예정.
-    # 현재 evaluate_admission이 참조하는 것은 monthly_budget_usd뿐이다.
-    monthly_budget_microusd: int | None = Field(
-        default=None, ge=0, description="stored-only; not yet enforced"
+    # microusd 우선 예산 컬럼 — monthly_budget_usd보다 우선하며
+    # budget_scope.evaluate_admission의 agent 스코프 검사에서 실제로 집행된다.
+    monthly_budget_microusd: StrictInt | None = Field(
+        default=None, ge=0, description="microusd monthly budget; enforced via evaluate_admission"
     )
 
 
@@ -323,9 +323,10 @@ class ManagementAgentPatchRequest(BaseModel):
     reports_to: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=20)
     monthly_budget_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    # 저장 전용 예산 컬럼 — 집행은 2차 비용 원장에서 수행 예정.
-    monthly_budget_microusd: int | None = Field(
-        default=None, ge=0, description="stored-only; not yet enforced"
+    # microusd 우선 예산 컬럼 — monthly_budget_usd보다 우선하며
+    # budget_scope.evaluate_admission의 agent 스코프 검사에서 실제로 집행된다.
+    monthly_budget_microusd: StrictInt | None = Field(
+        default=None, ge=0, description="microusd monthly budget; enforced via evaluate_admission"
     )
 
 
@@ -392,3 +393,35 @@ class TaskReleaseRequest(BaseModel):
     checkout 소유 agent_id와 일치해야 한다. lead는 생략 가능."""
 
     agent_id: str = Field(default="", max_length=64)
+
+
+class ManagementApprovalCreateRequest(BaseModel):
+    """POST /management/approvals — 범용 승인 요청 (spec 2차 D).
+
+    safe_payload는 secret-like key(token/secret/password/api_key 등)를
+    포함하면 서비스가 422로 거부한다 — 값이 아니라 키 이름 기준."""
+
+    action_type: str = Field(min_length=1, max_length=40)
+    risk_level: str = Field(default="medium", max_length=20)
+    summary: str = Field(default="", max_length=300)
+    safe_payload: dict[str, Any] = Field(default_factory=dict)
+    requested_by_agent_id: str | None = Field(default=None, max_length=64)
+    task_id: str | None = Field(default=None, max_length=64)
+    run_id: str | None = Field(default=None, max_length=64)
+    resource_type: str = Field(default="", max_length=40)
+    resource_id: str = Field(default="", max_length=64)
+    expires_at: str | None = Field(default=None, max_length=64)
+
+
+class ManagementApprovalDecisionRequest(BaseModel):
+    """POST /management/approvals/{id}/decision — pending에서 단 한 번."""
+
+    decision: str = Field(pattern="^(approve|reject)$")
+    comment: str = Field(default="", max_length=500)
+
+
+class RecoveryActionResolveRequest(BaseModel):
+    """POST /management/recovery-actions/{id}/resolve — 수동 종결."""
+
+    status: Literal["resolved", "cancelled"] = "resolved"
+    note: str = Field(default="", max_length=500)

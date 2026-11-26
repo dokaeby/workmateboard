@@ -16,11 +16,15 @@ const SCOPE_LABEL: Record<string, string> = {
   global: "budg.scopeGlobal",
   project: "budg.scopeProject",
   workflow: "budg.scopeWorkflow",
+  agent: "budg.scopeAgent",
+  task: "budg.scopeTask",
 };
 const SCOPE_FALLBACK: Record<string, string> = {
   global: "전체",
   project: "프로젝트",
   workflow: "워크플로",
+  agent: "에이전트",
+  task: "태스크",
 };
 const STATUS_TONE: Record<string, "ok" | "warn" | "err" | "muted"> = {
   ok: "ok",
@@ -225,7 +229,7 @@ function PolicyRow({ p, onChanged }: { p: BudgetPolicy; onChanged: () => void })
 function NewPolicyForm({ onDone }: { onDone: () => void }) {
   const { t } = useI18n();
   const qc = useQueryClient();
-  const [scopeType, setScopeType] = useState<"global" | "project" | "workflow">("global");
+  const [scopeType, setScopeType] = useState<"global" | "project" | "workflow" | "agent" | "task">("global");
   const [scopeId, setScopeId] = useState("");
   const [amount, setAmount] = useState("");
   const [warn, setWarn] = useState("80");
@@ -290,14 +294,25 @@ function NewPolicyForm({ onDone }: { onDone: () => void }) {
           <option value="global">{t("budg.scopeGlobal", "전체")}</option>
           <option value="project">{t("budg.scopeProject", "프로젝트")}</option>
           <option value="workflow">{t("budg.scopeWorkflow", "워크플로")}</option>
+          <option value="agent">{t("budg.scopeAgent", "에이전트")}</option>
+          <option value="task">{t("budg.scopeTask", "태스크")}</option>
         </select>
         {scopeType !== "global" && (
+          // scope_id는 백엔드 ID 그대로 — agent는 agents.id(uuid),
+          // task는 tasks.id(uuid; 'WMB-n' identifier는 조회만 되고
+          // 원장 매칭은 uuid 기준).
           <input
             value={scopeId}
             onChange={(e) => setScopeId(e.target.value)}
-            placeholder={scopeType === "project"
-              ? t("budg.scopeIdProjectPh", "프로젝트 이름")
-              : t("budg.scopeIdWorkflowPh", "워크플로 키")}
+            placeholder={
+              scopeType === "project"
+                ? t("budg.scopeIdProjectPh", "프로젝트 이름")
+                : scopeType === "workflow"
+                  ? t("budg.scopeIdWorkflowPh", "워크플로 키")
+                  : scopeType === "agent"
+                    ? t("budg.scopeIdAgentPh", "에이전트 ID")
+                    : t("budg.scopeIdTaskPh", "태스크 ID")
+            }
             className={`${inputCls} min-w-40 flex-1`}
           />
         )}
