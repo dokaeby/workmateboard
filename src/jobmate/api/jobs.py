@@ -281,6 +281,83 @@ def _process_due_schedules(
                 worker_logger.debug("inbox schedule-fail item failed: %s", str(inbox_err)[:200])
 
 
+@job_traceable("jobmate.process_due_routines")
+def _process_due_routines(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    defer: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] | None = None,
+) -> None:
+    """routines 중 next_run_at이 지난 enabled 루틴을 발사 (paperclip spec 3차 C).
+
+    _process_due_schedules와 동일 구조 — defer가 주어지면 run job을 defer에
+    추가(호출자가 _schedule_run_jobs로 실행), None이면 daemon thread로 즉시
+    실행. 발사 자체(task 생성 + wake)는 services/routines.fire_due_routine이
+    담당하고, claim CAS + routine_runs idempotency가 중복을 막는다.
+    routine 1건의 실패는 루프를 죽이지 않는다."""
+    from ..services import routines as routines_svc
+
+    try:
+        batch = max(1, int(os.environ.get("JOBMATE_ROUTINE_BATCH", "10")))
+    except (TypeError, ValueError):
+        batch = 10
+
+    def _schedule_run(run: Any, job_payload: dict[str, Any]) -> None:
+        """wake_agent의 schedule 콜백 — 생성된 run을 defer 또는 thread로 실행."""
+        if run is None:
+            return
+        job = (str(run.id), str(run.workflow_key), dict(job_payload or {}), None)
+        if defer is not None:
+            defer.append(job)
+        else:
+            threading.Thread(
+                target=_execute_run_job,
+                args=(store, settings, llm, adapters, *job),
+                daemon=True,
+            ).start()
+
+    fired = skipped = failed = 0
+    for routine in store.due_routines(limit=batch):
+        rid = str(routine.get("id") or "")
+        try:
+            res = routines_svc.fire_due_routine(
+                store, routine, schedule_run=_schedule_run, actor="routine"
+            )
+            action = str(res.get("action") or "")
+            if action == "claimed":
+                fired += 1
+                worker_logger.info(
+                    "routine %s fired task=%s scheduled_for=%s",
+                    rid,
+                    res.get("task_id") or "-",
+                    res.get("scheduled_for") or "-",
+                )
+            elif action == "skipped":
+                skipped += 1
+            elif action == "failed":
+                failed += 1
+                worker_logger.info("routine %s failed", rid)
+        except Exception as e:
+            failed += 1
+            worker_logger.warning("routine %s fire failed: %s", rid, str(e)[:200])
+            try:
+                store.upsert_inbox_item(
+                    "routine",
+                    f"루틴 실패: {routine.get('name') or rid}",
+                    body=str(e)[:300],
+                    link="/?view=office",
+                    dedupe_key=f"routine-fail:{rid}:{datetime.now(UTC).isoformat()}",
+                )
+            except Exception as inbox_err:
+                worker_logger.debug("inbox routine-fail item failed: %s", str(inbox_err)[:200])
+    if fired or skipped or failed:
+        # routine cycle counts — spec 3차 G 로깅 요구.
+        worker_logger.info(
+            "routine cycle done fired=%d skipped=%d failed=%d", fired, skipped, failed
+        )
+
+
 def _parse_diff_files(diff_text: str) -> list[dict[str, Any]]:
     """unified diff 텍스트를 파일 단위 [{path,status,additions,deletions,diff}]로 분해."""
     files: list[dict[str, Any]] = []
@@ -530,6 +607,7 @@ def _automation_loop(
             _process_pending_messages(store, settings, llm, adapters)
             _process_due_notification_jobs(store, adapters)
             _process_due_schedules(store, settings, llm, adapters)
+            _process_due_routines(store, settings, llm, adapters)
             _check_waiting_approvals(store, adapters)
             # watchdog 1 cycle — spec 2차 E. 감지/복구/escalation은 내부에서
             # batch 상한(JOBMATE_WATCHDOG_BATCH)과 중복 방지를 적용한다.

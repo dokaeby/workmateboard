@@ -15,7 +15,8 @@ import uuid
 from typing import Any
 
 from . import budget_scope
-from .models import Run, RunStatus, canonical_agent_status
+from .models import AgentCapability, Run, RunStatus, canonical_agent_status
+from .services import permissions as perm_svc
 from .store.db import Store
 from .store.util import _iso, _now
 
@@ -266,13 +267,14 @@ def admit_run(
                 goal_id = gv.strip()[:64]
         input_data = {k: v for k, v in input_data.items() if k != "goal_id"}
     # goal_id 해석은 create_run과 같은 단일 경로(resolve_run_goal_id) —
-    # 프로젝트 폴백 goal까지 scope_key/payload/run이 일치해야 coalescing과
-    # deferred promote가 깨지지 않는다(H1). 명시 goal은 존재+비archived
-    # 검증(위반 시 거부), 프로젝트 폴백의 무효 goal은 태그 해제(strip).
+    # task effective goal·프로젝트 폴백 goal까지 scope_key/payload/run이
+    # 일치해야 coalescing과 deferred promote가 깨지지 않는다(H1).
+    # 명시 goal은 존재+비cancelled 검증(위반 시 거부), 폴백의 무효 goal은
+    # 태그 해제(strip).
     goal_id = store.resolve_run_goal_id(input_data, goal_id)
     if goal_id:
         g = store.get_goal(goal_id)
-        if g is None or str(g.get("status") or "") == "archived":
+        if g is None or str(g.get("status") or "") == "cancelled":
             if goal_explicit:
                 return {
                     "action": "invalid_goal",
@@ -280,7 +282,7 @@ def admit_run(
                     "wakeup_id": "",
                     "run": None,
                     "job_payload": None,
-                    "error": "goal not found" if g is None else "goal is archived",
+                    "error": "goal not found" if g is None else "goal is cancelled",
                 }
             logger.warning(
                 "admit_run: project-fallback goal %s unusable — stripped workflow=%s",
@@ -480,15 +482,15 @@ def on_run_finished(
                     run.workflow_key,
                 )
                 continue
-        # defer 이후 목표가 archived됐으면 promote하지 않는다 — admit_run의
-        # archived goal 거부/strip과 동일 규칙을 promote 경로에도 적용.
-        # (missing goal은 create_run이 strip하므로 여기서는 archived만 마감)
+        # defer 이후 목표가 cancelled됐으면 promote하지 않는다 — admit_run의
+        # cancelled goal 거부/strip과 동일 규칙을 promote 경로에도 적용.
+        # (missing goal은 create_run이 strip하므로 여기서는 cancelled만 마감)
         if w_goal_id:
             w_goal = store.get_goal(w_goal_id)
-            if w_goal is not None and str(w_goal.get("status") or "") == "archived":
+            if w_goal is not None and str(w_goal.get("status") or "") == "cancelled":
                 store.fail_wakeup(str(w["id"]))
                 logger.warning(
-                    "deferred wakeup %s failed: goal %s archived workflow=%s",
+                    "deferred wakeup %s failed: goal %s cancelled workflow=%s",
                     w["id"],
                     w_goal_id,
                     run.workflow_key,
@@ -515,6 +517,34 @@ def on_run_finished(
                 run.workflow_key,
             )
             continue
+        # defer 이후 agent permission(run:execute)이 회수됐으면 promote하지
+        # 않는다 — 생성 시점(POST /runs, wake_agent)과 동일한 서버 재검증을
+        # promote 경로에도 적용한다(spec 3차 D TOCTOU). task 컨텍스트는
+        # input.meta.task_id에서 해석한다.
+        if w_agent_id:
+            from .services.agent_management import ManagementError
+
+            _w_meta_task = ""
+            _w_meta = input_data.get("meta")
+            if isinstance(_w_meta, dict):
+                _w_meta_task = str(_w_meta.get("task_id") or "")
+            try:
+                perm_svc.require_permission(
+                    store,
+                    w_agent_id,
+                    AgentCapability.RUN_EXECUTE.value,
+                    task_id=_w_meta_task,
+                    actor="wakeup-promote",
+                )
+            except ManagementError as e:
+                store.fail_wakeup(str(w["id"]))
+                logger.warning(
+                    "deferred wakeup %s failed: permission %s agent=%s",
+                    w["id"],
+                    e.code,
+                    w_agent_id,
+                )
+                continue
         if not store.claim_deferred_wakeup(str(w["id"])):
             continue
         try:

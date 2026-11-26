@@ -18,16 +18,33 @@ class RunStoreMixin:
     def resolve_run_goal_id(self, input_data: dict[str, Any], goal_id: str = "") -> str:
         """run의 goal_id 해석 — create_run/admit_run 공용 단일 경로.
 
-        순서: 명시 goal_id 파라미터 → input_data.goal_id → 프로젝트
-        (input.project 태그 → projects.name ci 매칭)의 goal_id → ''.
-        wakeups.admit_run이 scope_key/payload 계산 전에 이 함수를 호출해
-        코얼레싱 scope·wakeup payload·생성 run의 goal_id가 항상 일치하게
-        한다(H1 — project 폴백 goal이 scope 계산에서 빠지던 버그 수정)."""
+        순서: 명시 goal_id 파라미터 → input_data.goal_id → task effective
+        goal(input.meta.task_id / input_data.task_id → task.goal_id →
+        project.goal_id, spec 3차 A) → 프로젝트(input.project 태그 →
+        projects.name ci 매칭)의 goal_id → ''.
+
+        task 컨텍스트를 자유 텍스트 project 태그보다 먼저 해석한다 —
+        management wake가 만드는 run은 '이 task를 위해 실행'이므로 task의
+        effective goal이 프로젝트 이름 폴백보다 권위 있다. wakeups.admit_run이
+        scope_key/payload 계산 전에 이 함수를 호출해 코얼레싱
+        scope·wakeup payload·생성 run의 goal_id가 항상 일치하게 한다
+        (H1 — project 폴백 goal이 scope 계산에서 빠지던 버그 수정)."""
         gid = (goal_id or "").strip()[:64]
         if not gid:
             gv = input_data.get("goal_id")
             if isinstance(gv, str):
                 gid = gv.strip()[:64]
+        if not gid:
+            # task effective goal — wake 경로는 input.meta.task_id에
+            # canonical task id를 싣는다(agent_management.wake_agent).
+            tid = ""
+            meta = input_data.get("meta")
+            if isinstance(meta, dict):
+                tid = str(meta.get("task_id") or "").strip()
+            if not tid:
+                tid = str(input_data.get("task_id") or "").strip()
+            if tid:
+                gid = self.task_effective_goal_id(self.get_task(tid))
         if not gid:
             pv = input_data.get("project")
             project = clean_scope_id(pv) if isinstance(pv, str) else ""
@@ -38,11 +55,15 @@ class RunStoreMixin:
         return gid
 
     def _goal_usable(self, gid: str) -> bool:
-        """goal_id가 존재하고 archived가 아니면 True — run 태깅 가능 여부."""
+        """goal_id가 존재하고 cancelled가 아니면 True — run 태깅 가능 여부.
+
+        spec 3차 A: 유효성은 cancelled만 거부한다 — paused/achieved 목표도
+        기존 run 이력 태깅과 동일하게 허용한다(achieved는 달성 기록,
+        paused는 일시 중지일 뿐 참조 무결성을 깨지 않는다)."""
         if not gid:
             return False
         g = self.get_goal(gid)
-        return g is not None and str(g.get("status") or "") != "archived"
+        return g is not None and str(g.get("status") or "") != "cancelled"
 
     def create_run(
         self,
@@ -65,13 +86,13 @@ class RunStoreMixin:
         # goal_id 해석은 resolve_run_goal_id 단일 경로 — admit_run의
         # scope_key/payload 계산과 반드시 같은 결과가 나와야 한다.
         gid = self.resolve_run_goal_id(input_data, goal_id)
-        # 존재하지 않거나 archived인 goal은 태깅하지 않는다 — 명시값도
+        # 존재하지 않거나 cancelled인 goal은 태깅하지 않는다 — 명시값도
         # 여기서는 strip한다(API 계층이 명시 goal의 422를 이미 담당하고,
-        # 프로젝트 폴백/스케줄 JSON 등 비-API 경로의 dangling 참조를 막는
-        # defense-in-depth). 폴백 goal이 archived면 조용히 태그 해제.
+        # task/project 폴백/스케줄 JSON 등 비-API 경로의 dangling 참조를
+        # 막는 defense-in-depth). 폴백 goal이 cancelled면 조용히 태그 해제.
         if gid and not self._goal_usable(gid):
             logger.warning(
-                "run goal_id %s unusable (missing/archived) — stripped workflow=%s",
+                "run goal_id %s unusable (missing/cancelled) — stripped workflow=%s",
                 gid,
                 workflow_key,
             )

@@ -225,3 +225,124 @@ class VerdictDecision(StrEnum):
     PASS = "pass"  # noqa: S105
     FAIL = "fail"
     NEEDS_HUMAN = "needs_human"
+
+
+class ScheduleKind(StrEnum):
+    """routine.schedule_kind 어휘 (paperclip spec 3차 C).
+
+    croniter 의존 없이 interval|cron_daily|cron_weekly 3종만 지원한다 —
+    cron 표현식 파서는 services/routines.py의 next-run 계산기가 담당."""
+
+    INTERVAL = "interval"
+    CRON_DAILY = "cron_daily"
+    CRON_WEEKLY = "cron_weekly"
+
+
+class RoutineStatus(StrEnum):
+    """routine의 파생 상태 — routines.enabled INTEGER 플래그의 API 어휘.
+
+    테이블에 status 컬럼은 없고 enabled=1→active, 0→paused로 해석한다."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+
+
+class RoutineRunStatus(StrEnum):
+    """routine_runs.status 어휘 (paperclip spec 3차 C/G).
+
+    pending: run 행 생성 직후 / created: task 생성 성공 /
+    skipped: max_concurrent 등으로 이번 회차 생략 / failed: task 생성 실패."""
+
+    PENDING = "pending"
+    CREATED = "created"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class GoalStatus(StrEnum):
+    """goals.status 어휘 (paperclip spec 3차 A).
+
+    레거시 'done'/'archived'는 _migrate_phase3_columns가 achieved/cancelled로
+    변환한다 — 신규 행은 이 어휘만 사용한다."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    ACHIEVED = "achieved"
+    CANCELLED = "cancelled"
+
+
+class ProjectStatus(StrEnum):
+    """projects.status 어휘 (paperclip spec 3차 A)."""
+
+    PLANNED = "planned"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class TaskCommentAuthorType(StrEnum):
+    """task_comments.author_type 어휘 (paperclip spec 3차 B).
+
+    서버가 인증 컨텍스트에서만 결정한다 — 클라이언트 지정 author는 신뢰하지
+    않는다."""
+
+    HUMAN = "human"
+    AGENT = "agent"
+    SYSTEM = "system"
+
+
+class TaskCommentContentType(StrEnum):
+    """task_comments.content_type 어휘 — UI는 HTML로 실행하지 않는다."""
+
+    TEXT = "text"
+    MARKDOWN = "markdown"
+
+
+class TaskArtifactKind(StrEnum):
+    """task_artifacts.kind 어휘 (paperclip spec 3차 B)."""
+
+    PLAN = "plan"
+    DIFF = "diff"
+    TEST_REPORT = "test_report"
+    SECURITY_REPORT = "security_report"
+    REVIEW = "review"
+    SCREENSHOT = "screenshot"
+    DEPLOYMENT = "deployment"
+    OTHER = "other"
+
+
+class AgentCapability(StrEnum):
+    """agent_permissions.capability 어휘 (paperclip spec 3차 D 최소 집합)."""
+
+    TASK_READ = "task:read"
+    TASK_CREATE = "task:create"
+    TASK_ASSIGN = "task:assign"
+    TASK_UPDATE = "task:update"
+    AGENT_READ = "agent:read"
+    AGENT_MANAGE = "agent:manage"
+    AGENT_WAKE = "agent:wake"
+    RUN_EXECUTE = "run:execute"
+    RUN_APPROVE = "run:approve"
+    COST_READ = "cost:read"
+    BUDGET_MANAGE = "budget:manage"
+    ARTIFACT_CREATE = "artifact:create"
+    EXTERNAL_SEND = "external:send"
+    DEPLOY_EXECUTE = "deploy:execute"
+    DESTRUCTIVE_EXECUTE = "destructive:execute"
+    INTEGRATION_MANAGE = "integration:manage"
+
+
+class PermissionEffect(StrEnum):
+    """agent_permissions.effect 어휘 — deny가 allow보다 항상 우선."""
+
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+class PermissionScopeType(StrEnum):
+    """agent_permissions.scope_type 어휘 — 좁은 scope가 넓은 scope보다 먼저 평가."""
+
+    GLOBAL = "global"
+    PROJECT = "project"
+    TASK = "task"

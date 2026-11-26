@@ -186,9 +186,14 @@ def test_projects_crud(tmp_path: Path) -> None:
     client.post("/api/v1/projects", json={"name": "Beta"})
     r = client.patch(f"/api/v1/projects/{proj['id']}", json={"name": "beta"})
     assert r.status_code in (404, 409)
-    # DELETE
-    assert client.delete(f"/api/v1/projects/{proj['id']}").status_code == 200
-    assert client.get("/api/v1/projects").json()["items"][0]["name"] == "Beta"
+    # DELETE → 소프트 취소(status='cancelled'), 행·태그 이력은 보존(spec 3차 A)
+    r = client.delete(f"/api/v1/projects/{proj['id']}")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "status": "cancelled"}
+    items = client.get("/api/v1/projects").json()["items"]
+    by_name = {p["name"]: p for p in items}
+    assert by_name["Alpha2"]["status"] == "cancelled"
+    assert by_name["Beta"]["status"] == "active"
 
 
 def test_project_tagging_runs_and_sessions(tmp_path: Path) -> None:

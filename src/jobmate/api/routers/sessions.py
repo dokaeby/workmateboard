@@ -42,6 +42,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _lead_gate = ctx._lead_gate
     _lead_or_403 = ctx._lead_or_403
     _lead_user = ctx._lead_user
+    _explicit_lead_user = ctx._explicit_lead_user
     _push_attention = ctx._push_attention
     _session_push_allowed = ctx._session_push_allowed
 
@@ -189,26 +190,88 @@ def register(app: FastAPI, ctx: Any) -> None:
             "activity": store.session_activity(tool, session_key, limit=min(max(limit, 1), 500))
         }
 
+    # ---- 프로젝트 마스터 + 태깅 (lead 이상) ----
+    # spec 3차 A — projects.status 어휘 + owner/repository/workspace 필드.
+    # workspace_path는 명시적 lead/admin 세션(_explicit_lead_user)에만
+    # 노출한다 — 머신 API 키 응답에서는 키 자체를 제거한다.
+    from urllib.parse import urlparse
+
+    from ...store.projects import PROJECT_STATUSES
+
+    def _valid_repository_url(url: str) -> bool:
+        """repository_url은 https 스킴 + netloc 필수 + userinfo 금지.
+
+        http는 자격증명 평문 노출 위험이 있고 userinfo(https://user:pass@host)는
+        URL에 비밀이 박히므로 artifact URI 규칙과 같은 기준으로 거부한다."""
+        try:
+            p = urlparse(url.strip())
+        except ValueError:
+            return False
+        if p.scheme != "https" or not p.netloc:
+            return False
+        return not (p.username or p.password)
+
+    def _validate_project_fields(fields: dict[str, Any], request: Request) -> JSONResponse | None:
+        """create/patch 공용 프로젝트 필드 검증 — 에러 응답 또는 None."""
+        if "status" in fields and fields["status"] is not None:
+            st = str(fields["status"]).strip().lower()
+            if st not in PROJECT_STATUSES:
+                return err(
+                    422,
+                    "validation",
+                    f"status must be one of {list(PROJECT_STATUSES)}",
+                    request,
+                )
+        if "owner_agent_id" in fields and fields["owner_agent_id"]:
+            oid = str(fields["owner_agent_id"]).strip()
+            if store.get_agent(oid) is None:
+                return err(422, "validation", "owner_agent_id: agent not found", request)
+        if "repository_url" in fields and fields["repository_url"]:
+            url = str(fields["repository_url"]).strip()
+            if not _valid_repository_url(url):
+                return err(
+                    422,
+                    "validation",
+                    "repository_url must be an https URL without credentials",
+                    request,
+                )
+        if "goal_id" in fields:
+            gid = str(fields["goal_id"] or "").strip()
+            if gid:
+                goal_row = store.get_goal(gid)
+                if goal_row is None:
+                    return err(422, "validation", "goal not found", request)
+                if str(goal_row.get("status") or "") == "cancelled":
+                    return err(422, "validation", "goal is cancelled", request)
+        return None
+
+    def _project_out(proj: dict[str, Any], request: Request) -> dict[str, Any]:
+        """프로젝트 행 → API 응답 — workspace_path는 명시적 lead만."""
+        out = dict(proj)
+        if _explicit_lead_user(request) is None:
+            out.pop("workspace_path", None)
+        return out
+
     @app.get("/api/v1/projects")
     def list_projects(request: Request) -> JSONResponse:
         """프로젝트 마스터 목록 (lead 이상)."""
         lead = _lead_or_403(request)
         if isinstance(lead, JSONResponse):
             return lead
-        return JSONResponse(content={"items": store.list_projects()})
+        return JSONResponse(
+            content={"items": [_project_out(p, request) for p in store.list_projects()]}
+        )
 
     @app.post("/api/v1/projects", status_code=201)
     def create_project(body: ProjectCreateRequest, request: Request) -> JSONResponse:
         lead = _lead_or_403(request)
         if isinstance(lead, JSONResponse):
             return lead
-        gid = (body.goal_id or "").strip()
-        if gid:
-            goal_row = store.get_goal(gid)
-            if goal_row is None:
-                return err(422, "validation", "goal not found", request)
-            if str(goal_row.get("status") or "") == "archived":
-                return err(422, "validation", "goal is archived", request)
+        fields = body.model_dump(exclude_unset=True)
+        verr = _validate_project_fields(fields, request)
+        if verr is not None:
+            return verr
+        gid = str(fields.get("goal_id") or "").strip()
         proj = store.create_project(
             body.name,
             color=body.color,
@@ -216,13 +279,34 @@ def register(app: FastAPI, ctx: Any) -> None:
             goal=body.goal,
             target_count=body.target_count,
             goal_id=gid or None,
+            status=str(fields.get("status") or "active"),
+            owner_agent_id=(
+                str(fields["owner_agent_id"]).strip() or None
+                if fields.get("owner_agent_id")
+                else None
+            ),
+            repository_url=(
+                str(fields["repository_url"]).strip() or None
+                if fields.get("repository_url")
+                else None
+            ),
+            repository_ref=(
+                str(fields["repository_ref"]).strip() or None
+                if fields.get("repository_ref")
+                else None
+            ),
+            workspace_path=(
+                str(fields["workspace_path"]).strip() or None
+                if fields.get("workspace_path")
+                else None
+            ),
             created_by=str(lead.get("email") or lead.get("id") or ""),
         )
         if proj is None:
             return err(409, "conflict", "project name already exists or invalid", request)
         _audit_api(request, "project_create", proj["id"], {"name": proj["name"]})
         logger.info("project created id=%s", proj["id"])
-        return JSONResponse(status_code=201, content=proj)
+        return JSONResponse(status_code=201, content=_project_out(proj, request))
 
     @app.get("/api/v1/projects/overview")
     def projects_overview(request: Request) -> JSONResponse:
@@ -241,6 +325,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         detail = project_detail(store, project_id)
         if detail is None:
             return err(404, "not_found", "project not found", request)
+        # workspace_path는 명시적 lead 세션에만 — project_detail()은 store
+        # 행을 그대로 반환하므로 _project_out과 동일한 사후 필터를 적용한다
+        # (머신 API 키 응답에서 서버 경로가 새는 것을 막는다).
+        if _explicit_lead_user(request) is None and isinstance(detail.get("project"), dict):
+            detail["project"].pop("workspace_path", None)
         return JSONResponse(content=detail)
 
     @app.patch("/api/v1/projects/{project_id}")
@@ -249,31 +338,30 @@ def register(app: FastAPI, ctx: Any) -> None:
         if isinstance(lead, JSONResponse):
             return lead
         fields = body.model_dump(exclude_unset=True)
-        if "goal_id" in fields:
-            gid = str(fields["goal_id"] or "").strip()
-            if gid:
-                goal_row = store.get_goal(gid)
-                if goal_row is None:
-                    return err(422, "validation", "goal not found", request)
-                if str(goal_row.get("status") or "") == "archived":
-                    return err(422, "validation", "goal is archived", request)
+        verr = _validate_project_fields(fields, request)
+        if verr is not None:
+            return verr
         proj = store.update_project(project_id, **fields)
         if proj is None:
             return err(404, "not_found", "project not found or name conflict", request)
         _audit_api(request, "project_update", project_id, fields)
         logger.info("project updated id=%s fields=%s", project_id, sorted(fields))
-        return JSONResponse(content=proj)
+        return JSONResponse(content=_project_out(proj, request))
 
     @app.delete("/api/v1/projects/{project_id}")
     def delete_project(project_id: str, request: Request) -> JSONResponse:
+        """소프트 취소 — status='cancelled' (spec 3차 A).
+
+        tasks.project_id와 세션/run의 project 태그 이력은 보존한다 —
+        하드 삭제는 태그 이력과의 연결을 끊으므로 행을 지우지 않는다."""
         lead = _lead_or_403(request)
         if isinstance(lead, JSONResponse):
             return lead
-        if not store.delete_project(project_id):
+        if not store.cancel_project(project_id):
             return err(404, "not_found", "project not found", request)
-        _audit_api(request, "project_delete", project_id, {})
-        logger.info("project deleted id=%s", project_id)
-        return JSONResponse(content={"ok": True})
+        _audit_api(request, "project_cancel", project_id, {})
+        logger.info("project cancelled id=%s", project_id)
+        return JSONResponse(content={"ok": True, "status": "cancelled"})
 
     @app.get("/api/v1/risks")
     def risks(request: Request) -> JSONResponse:

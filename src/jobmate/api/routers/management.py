@@ -430,6 +430,8 @@ def register(app: FastAPI, ctx: Any) -> None:
                 assignee_agent_id=body.assignee_agent_id,
                 reviewer_agent_id=body.reviewer_agent_id,
                 parent_id=body.parent_id,
+                project_id=body.project_id,
+                goal_id=body.goal_id,
                 created_by=_actor_label(request),
                 actor=_actor_label(request),
             )
@@ -443,6 +445,8 @@ def register(app: FastAPI, ctx: Any) -> None:
         request: Request,
         status: str | None = None,
         assignee: str | None = None,
+        project_id: str | None = None,
+        goal_id: str | None = None,
         limit: int = 50,
     ) -> JSONResponse:
         """task 목록 — 최신순, limit 최대 200. 인증된 사용자 조회 가능."""
@@ -451,7 +455,13 @@ def register(app: FastAPI, ctx: Any) -> None:
             if st not in {s.value for s in TaskStatus}:
                 return err(422, "validation", f"invalid status: {status}", request)
             status = st
-        items = store.list_tasks(status=status, assignee_agent_id=assignee, limit=limit)
+        items = store.list_tasks(
+            status=status,
+            assignee_agent_id=assignee,
+            project_id=project_id,
+            goal_id=goal_id,
+            limit=limit,
+        )
         return JSONResponse(content={"items": items})
 
     @app.get("/api/v1/management/tasks/{task_id}")
@@ -510,7 +520,15 @@ def register(app: FastAPI, ctx: Any) -> None:
             if gate is not None:
                 return gate
         try:
-            task = mgmt.checkout_task(store, task_id, body.agent_id, actor=_actor_label(request))
+            task = mgmt.checkout_task(
+                store,
+                task_id,
+                body.agent_id,
+                actor=_actor_label(request),
+                # 명시적 lead 세션/로컬 admin의 대리 checkout은 permission 검사
+                # 면제 — 머신 API 키 등 비-명시 호출은 agent-actor로 간주.
+                human_actor=_explicit_lead_user(request) is not None,
+            )
         except mgmt.ManagementError as e:
             return err(e.status_code, e.code, e.message, request)
         _audit_api(request, "mgmt_task_checkout", task_id, {"agent_id": body.agent_id})

@@ -1,20 +1,10 @@
-/** goals 트리 — /api/v1/goals 계약 타입 + parent_id 트리 빌드(순수 함수). */
+/** goals 트리 — /api/v1/goals 계약 타입 + parent_id 트리 빌드(순수 함수).
+ *  타입은 shared/api/types의 Goal(3차 status 어휘)을 재수출한다. */
 
-export type GoalStatus = "active" | "done" | "archived" | (string & {});
+import type { Goal, GoalStatus } from "../../shared/api/types";
 
-export interface Goal {
-  id: string;
-  title?: string;
-  description?: string;
-  parent_id?: string | null;
-  status?: GoalStatus;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface GoalsResponse {
-  items?: Goal[];
-}
+export type { Goal, GoalStatus };
+export type { GoalsResponse } from "../../shared/api/types";
 
 export interface GoalNode {
   goal: Goal;
@@ -31,7 +21,7 @@ function normStatus(g: Goal): string {
 /**
  * parent_id로 트리를 만든다.
  * 루트 = parent_id가 없거나, 가리키는 목표가 없거나(삭제/미등록),
- * 부모가 archived인 경우. 순환 참조는 visited 가드로 끊고
+ * 부모가 cancelled인 경우. 순환 참조는 visited 가드로 끊고
  * 도달 불가 노드는 루트로 승격한다. agents/tree.ts의 buildForest와 동일 규칙.
  */
 export function buildForest(goals: Goal[]): GoalNode[] {
@@ -46,8 +36,8 @@ export function buildForest(goals: Goal[]): GoalNode[] {
     if (!g || !g.id) continue;
     const pid = g.parent_id || "";
     const parent = pid ? byId.get(pid) : undefined;
-    const parentArchived = !!parent && normStatus(parent) === "archived";
-    if (parent && parent.id !== g.id && !parentArchived) {
+    const parentCancelled = !!parent && normStatus(parent) === "cancelled";
+    if (parent && parent.id !== g.id && !parentCancelled) {
       const arr = kids.get(pid) || [];
       arr.push(g);
       kids.set(pid, arr);

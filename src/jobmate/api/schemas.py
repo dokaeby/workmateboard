@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictInt, field_validator
 
 
 class RunCreateRequest(BaseModel):
@@ -100,6 +100,13 @@ class ProjectCreateRequest(BaseModel):
     target_count: int = Field(default=0, ge=0)
     # goals.id 참조 — run 생성 시 goal_id 폴백 해석에 사용. null/빈 값 = 미연결.
     goal_id: str | None = Field(default=None, max_length=64)
+    # spec 3차 A — planned|active|paused|completed|cancelled
+    status: str | None = Field(default=None, max_length=20)
+    owner_agent_id: str | None = Field(default=None, max_length=64)
+    repository_url: str | None = Field(default=None, max_length=500)
+    repository_ref: str | None = Field(default=None, max_length=200)
+    # 로컬 절대경로 — 저장은 되지만 API 응답은 명시적 lead에게만 노출.
+    workspace_path: str | None = Field(default=None, max_length=1000)
 
 
 class ProjectPatchRequest(BaseModel):
@@ -109,6 +116,11 @@ class ProjectPatchRequest(BaseModel):
     goal: str | None = Field(default=None, max_length=500)
     target_count: int | None = Field(default=None, ge=0)
     goal_id: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
+    owner_agent_id: str | None = Field(default=None, max_length=64)
+    repository_url: str | None = Field(default=None, max_length=500)
+    repository_ref: str | None = Field(default=None, max_length=200)
+    workspace_path: str | None = Field(default=None, max_length=1000)
 
 
 class CommentCreateRequest(BaseModel):
@@ -143,12 +155,17 @@ class CustomWorkflowRequest(BaseModel):
 
 
 class GoalCreateRequest(BaseModel):
-    """POST /goals — title 필수, parent_id 선택(존재/비archived/무사이클)."""
+    """POST /goals — title 필수, parent_id 선택(존재/비cancelled/무사이클).
+
+    spec 3차 A: status는 active|paused|achieved|cancelled."""
 
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
     parent_id: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=20)
+    owner_agent_id: str | None = Field(default=None, max_length=64)
+    success_metrics: dict[str, Any] | None = None
+    target_at: str | None = Field(default=None, max_length=64)
 
 
 class GoalPatchRequest(BaseModel):
@@ -159,6 +176,9 @@ class GoalPatchRequest(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     parent_id: str | None = Field(default=None, max_length=64)
     status: str | None = Field(default=None, max_length=20)
+    owner_agent_id: str | None = Field(default=None, max_length=64)
+    success_metrics: dict[str, Any] | None = None
+    target_at: str | None = Field(default=None, max_length=64)
 
 
 class CardCreateRequest(BaseModel):
@@ -364,6 +384,9 @@ class ManagementTaskCreateRequest(BaseModel):
     assignee_agent_id: str | None = Field(default=None, max_length=64)
     reviewer_agent_id: str | None = Field(default=None, max_length=64)
     parent_id: str | None = Field(default=None, max_length=64)
+    # spec 3차 A — task의 effective goal은 task.goal_id → project.goal_id → none.
+    project_id: str | None = Field(default=None, max_length=64)
+    goal_id: str | None = Field(default=None, max_length=64)
 
 
 class ManagementTaskPatchRequest(BaseModel):
@@ -377,6 +400,8 @@ class ManagementTaskPatchRequest(BaseModel):
     assignee_agent_id: str | None = Field(default=None, max_length=64)
     reviewer_agent_id: str | None = Field(default=None, max_length=64)
     parent_id: str | None = Field(default=None, max_length=64)
+    project_id: str | None = Field(default=None, max_length=64)
+    goal_id: str | None = Field(default=None, max_length=64)
 
 
 class TaskAssignRequest(BaseModel):
@@ -425,3 +450,170 @@ class RecoveryActionResolveRequest(BaseModel):
 
     status: Literal["resolved", "cancelled"] = "resolved"
     note: str = Field(default="", max_length=500)
+
+
+# ---- paperclip integration (agent-management 3차 E/F) ----
+
+
+# snapshot 임의 dict 필드의 직렬화 크기 상한 — 외부 입력이 무제한 dict로
+# DB(JSON 컬럼)/로그 경로에 들어가는 것을 막는다(8KB ≈ artifact metadata 한도).
+_SNAPSHOT_DICT_MAX_CHARS = 8192
+
+
+def _bounded_snapshot_dict[V: dict[str, Any]](v: V, field: str) -> V:
+    """snapshot dict 필드 크기 검증 — json.dumps 길이가 상한을 넘으면 ValueError."""
+    import json
+
+    if len(json.dumps(v, ensure_ascii=False, default=str)) > _SNAPSHOT_DICT_MAX_CHARS:
+        raise ValueError(f"{field} exceeds {_SNAPSHOT_DICT_MAX_CHARS} chars")
+    return v
+
+
+class PaperclipExternalAgent(BaseModel):
+    """외부 agent projection 1건 — payload_summary는 서버가 secret/
+    transcript/adapter env를 제거한 뒤 저장한다."""
+
+    external_id: str = Field(min_length=1, max_length=200)
+    status: str = Field(default="", max_length=60)
+    payload_summary: dict[str, Any] = Field(default_factory=dict)
+    updated_at: str | None = Field(default=None, max_length=64)
+
+    @field_validator("payload_summary")
+    @classmethod
+    def _payload_summary_bounded(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _bounded_snapshot_dict(v, "payload_summary")
+
+
+class PaperclipExternalTask(BaseModel):
+    external_id: str = Field(min_length=1, max_length=200)
+    assignee_external_id: str | None = Field(default=None, max_length=200)
+    status: str = Field(default="", max_length=60)
+    title: str = Field(default="", max_length=300)
+    updated_at: str | None = Field(default=None, max_length=64)
+
+
+class PaperclipExternalRun(BaseModel):
+    external_id: str = Field(min_length=1, max_length=200)
+    task_external_id: str | None = Field(default=None, max_length=200)
+    agent_external_id: str | None = Field(default=None, max_length=200)
+    status: str = Field(default="", max_length=60)
+    token_cost_summary: dict[str, Any] = Field(default_factory=dict)
+    updated_at: str | None = Field(default=None, max_length=64)
+
+    @field_validator("token_cost_summary")
+    @classmethod
+    def _token_cost_summary_bounded(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _bounded_snapshot_dict(v, "token_cost_summary")
+
+
+class PaperclipSnapshotRequest(BaseModel):
+    """POST /management/integrations/paperclip/snapshot — machine auth +
+    idempotency. 멱등키는 Idempotency-Key 헤더 또는 body.idempotency_key.
+    항목 수 상한은 외부 입력 크기 제한용."""
+
+    provider: str = Field(default="paperclip", max_length=40)
+    company_id: str = Field(min_length=1, max_length=200)
+    agents: list[PaperclipExternalAgent] = Field(default_factory=list, max_length=1000)
+    tasks: list[PaperclipExternalTask] = Field(default_factory=list, max_length=5000)
+    runs: list[PaperclipExternalRun] = Field(default_factory=list, max_length=5000)
+    # entity별 동기화 커서(선택) — external_sync_cursors.cursor JSON에 병합.
+    cursors: dict[str, str] = Field(default_factory=dict)
+    idempotency_key: str = Field(default="", max_length=200)
+
+    @field_validator("cursors")
+    @classmethod
+    def _cursors_bounded(cls, v: dict[str, str]) -> dict[str, str]:
+        return _bounded_snapshot_dict(v, "cursors")
+
+
+class RoutineCreateRequest(BaseModel):
+    """POST /management/routines — paperclip spec 3차 C.
+
+    schedule_kind별 schedule JSON 형태는 서비스 계층
+    (services/routines.validate_schedule)이 검증한다:
+    - interval: {"minutes": int}
+    - cron_daily: {"time": "HH:MM"}
+    - cron_weekly: {"weekday": 0-6 (Mon=0), "time": "HH:MM"}
+    timezone은 IANA name — 서비스가 ZoneInfo로 검증한다."""
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    project_id: str | None = Field(default=None, max_length=64)
+    task_template: dict[str, Any] = Field(default_factory=dict)
+    assignee_agent_id: str | None = Field(default=None, max_length=64)
+    schedule_kind: str = Field(default="interval", max_length=20)
+    schedule: dict[str, Any] = Field(default_factory=dict)
+    timezone: str = Field(default="UTC", max_length=64)
+    max_concurrent: int = Field(default=1, ge=1, le=100)
+    enabled: bool = True
+
+
+class RoutinePatchRequest(BaseModel):
+    """PATCH /management/routines/{id} — model_fields_set 필드만 부분 갱신.
+
+    enabled 전환/스케줄 변경 시 next_run_at은 서비스가 재계산한다."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    project_id: str | None = Field(default=None, max_length=64)
+    task_template: dict[str, Any] | None = None
+    assignee_agent_id: str | None = Field(default=None, max_length=64)
+    schedule_kind: str | None = Field(default=None, max_length=20)
+    schedule: dict[str, Any] | None = None
+    timezone: str | None = Field(default=None, max_length=64)
+    max_concurrent: int | None = Field(default=None, ge=1, le=100)
+    enabled: bool | None = None
+
+
+# ---------- agent-management 3차 (/api/v1/management — task collab) ----------
+
+
+class TaskCommentCreateRequest(BaseModel):
+    """POST /management/tasks/{id}/comments — spec 3차 B.
+
+    author_type/author_id는 서버가 인증 컨텍스트에서 결정한다 —
+    클라이언트가 보낸 값은 신뢰하지 않는다(스키마에 필드 자체가 없다)."""
+
+    body: str = Field(min_length=1, max_length=4000)
+    content_type: str | None = Field(default=None, max_length=20)
+
+
+class TaskArtifactCreateRequest(BaseModel):
+    """POST /management/tasks/{id}/artifacts — spec 3차 B.
+
+    uri는 https URL 또는 repo-relative 경로만 허용 — file://, javascript:,
+    data:, UNC, 상위 디렉터리 탈출, 절대 경로는 서비스가 422로 거부한다.
+    서버는 URI를 fetch하지 않고 메타데이터만 저장한다."""
+
+    kind: str = Field(default="other", max_length=40)
+    name: str = Field(min_length=1, max_length=200)
+    uri: str = Field(min_length=1, max_length=1000)
+    run_id: str | None = Field(default=None, max_length=64)
+    checksum_sha256: str | None = Field(default=None, max_length=64)
+    media_type: str | None = Field(default=None, max_length=100)
+    size_bytes: StrictInt | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] | None = None
+
+
+# ---------- agent-management 3차 (/api/v1/management — agent permissions) ----------
+
+
+class AgentPermissionRuleIn(BaseModel):
+    """PUT /management/agents/{id}/permissions의 개별 규칙 — spec 3차 D.
+
+    capability/effect/scope_type 어휘와 scope_id 필수 조건은 라우터가
+    services.permissions 상수 + store 참조 검증으로 확인한다."""
+
+    capability: str = Field(min_length=1, max_length=60)
+    effect: str = Field(default="allow", max_length=10)
+    scope_type: str = Field(default="global", max_length=10)
+    scope_id: str = Field(default="", max_length=200)
+
+
+class AgentPermissionsPutRequest(BaseModel):
+    """PUT /management/agents/{id}/permissions — 규칙 전체 교체(replace).
+
+    프론트엔드는 {permissions:[{capability,effect,scope_type,scope_id}]}
+    형태로 전체 집합을 보낸다."""
+
+    permissions: list[AgentPermissionRuleIn] = Field(default_factory=list, max_length=200)

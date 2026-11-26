@@ -28,6 +28,8 @@ class ManagementStoreMixin:
         "assignee_agent_id",
         "reviewer_agent_id",
         "parent_id",
+        "project_id",
+        "goal_id",
         "current_run_id",
         "checkout_agent_id",
         "checkout_at",
@@ -72,9 +74,14 @@ class ManagementStoreMixin:
         assignee_agent_id: str | None = None,
         reviewer_agent_id: str | None = None,
         parent_id: str | None = None,
+        project_id: str | None = None,
+        goal_id: str | None = None,
         created_by: str = "",
     ) -> dict[str, Any] | None:
-        """task 생성 — title 필수(≤200자). 실패 시 None."""
+        """task 생성 — title 필수(≤200자). 실패 시 None.
+
+        project_id/goal_id 참조 존재 검증은 서비스 계층
+        (agent_management.create_task)이 담당한다."""
         title = title.strip()[:200]
         if not title:
             return None
@@ -89,8 +96,9 @@ class ManagementStoreMixin:
                     c.execute(
                         "INSERT INTO tasks(id,identifier,title,description,status,"
                         "priority,assignee_agent_id,reviewer_agent_id,parent_id,"
+                        "project_id,goal_id,"
                         "created_by,created_at,updated_at)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             tid,
                             ident,
@@ -101,6 +109,8 @@ class ManagementStoreMixin:
                             (assignee_agent_id or "").strip()[:64] or None,
                             (reviewer_agent_id or "").strip()[:64] or None,
                             (parent_id or "").strip()[:64] or None,
+                            (project_id or "").strip()[:64] or None,
+                            (goal_id or "").strip()[:64] or None,
                             created_by[:200],
                             now,
                             now,
@@ -127,6 +137,8 @@ class ManagementStoreMixin:
         *,
         status: str | None = None,
         assignee_agent_id: str | None = None,
+        project_id: str | None = None,
+        goal_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM tasks"
@@ -138,6 +150,12 @@ class ManagementStoreMixin:
         if assignee_agent_id:
             conds.append("assignee_agent_id=?")
             params.append(assignee_agent_id.strip()[:64])
+        if project_id:
+            conds.append("project_id=?")
+            params.append(project_id.strip()[:64])
+        if goal_id:
+            conds.append("goal_id=?")
+            params.append(goal_id.strip()[:64])
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
@@ -146,7 +164,9 @@ class ManagementStoreMixin:
 
     def update_task(self, task_id: str, **fields: Any) -> dict[str, Any] | None:
         """부분 갱신 — title/description/status/priority/assignee_agent_id/
-        reviewer_agent_id/parent_id/current_run_id. None = task 없음."""
+        reviewer_agent_id/parent_id/project_id/goal_id/current_run_id.
+        None = task 없음. project_id/goal_id의 참조 존재 검증은 서비스
+        계층(agent_management.patch_task)이 담당한다."""
         task = self.get_task(task_id)
         if task is None:
             return None
@@ -177,6 +197,12 @@ class ManagementStoreMixin:
             if pid is not None and pid == task["id"]:
                 return None
             updates["parent_id"] = pid
+        if "project_id" in fields:
+            v = fields["project_id"]
+            updates["project_id"] = str(v).strip()[:64] or None if v else None
+        if "goal_id" in fields:
+            v = fields["goal_id"]
+            updates["goal_id"] = str(v).strip()[:64] or None if v else None
         if "current_run_id" in fields:
             v = fields["current_run_id"]
             updates["current_run_id"] = str(v).strip()[:64] or None if v else None
@@ -238,6 +264,22 @@ class ManagementStoreMixin:
             (aid, aid),
         ).fetchone()
         return self._task_json(row) if row else None
+
+    def task_effective_goal_id(self, task: dict[str, Any] | None) -> str:
+        """task의 effective goal — spec 3차 A: task.goal_id → project.goal_id
+        → '' 순서로 해석한다. run 태깅 폴백(store/runs.py)과 조회 API가
+        공유하는 단일 경로."""
+        if not task:
+            return ""
+        gid = str(task.get("goal_id") or "").strip()
+        if gid:
+            return gid[:64]
+        pid = str(task.get("project_id") or "").strip()
+        if pid:
+            proj = self.get_project(pid)
+            if proj is not None:
+                return str(proj.get("goal_id") or "").strip()[:64]
+        return ""
 
     # ---- task_runs (task↔run 링크) ----
     def link_task_run(self, task_id: str, run_id: str) -> dict[str, Any]:

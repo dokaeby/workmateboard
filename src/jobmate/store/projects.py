@@ -6,6 +6,9 @@ from typing import Any
 
 from .util import _iso, _now, clean_scope_id
 
+# spec 3차 A — projects.status 어휘(planned|active|paused|completed|cancelled).
+PROJECT_STATUSES = ("planned", "active", "paused", "completed", "cancelled")
+
 
 class ProjectStoreMixin:
     # ---- projects (팀장 프로젝트 마스터/태깅) ----
@@ -16,6 +19,8 @@ class ProjectStoreMixin:
             d["target_count"] = int(d.get("target_count") or 0)
         except (TypeError, ValueError):
             d["target_count"] = 0
+        if not d.get("status"):
+            d["status"] = "active"
         return d
 
     def create_project(
@@ -26,10 +31,15 @@ class ProjectStoreMixin:
         goal: str = "",
         target_count: int = 0,
         goal_id: str | None = None,
+        status: str = "active",
+        owner_agent_id: str | None = None,
+        repository_url: str | None = None,
+        repository_ref: str | None = None,
+        workspace_path: str | None = None,
         created_by: str = "",
     ) -> dict[str, Any] | None:
         """프로젝트 생성. name은 trim 후 lower() 기준 중복 시 None.
-        goal_id는 goals.id 참조(존재 검증은 라우트 계층)."""
+        goal_id는 goals.id 참조(존재/상태 검증은 라우트 계층)."""
         name = name.strip()[:200]
         if not name:
             return None
@@ -42,7 +52,9 @@ class ProjectStoreMixin:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO projects(id,name,color,description,goal,target_count,"
-                    "goal_id,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "goal_id,status,owner_agent_id,repository_url,repository_ref,"
+                    "workspace_path,created_by,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         pid,
                         name,
@@ -51,7 +63,13 @@ class ProjectStoreMixin:
                         goal.strip()[:500],
                         int(target_count or 0),
                         gid,
+                        (status or "").strip().lower()[:20] or "active",
+                        (owner_agent_id or "").strip()[:64] or None,
+                        (repository_url or "").strip()[:500] or None,
+                        (repository_ref or "").strip()[:200] or None,
+                        (workspace_path or "").strip()[:1000] or None,
                         created_by[:200],
+                        now,
                         now,
                     ),
                 )
@@ -76,8 +94,10 @@ class ProjectStoreMixin:
         return self._project_json(row) if row else None
 
     def update_project(self, project_id: str, **fields: Any) -> dict[str, Any] | None:
-        """name/color/description/goal/target_count/goal_id 부분 갱신.
-        name 변경 시 ci 중복 검사. goal_id=None은 해제."""
+        """name/color/description/goal/target_count/goal_id/status/
+        owner_agent_id/repository_url/repository_ref/workspace_path 부분 갱신.
+        name 변경 시 ci 중복 검사. goal_id=None은 해제.
+        갱신이 있으면 updated_at을 항상 갱신한다(spec 3차 A)."""
         proj = self.get_project(project_id)
         if proj is None:
             return None
@@ -104,23 +124,45 @@ class ProjectStoreMixin:
         if "goal_id" in fields:
             gv = fields["goal_id"]
             updates["goal_id"] = (str(gv).strip()[:64] or None) if gv else None
+        if "status" in fields:
+            st = str(fields["status"] or "").strip().lower()[:20]
+            if st:
+                updates["status"] = st
+        if "owner_agent_id" in fields:
+            ov = fields["owner_agent_id"]
+            updates["owner_agent_id"] = (str(ov).strip()[:64] or None) if ov else None
+        if "repository_url" in fields:
+            rv = fields["repository_url"]
+            updates["repository_url"] = (str(rv).strip()[:500] or None) if rv else None
+        if "repository_ref" in fields:
+            rf = fields["repository_ref"]
+            updates["repository_ref"] = (str(rf).strip()[:200] or None) if rf else None
+        if "workspace_path" in fields:
+            wp = fields["workspace_path"]
+            updates["workspace_path"] = (str(wp).strip()[:1000] or None) if wp else None
         if not updates:
             return proj
         sets = ", ".join(f"{k}=?" for k in updates)
         try:
             with self.tx() as c:
                 c.execute(
-                    f"UPDATE projects SET {sets} WHERE id=?",  # noqa: S608 - keys는 고정 허용 목록
-                    (*updates.values(), project_id),
+                    f"UPDATE projects SET {sets}, updated_at=? WHERE id=?",  # noqa: S608 - keys는 고정 허용 목록
+                    (*updates.values(), _iso(_now()), project_id),
                 )
         except self._integrity_errors:
             return None
         return self.get_project(project_id)
 
-    def delete_project(self, project_id: str) -> bool:
-        """프로젝트 삭제 — 세션/run의 태그 값은 그대로 둔다(고아 태그 허용)."""
+    def cancel_project(self, project_id: str) -> bool:
+        """소프트 취소 — status='cancelled' (spec 3차 A).
+
+        tasks.project_id/세션·run의 project 태그 이력은 보존한다 —
+        하드 DELETE는 태그 이력과의 연결을 끊으므로 사용하지 않는다."""
         with self.tx() as c:
-            cur = c.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            cur = c.execute(
+                "UPDATE projects SET status='cancelled', updated_at=? WHERE id=?",
+                (_iso(_now()), project_id),
+            )
         return cur.rowcount > 0
 
     # ---- 프로젝트 태깅 (runs.project / agent_sessions.project) ----

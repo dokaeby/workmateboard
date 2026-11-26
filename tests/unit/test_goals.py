@@ -75,9 +75,9 @@ def test_goal_crud(tmp_path: Path) -> None:
     assert items[child["id"]]["parent_id"] == g["id"]
 
     # PATCH 부분 갱신
-    r = client.patch(f"/api/v1/goals/{g['id']}", json={"status": "done", "title": "새 제목"})
+    r = client.patch(f"/api/v1/goals/{g['id']}", json={"status": "achieved", "title": "새 제목"})
     assert r.status_code == 200
-    assert r.json()["status"] == "done" and r.json()["title"] == "새 제목"
+    assert r.json()["status"] == "achieved" and r.json()["title"] == "새 제목"
     assert r.json()["description"] == "분기 목표"  # 미전송 필드 유지
 
     # parent_id=null → 루트 해제
@@ -87,10 +87,10 @@ def test_goal_crud(tmp_path: Path) -> None:
     # PATCH unknown → 404
     assert client.patch("/api/v1/goals/nope", json={"title": "x"}).status_code == 404
 
-    # DELETE → 소프트 삭제(archived), 행은 보존
+    # DELETE → 소프트 삭제(cancelled), 행은 보존
     r = client.delete(f"/api/v1/goals/{g['id']}")
-    assert r.status_code == 200 and r.json()["status"] == "archived"
-    assert store.get_goal(g["id"])["status"] == "archived"
+    assert r.status_code == 200 and r.json()["status"] == "cancelled"
+    assert store.get_goal(g["id"])["status"] == "cancelled"
     assert client.delete("/api/v1/goals/nope").status_code == 404
 
 
@@ -98,12 +98,12 @@ def test_goal_status_filter(tmp_path: Path) -> None:
     client, _ = _env(tmp_path)
     _mk(client, "A")
     b = _mk(client, "B")
-    client.patch(f"/api/v1/goals/{b['id']}", json={"status": "done"})
+    client.patch(f"/api/v1/goals/{b['id']}", json={"status": "achieved"})
 
     assert len(client.get("/api/v1/goals").json()["items"]) == 2
     assert len(client.get("/api/v1/goals?status=active").json()["items"]) == 1
-    done = client.get("/api/v1/goals?status=done").json()["items"]
-    assert [i["id"] for i in done] == [b["id"]]
+    achieved = client.get("/api/v1/goals?status=achieved").json()["items"]
+    assert [i["id"] for i in achieved] == [b["id"]]
     assert client.get("/api/v1/goals?status=bogus").status_code == 422
     assert client.get("/api/v1/goals?status=").status_code == 200
 
@@ -142,20 +142,20 @@ def test_goal_parent_rules(tmp_path: Path) -> None:
     r = client.patch(f"/api/v1/goals/{c['id']}", json={"parent_id": a["id"]})
     assert r.status_code == 200
 
-    # archived 부모는 새 지정 불가
+    # cancelled 부모는 새 지정 불가
     client.delete(f"/api/v1/goals/{a['id']}")
     r = client.post("/api/v1/goals", json={"title": "new", "parent_id": a["id"]})
-    assert r.status_code == 422 and "archived" in r.json()["error"]["message"]
+    assert r.status_code == 422 and "cancelled" in r.json()["error"]["message"]
 
-    # archived 부모를 가진 기존 행의 다른 필드 PATCH는 parent_id 재전송해도 200
+    # cancelled 부모를 가진 기존 행의 다른 필드 PATCH는 parent_id 재전송해도 200
     r = client.patch(f"/api/v1/goals/{b['id']}", json={"title": "B2", "parent_id": a["id"]})
     assert r.status_code == 200 and r.json()["title"] == "B2"
 
-    # 다른 archived 목표를 새 부모로 지정 → 422
+    # 다른 cancelled 목표를 새 부모로 지정 → 422
     d = _mk(client, "D")
     client.delete(f"/api/v1/goals/{d['id']}")
     r = client.patch(f"/api/v1/goals/{b['id']}", json={"parent_id": d["id"]})
-    assert r.status_code == 422 and "archived" in r.json()["error"]["message"]
+    assert r.status_code == 422 and "cancelled" in r.json()["error"]["message"]
 
     # parent_id 해제(null)는 허용
     r = client.patch(f"/api/v1/goals/{b['id']}", json={"parent_id": None})
@@ -261,13 +261,13 @@ def test_run_goal_id_via_api(tmp_path: Path) -> None:
     )
     assert r.status_code == 422
 
-    # archived goal은 신규 run 태깅 불가
+    # cancelled goal은 신규 run 태깅 불가
     client.delete(f"/api/v1/goals/{g['id']}")
     r = client.post(
         "/api/v1/runs",
         json={"workflow": "dev_review", "task": "x", "goal_id": g["id"]},
     )
-    assert r.status_code == 422 and "archived" in r.json()["error"]["message"]
+    assert r.status_code == 422 and "cancelled" in r.json()["error"]["message"]
 
 
 def test_run_patch_goal_id(tmp_path: Path) -> None:
@@ -383,33 +383,33 @@ def test_run_project_goal_fallback_api(tmp_path: Path) -> None:
     assert run.input["goal"]["id"] == g["id"]
 
 
-# ---------------- M1: archived goal 차단 ----------------
+# ---------------- M1: cancelled goal 차단 ----------------
 
 
-def test_project_rejects_archived_goal(tmp_path: Path) -> None:
-    """프로젝트 create/patch는 archived goal_id를 422로 거부한다."""
+def test_project_rejects_cancelled_goal(tmp_path: Path) -> None:
+    """프로젝트 create/patch는 cancelled goal_id를 422로 거부한다."""
     client, _ = _env(tmp_path)
     g = _mk(client, "곧 보관")
     client.delete(f"/api/v1/goals/{g['id']}")
 
     r = client.post("/api/v1/projects", json={"name": "P1", "goal_id": g["id"]})
-    assert r.status_code == 422 and "archived" in r.json()["error"]["message"]
+    assert r.status_code == 422 and "cancelled" in r.json()["error"]["message"]
 
-    # patch 경로 — 활성 goal로 생성 후 goal을 archive하고 재지정 시도
+    # patch 경로 — 활성 goal로 생성 후 goal을 cancel하고 재지정 시도
     g2 = _mk(client, "활성 목표")
     p = client.post("/api/v1/projects", json={"name": "P2", "goal_id": g2["id"]})
     assert p.status_code == 201
     client.delete(f"/api/v1/goals/{g2['id']}")
     r = client.patch(f"/api/v1/projects/{p.json()['id']}", json={"goal_id": g2["id"]})
-    assert r.status_code == 422 and "archived" in r.json()["error"]["message"]
+    assert r.status_code == 422 and "cancelled" in r.json()["error"]["message"]
 
 
-def test_run_fallback_skips_archived_goal(tmp_path: Path) -> None:
-    """create_run의 project 폴백은 archived/missing goal을 태깅하지 않는다."""
+def test_run_fallback_skips_cancelled_goal(tmp_path: Path) -> None:
+    """create_run의 project 폴백은 cancelled/missing goal을 태깅하지 않는다."""
     _, store = _env(tmp_path)
     g = store.create_goal("G")
     assert g is not None
-    store.archive_goal(g["id"])
+    store.cancel_goal(g["id"])
     store.create_project("ArchProj", goal_id=g["id"])
 
     run = store.create_run("dev_review", "1", {"task": "t", "project": "ArchProj"}, trace_id="a")
@@ -437,10 +437,10 @@ def test_admit_run_rejects_invalid_explicit_goal(tmp_path: Path) -> None:
     assert res["action"] == "invalid_goal"
     assert store.list_runs() == []
 
-    # archived goal
+    # cancelled goal
     g = store.create_goal("G")
     assert g is not None
-    store.archive_goal(g["id"])
+    store.cancel_goal(g["id"])
     res = wakeups.admit_run(
         store,
         workflow_key="dev_review",
@@ -450,7 +450,7 @@ def test_admit_run_rejects_invalid_explicit_goal(tmp_path: Path) -> None:
     )
     assert res["action"] == "invalid_goal"
 
-    # project 폴백의 archived goal은 strip — run은 생성되되 goal 없음
+    # project 폴백의 cancelled goal은 strip — run은 생성되되 goal 없음
     store.create_project("GA", goal_id=g["id"])
     res = wakeups.admit_run(
         store,
@@ -462,8 +462,8 @@ def test_admit_run_rejects_invalid_explicit_goal(tmp_path: Path) -> None:
     assert res["run"].goal_id == ""
 
 
-def test_deferred_promote_fails_on_archived_goal(tmp_path: Path) -> None:
-    """defer 이후 goal이 archived되면 promote하지 않고 wakeup을 failed로."""
+def test_deferred_promote_fails_on_cancelled_goal(tmp_path: Path) -> None:
+    """defer 이후 goal이 cancelled되면 promote하지 않고 wakeup을 failed로."""
     _, store = _env(tmp_path)
     g = store.create_goal("G")
     assert g is not None
@@ -483,7 +483,7 @@ def test_deferred_promote_fails_on_archived_goal(tmp_path: Path) -> None:
     )
     assert r1["action"] == "created" and d["action"] == "deferred"
 
-    store.archive_goal(g["id"])
+    store.cancel_goal(g["id"])
     store.update_run(r1["run_id"], status=RunStatus.COMPLETED)
     created = wakeups.on_run_finished(store, r1["run_id"])
     assert created == []
@@ -577,5 +577,5 @@ def test_goals_auth_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     r = lead.post("/api/v1/goals", json={"title": "L"})
     assert r.status_code == 201
     gid = r.json()["id"]
-    assert lead.patch(f"/api/v1/goals/{gid}", json={"status": "done"}).status_code == 200
+    assert lead.patch(f"/api/v1/goals/{gid}", json={"status": "achieved"}).status_code == 200
     assert lead.delete(f"/api/v1/goals/{gid}").status_code == 200

@@ -15,7 +15,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ... import budget_scope, wakeups
-from ...models import StageStatus, canonical_agent_status
+from ...models import AgentCapability, StageStatus, canonical_agent_status
+from ...services import agent_management as mgmt
+from ...services import permissions as perm_svc
 from ...workflows import WORKFLOWS
 from ..jobs import _parse_diff_files
 from ..schemas import ApprovalRequest, RunCreateRequest, RunPatchRequest
@@ -72,16 +74,16 @@ def register(app: FastAPI, ctx: Any) -> None:
                 return err(422, "validation", "agent not found", request)
             if canonical_agent_status(agent_row.get("status")) == "terminated":
                 return err(422, "validation", "agent is terminated", request)
-        # goals 태깅 — 명시된 goal_id는 존재하는 비archived 목표여야
-        # runs.goal_id에 기록된다. 미지정 시 store.create_run이 프로젝트의
-        # goal_id로 폴백 해석한다.
+        # goals 태깅 — 명시된 goal_id는 존재하는 비cancelled 목표여야
+        # runs.goal_id에 기록된다. 미지정 시 store.create_run이 task
+        # effective goal → 프로젝트의 goal_id 순으로 폴백 해석한다.
         goal_id = body.goal_id.strip()
         if goal_id:
             goal_row = store.get_goal(goal_id)
             if goal_row is None:
                 return err(422, "validation", "goal not found", request)
-            if str(goal_row.get("status") or "") == "archived":
-                return err(422, "validation", "goal is archived", request)
+            if str(goal_row.get("status") or "") == "cancelled":
+                return err(422, "validation", "goal is cancelled", request)
         # 월간 LLM 예산 집행 — MTD 비용이 monthly_budget_usd를 초과하면
         # run 생성 자체를 거부한다(usage/summary의 budget_exceeded와 동일 기준).
         # llm_usage 전수 합산 비용이 크므로 60초 인메모리 캐시를 둔다.
@@ -114,6 +116,37 @@ def register(app: FastAPI, ctx: Any) -> None:
         project = budget_scope.clean_scope_id(body.project or "")
         if not project and isinstance(body.metadata, dict):
             project = budget_scope.clean_scope_id(str(body.metadata.get("project") or ""))
+        # spec 3차 D — agent_id 태깅된 run 생성은 해당 agent의 run:execute
+        # capability를 서버가 재검증한다(버튼 숨김이 아니라 강제). agent_id
+        # 없는 run은 agent 행위자가 아니므로 agent permission을 적용하지
+        # 않는다 — 사람/시스템 run은 기존 lead/예산 게이트가 담당한다.
+        # L5 결정: 이 경로는 run 수준 검사(run:execute)만 한다. metadata에
+        # task_id가 있어도 task 생명주기 capability(task:assign/update)는
+        # 검사하지 않는다 — task 측 강제는 task 엔드포인트
+        # (checkout/assign/patch)와 wake 경로에서 수행된다(docs §29 참조).
+        # project 태그는 이름 문자열일 수 있으므로 permission scope_id
+        # (canonical project uuid)로 해석한다 — id 또는 이름(ci) 모두 허용.
+        # 해석 실패 시 ''를 넘겨 task_id 유도 project가 대신 쓰이게 한다.
+        if agent_id:
+            _perm_task_id = ""
+            if isinstance(body.metadata, dict):
+                _perm_task_id = str(body.metadata.get("task_id") or "")
+            _perm_project_id = ""
+            if project:
+                _proj_row = store.get_project(project) or store.find_project_by_name(project)
+                if _proj_row is not None:
+                    _perm_project_id = str(_proj_row.get("id") or "")
+            try:
+                perm_svc.require_permission(
+                    store,
+                    agent_id,
+                    AgentCapability.RUN_EXECUTE.value,
+                    project_id=_perm_project_id,
+                    task_id=_perm_task_id,
+                    actor=_actor_label(request),
+                )
+            except mgmt.ManagementError as e:
+                return err(e.status_code, e.code, e.message, request)
         input_data: dict[str, Any] = {"task": body.task}
         if project:
             input_data["project"] = project
@@ -473,8 +506,8 @@ def register(app: FastAPI, ctx: Any) -> None:
                 goal_row = store.get_goal(gid)
                 if goal_row is None:
                     return err(422, "validation", "goal not found", request)
-                if str(goal_row.get("status") or "") == "archived":
-                    return err(422, "validation", "goal is archived", request)
+                if str(goal_row.get("status") or "") == "cancelled":
+                    return err(422, "validation", "goal is cancelled", request)
             new_goal = gid
         if new_project is not None:
             if not store.set_run_project(run_id, new_project):

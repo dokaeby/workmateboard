@@ -1,27 +1,38 @@
-/** goals — /goals 목표 트리(parent_id) + 등록/편집/보관.
- *  API 계약: GET/POST /goals, PATCH/DELETE /goals/{id} (DELETE는 보관 처리).
- *  GET /goals?status= 로 상태 필터를 서버에 위임할 수도 있지만,
- *  트리 문맥(조상 표시)을 위해 전체를 받아 클라이언트에서 필터한다. */
+/** goals — /goals 목표 트리(parent_id) + 등록/편집/취소.
+ *  API 계약: GET/POST /goals, PATCH/DELETE /goals/{id}.
+ *  3차 spec §3차 A: status 어휘는 active|paused|achieved|cancelled —
+ *  종료 상태는 PATCH {status:"cancelled"}로 명시한다(구 archive/DELETE는
+ *  레거시 호환용으로 남겨두고 UI에서는 cancelled 전이를 사용).
+ *  goal 필드: owner_agent_id, success_metrics(JSON), target_at. */
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "../../shared/api/client";
+import { apiGet, apiPost, apiPatch, ApiError } from "../../shared/api/client";
 import { useI18n } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Badge, Button } from "../../shared/ui";
-import { fmtTs } from "../../shared/lib/format";
+import { fmtTs, jsonSummary } from "../../shared/lib/format";
 import { buildForest, type Goal, type GoalNode, type GoalsResponse } from "./tree";
 import "./i18n";
 import "./goals.css";
 
-const STATUSES = ["active", "done", "archived"];
+const STATUSES = ["active", "paused", "achieved", "cancelled"];
+/** 레거시 데이터에 남아 있을 수 있는 종결 상태 — 트리/필터에서 동일 취급. */
+const TERMINAL_STATUSES = new Set(["cancelled", "archived"]);
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "muted" | "accent"> = {
   active: "ok",
+  paused: "warn",
+  achieved: "accent",
+  cancelled: "muted",
+  // 레거시 별칭
   done: "accent",
   archived: "muted",
 };
 
 const STATUS_LABEL_KEY: Record<string, string> = {
   active: "goals.statusActive",
+  paused: "goals.statusPaused",
+  achieved: "goals.statusAchieved",
+  cancelled: "goals.statusCancelled",
   done: "goals.statusDone",
   archived: "goals.statusArchived",
 };
@@ -36,6 +47,30 @@ function statusOf(g: Goal): string {
 
 const inputCls =
   "w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-accent";
+
+/** success_metrics JSON 텍스트 → 전송값. 빈 문자열은 null(해제),
+ *  파싱 실패 시 에러 — 임의 문자열을 JSON 컬럼에 넣지 않는다. */
+function parseMetrics(raw: string): { ok: true; value: unknown } | { ok: false } {
+  const s = raw.trim();
+  if (!s) return { ok: true, value: null };
+  try {
+    return { ok: true, value: JSON.parse(s) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function metricsText(v: unknown): string {
+  if (v == null || v === "") return "";
+  if (typeof v === "string") return v;
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+interface MgmtAgentOption { id: string; name?: string }
 
 /** 목표 등록/편집 폼 — initial이 있으면 PATCH, 없으면 POST.
  *  presetParent는 "하위 목표 추가"에서 상위 목표를 미리 채운다. */
@@ -58,13 +93,29 @@ function GoalForm({
     presetParent ?? initial?.parent_id ?? "",
   );
   const [status, setStatus] = useState<string>(initial ? statusOf(initial) : "active");
+  const [owner, setOwner] = useState(initial?.owner_agent_id || "");
+  const [metrics, setMetrics] = useState(metricsText(initial?.success_metrics));
+  const [targetAt, setTargetAt] = useState((initial?.target_at || "").slice(0, 10));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  // 상위 목표 후보 — 본인·보관된 목표 제외. 현재 선택값이 후보에 없으면 유지.
+  // owner_agent_id 후보 — 관리 API는 lead 이상. member에게는 실패하므로
+  // retry 없이 시도하고, 실패 시 자유 입력(datalist 없이)으로 둔다.
+  const agentsQ = useQuery({
+    queryKey: ["mgmt-agents-options"],
+    queryFn: () => apiGet<{ items?: MgmtAgentOption[] }>("/management/agents"),
+    staleTime: 60000,
+    retry: false,
+  });
+  const agentOptions = useMemo(
+    () => (Array.isArray(agentsQ.data?.items) ? agentsQ.data.items : []),
+    [agentsQ.data],
+  );
+
+  // 상위 목표 후보 — 본인·종결 목표 제외. 현재 선택값이 후보에 없으면 유지.
   const parentOptions = useMemo(() => {
     const list = goals.filter(
-      (g) => g.id !== initial?.id && statusOf(g) !== "archived",
+      (g) => g.id !== initial?.id && !TERMINAL_STATUSES.has(statusOf(g)),
     );
     if (parent && !list.some((g) => g.id === parent)) {
       const cur = goals.find((g) => g.id === parent);
@@ -78,6 +129,11 @@ function GoalForm({
       setErr(t("goals.needTitle", "제목을 입력하세요"));
       return;
     }
+    const parsed = parseMetrics(metrics);
+    if (!parsed.ok) {
+      setErr(t("goals.badMetrics", "성공 지표는 유효한 JSON이어야 합니다"));
+      return;
+    }
     const body: Record<string, unknown> = {
       title: title.trim(),
       status,
@@ -85,10 +141,16 @@ function GoalForm({
     if (desc.trim()) body.description = desc.trim();
     else if (initial) body.description = null;
     if (initial) {
-      // 편집: 명시적 null로 상위 목표 해제를 지원한다.
+      // 편집: 명시적 null로 상위 목표/담당/지표/기한 해제를 지원한다.
       body.parent_id = parent || null;
-    } else if (parent) {
-      body.parent_id = parent;
+      body.owner_agent_id = owner.trim() || null;
+      body.success_metrics = parsed.value;
+      body.target_at = targetAt || null;
+    } else {
+      if (parent) body.parent_id = parent;
+      if (owner.trim()) body.owner_agent_id = owner.trim();
+      if (parsed.value != null) body.success_metrics = parsed.value;
+      if (targetAt) body.target_at = targetAt;
     }
 
     setBusy(true);
@@ -125,20 +187,47 @@ function GoalForm({
             ))}
           </select>
         </label>
-        {initial && (
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-muted">{t("goals.statusField", "상태")}</span>
-            <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
-              {STATUSES.map((s) => (
-                <option key={s} value={s}>{statusLabel(t, s)}</option>
-              ))}
-            </select>
-          </label>
-        )}
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted">{t("goals.statusField", "상태")}</span>
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>{statusLabel(t, s)}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted">{t("goals.ownerAgent", "담당 에이전트 (선택)")}</span>
+          <input
+            value={owner}
+            onChange={(e) => setOwner(e.target.value)}
+            placeholder={t("goals.ownerAgentPh", "에이전트 ID")}
+            list="goal-owner-agents"
+            className={inputCls}
+          />
+          <datalist id="goal-owner-agents">
+            {agentOptions.map((a) => (
+              <option key={a.id} value={a.id}>{a.name || a.id}</option>
+            ))}
+          </datalist>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted">{t("goals.targetAt", "목표 기한 (선택)")}</span>
+          <input value={targetAt} onChange={(e) => setTargetAt(e.target.value)} type="date" className={inputCls} />
+        </label>
       </div>
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-muted">{t("goals.description", "설명")}</span>
         <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder={t("goals.descriptionPh", "설명 (선택)")} className={inputCls} />
+      </label>
+      <label className="block">
+        <span className="mb-1 block text-xs font-medium text-muted">{t("goals.successMetrics", "성공 지표 (JSON, 선택)")}</span>
+        <textarea
+          value={metrics}
+          onChange={(e) => setMetrics(e.target.value)}
+          rows={3}
+          placeholder='{"metric": "value"}'
+          className={`${inputCls} font-mono text-xs`}
+        />
       </label>
       {err && <p className="text-xs text-err">{err}</p>}
       <div className="flex items-center justify-end gap-2">
@@ -167,13 +256,14 @@ function GoalCard({
   const g = node.goal;
   const st = statusOf(g);
   const preview = (g.description || "").trim();
+  const terminal = TERMINAL_STATUSES.has(st);
   return (
     <button
       type="button"
       onClick={() => onSelect(g)}
       className={`w-52 rounded-xl border bg-surface p-3 text-left shadow-sm transition-colors hover:border-accent-border ${
         selected ? "border-accent ring-1 ring-accent" : "border-border"
-      } ${st === "archived" ? "opacity-60" : ""}`}
+      } ${terminal ? "opacity-60" : ""}`}
     >
       <div className="flex items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
@@ -243,14 +333,17 @@ function GoalDrawer({
   const st = statusOf(goal);
   const byId = useMemo(() => new Map(goals.map((x) => [x.id, x])), [goals]);
   const parent = goal.parent_id ? byId.get(goal.parent_id) : undefined;
+  const terminal = TERMINAL_STATUSES.has(st);
 
-  const archive = async () => {
-    const msg = t("goals.confirmArchive", "'{name}' 목표를 보관 처리할까요? 트리에서 숨겨집니다.")
+  // 목표 취소 — spec 3차 상태 어휘의 종결 상태는 cancelled.
+  // (레거시 DELETE는 서버가 archived로 소프트 삭제하던 경로 — 명시 PATCH를 우선 사용)
+  const cancel = async () => {
+    const msg = t("goals.confirmCancel", "'{name}' 목표를 취소 처리할까요? 트리에서 숨겨집니다.")
       .replace("{name}", goal.title || goal.id);
     if (!confirm(msg)) return;
     setBusy(true);
     try {
-      await apiDelete(`/goals/${encodeURIComponent(goal.id)}`);
+      await apiPatch(`/goals/${encodeURIComponent(goal.id)}`, { status: "cancelled" });
       await qc.invalidateQueries({ queryKey: ["goals"] });
       onChanged();
     } catch (e) {
@@ -315,6 +408,14 @@ function GoalDrawer({
                   <dd className="text-ink">{parent ? parent.title || parent.id : t("goals.noParent", "없음 (최상위)")}</dd>
                 </div>
                 <div>
+                  <dt className="text-xs text-muted">{t("goals.ownerAgent", "담당 에이전트")}</dt>
+                  <dd className="text-ink">{goal.owner_agent_id || "-"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted">{t("goals.targetAt", "목표 기한")}</dt>
+                  <dd className="text-ink">{goal.target_at ? String(goal.target_at).slice(0, 10) : "-"}</dd>
+                </div>
+                <div>
                   <dt className="text-xs text-muted">{t("goals.createdAt", "등록일")}</dt>
                   <dd className="text-ink">{fmtTs(goal.created_at)}</dd>
                 </div>
@@ -324,6 +425,15 @@ function GoalDrawer({
                 </div>
               </dl>
 
+              {goal.success_metrics != null && goal.success_metrics !== "" && (
+                <div>
+                  <div className="mb-1 text-xs font-bold text-muted">{t("goals.successMetrics", "성공 지표")}</div>
+                  <pre className="max-h-48 overflow-auto rounded-md bg-surface-hover p-2 text-xs text-ink-2">
+                    {jsonSummary(goal.success_metrics, 2000)}
+                  </pre>
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-2 border-t border-border pt-3">
                 <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => setMode("edit")}>
                   {t("goals.edit", "편집")}
@@ -331,9 +441,9 @@ function GoalDrawer({
                 <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => setMode("addSub")}>
                   {t("goals.addSub", "하위 목표 추가")}
                 </Button>
-                {st !== "archived" && (
-                  <Button variant="danger" className="px-3 py-1.5 text-xs" disabled={busy} onClick={archive}>
-                    {t("goals.archive", "보관")}
+                {!terminal && (
+                  <Button variant="danger" className="px-3 py-1.5 text-xs" disabled={busy} onClick={cancel}>
+                    {t("goals.cancelGoal", "목표 취소")}
                   </Button>
                 )}
               </div>

@@ -275,6 +275,9 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
         <dt>ID</dt><dd className="truncate font-mono">{run.id}</dd>
         <dt>{t("runs.created", "생성")}</dt><dd>{fmtTs(run.created_at)}</dd>
         <dt>{t("runs.updated", "갱신")}</dt><dd>{fmtTs(run.updated_at)}</dd>
+        {run.project_id && <><dt>{t("runs.project", "프로젝트")}</dt><dd className="truncate font-mono">{run.project_id}</dd></>}
+        {run.agent_id && <><dt>{t("runs.agent", "에이전트")}</dt><dd className="truncate font-mono">{run.agent_id}</dd></>}
+        {run.goal_id && <><dt>{t("runs.goal", "목표")}</dt><dd className="truncate font-mono">{run.goal_id}</dd></>}
         {run.error && <><dt>{t("runs.error", "오류")}</dt><dd className="text-err">{run.error}</dd></>}
       </dl>
       {run.status === "waiting_approval" && (

@@ -1,13 +1,15 @@
 # mypy: disable-error-code="attr-defined"
 """Goal 계층 스토어 메서드 믹스인 (db.py Store에서 추출).
 
-Paperclip goals 포팅 — parent_id 자기참조 트리, status(active|done|archived).
-FK는 두지 않고 존재/자기참조는 store가, archived/사이클은 서비스 계층
+Paperclip goals 포팅 — parent_id 자기참조 트리,
+status(active|paused|achieved|cancelled — spec 3차 A).
+FK는 두지 않고 존재/자기참조는 store가, cancelled/사이클은 서비스 계층
 (jobmate.goals)이 검증한다(agents.reports_to와 동일 분담).
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -25,17 +27,40 @@ class GoalStoreMixin:
             d["status"] = "active"
         return d
 
+    @staticmethod
+    def _metrics_json(value: Any) -> str:
+        """success_metrics → TEXT 컬럼용 JSON. dict 외 입력은 '{}'로 정규화
+        (서비스 계층이 dict/크기를 이미 검증한다 — 여기서는 방어적 직렬화)."""
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return "{}"
+            try:
+                json.loads(value)
+                return value[:4096]
+            except (ValueError, TypeError):
+                return "{}"
+        if isinstance(value, dict):
+            try:
+                return json.dumps(value, ensure_ascii=False, default=str)[:4096]
+            except (TypeError, ValueError):
+                return "{}"
+        return "{}"
+
     def create_goal(
         self,
         title: str,
         description: str = "",
         parent_id: str | None = None,
         status: str = "active",
+        owner_agent_id: str | None = None,
+        success_metrics: Any = None,
+        target_at: str | None = None,
         created_by: str = "",
     ) -> dict[str, Any] | None:
         """목표 생성. title trim 후 비어있으면 None.
 
-        parent 존재/자기참조는 여기서도 방어 — archived/사이클은 앱 계층
+        parent 존재/자기참조는 여기서도 방어 — cancelled/사이클은 앱 계층
         (goals.validate_parent)이 담당한다."""
         title = title.strip()[:200]
         if not title:
@@ -48,13 +73,17 @@ class GoalStoreMixin:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO goals(id,title,description,parent_id,status,"
-                "created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                "owner_agent_id,success_metrics,target_at,"
+                "created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     gid,
                     title,
                     description.strip()[:2000],
                     pid,
                     status.strip().lower()[:20] or "active",
+                    (owner_agent_id or "").strip()[:64] or None,
+                    self._metrics_json(success_metrics if success_metrics is not None else {}),
+                    (target_at or "").strip()[:64] or None,
                     created_by[:200],
                     now,
                     now,
@@ -69,7 +98,7 @@ class GoalStoreMixin:
     def list_goals(self, status: str | None = None) -> list[dict[str, Any]]:
         """목표 목록 — children_count(직계 자식 수) 포함.
 
-        archived 목표의 자식도 parent_id를 유지한다(계약: 프론트가 트리
+        cancelled 목표의 자식도 parent_id를 유지한다(계약: 프론트가 트리
         렌더링 시 처리). status 필터는 정확 일치."""
         sql = "SELECT * FROM goals"
         params: list[Any] = []
@@ -97,9 +126,11 @@ class GoalStoreMixin:
         return int(row["c"] or 0) if row is not None else 0
 
     def update_goal(self, goal_id: str, **fields: Any) -> dict[str, Any] | None:
-        """title/description/parent_id/status 부분 갱신.
+        """title/description/parent_id/status/owner_agent_id/success_metrics/
+        target_at 부분 갱신.
 
-        parent_id: None/빈 문자열은 루트로 해제. 존재하지 않는 parent는 None."""
+        parent_id: None/빈 문자열은 루트로 해제. 존재하지 않는 parent는 None.
+        success_metrics는 dict/JSON 문자열 모두 받아 TEXT로 정규화한다."""
         goal = self.get_goal(goal_id)
         if goal is None:
             return None
@@ -116,7 +147,7 @@ class GoalStoreMixin:
             pid = (str(pv).strip()[:64] or None) if pv else None
             if pid is not None:
                 # 방어 심화 — FK 미강제 커넥션 대비 존재/자기참조 검사.
-                # archived/사이클은 앱 계층(goals.validate_parent) 담당.
+                # cancelled/사이클은 앱 계층(goals.validate_parent) 담당.
                 if pid == goal_id or self.get_goal(pid) is None:
                     return None
             updates["parent_id"] = pid
@@ -124,6 +155,14 @@ class GoalStoreMixin:
             st = str(fields["status"] or "").strip().lower()[:20]
             if st:
                 updates["status"] = st
+        if "owner_agent_id" in fields:
+            ov = fields["owner_agent_id"]
+            updates["owner_agent_id"] = (str(ov).strip()[:64] or None) if ov else None
+        if "success_metrics" in fields:
+            updates["success_metrics"] = self._metrics_json(fields["success_metrics"])
+        if "target_at" in fields:
+            tv = fields["target_at"]
+            updates["target_at"] = (str(tv).strip()[:64] or None) if tv else None
         if not updates:
             return goal
         sets = ", ".join(f"{k}=?" for k in updates)
@@ -134,14 +173,15 @@ class GoalStoreMixin:
             )
         return self.get_goal(goal_id)
 
-    def archive_goal(self, goal_id: str) -> bool:
-        """소프트 삭제 — status='archived'. runs/projects 참조 이력은 보존.
+    def cancel_goal(self, goal_id: str) -> bool:
+        """소프트 삭제 — status='cancelled' (spec 3차 A, 구 archive 의미).
 
-        자식 목표는 parent_id를 유지한다 — 프론트가 트리 렌더링 시
-        archived 부모 아래 자식을 어떻게 표시할지 결정한다(계약상 허용)."""
+        runs/projects 참조 이력은 보존한다. 자식 목표는 parent_id를 유지한다 —
+        프론트가 트리 렌더링 시 cancelled 부모 아래 자식을 어떻게 표시할지
+        결정한다(계약상 허용)."""
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE goals SET status='archived', updated_at=? WHERE id=?",
+                "UPDATE goals SET status='cancelled', updated_at=? WHERE id=?",
                 (_iso(_now()), goal_id),
             )
         return cur.rowcount > 0

@@ -8,6 +8,7 @@ import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Badge, Button } from "../../shared/ui";
 import { usd, usdFromMicro, fmtTs, fmtAge } from "../../shared/lib/format";
 import { buildForest, type Agent, type AgentNode, type AgentsResponse } from "./tree";
+import { AgentPermissionsSection } from "./permissions";
 import "./i18n";
 import "./agents.css";
 
@@ -453,6 +454,12 @@ function AgentDrawer({
                   <dd className="text-ink">{fmtTs(agent.updated_at)}</dd>
                 </div>
               </dl>
+
+              {/* 3차 spec §3차 D/F — per-agent capability 권한 규칙.
+                  GET/PUT /management/agents/{id}/permissions (lead+ 게이트는 서버). */}
+              <div className="border-t border-border pt-3">
+                <AgentPermissionsSection agentId={agent.id} />
+              </div>
 
               <div className="flex flex-wrap gap-2 border-t border-border pt-3">
                 <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => setMode("edit")}>

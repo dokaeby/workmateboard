@@ -1409,16 +1409,28 @@ padding:32px;max-width:360px;text-align:center">
         ops as _r_ops,
     )
     from .routers import (
+        paperclip as _r_paperclip,
+    )
+    from .routers import (
+        permissions as _r_permissions,
+    )
+    from .routers import (
         push as _r_push,
     )
     from .routers import (
         radar as _r_radar,
     )
     from .routers import (
+        routines as _r_routines,
+    )
+    from .routers import (
         runs as _r_runs,
     )
     from .routers import (
         sessions as _r_sessions,
+    )
+    from .routers import (
+        task_collab as _r_task_collab,
     )
 
     ctx = SimpleNamespace(**{k: v for k, v in locals().items() if k != "ctx"})
@@ -1437,6 +1449,10 @@ padding:32px;max-width:360px;text-align:center">
     _r_management.register(app, ctx)
     _r_goals.register(app, ctx)
     _r_evals.register(app, ctx)
+    _r_task_collab.register(app, ctx)
+    _r_routines.register(app, ctx)
+    _r_permissions.register(app, ctx)
+    _r_paperclip.register(app, ctx)
     return app
 
 

@@ -25,13 +25,17 @@ from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
 from .costs import CostStoreMixin
 from .evals import EvalStoreMixin
+from .external_sync import ExternalSyncStoreMixin
 from .goals import GoalStoreMixin
 from .governance import GovernanceStoreMixin
 from .inbox import InboxStoreMixin
 from .management import ManagementStoreMixin
+from .permissions import PermissionStoreMixin
 from .projects import ProjectStoreMixin
 from .radar import RadarStoreMixin
+from .routines import RoutineStoreMixin
 from .runs import RunStoreMixin
+from .task_collab import TaskCollabStoreMixin
 from .usage import UsageStoreMixin
 from .users import UserStoreMixin
 from .util import _iso, _now
@@ -492,8 +496,14 @@ CREATE TABLE IF NOT EXISTS projects (
   goal TEXT NOT NULL DEFAULT '',
   target_count INTEGER NOT NULL DEFAULT 0,
   goal_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  owner_agent_id TEXT,
+  repository_url TEXT,
+  repository_ref TEXT,
+  workspace_path TEXT,
   created_by TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
 
@@ -582,6 +592,9 @@ CREATE TABLE IF NOT EXISTS goals (
   description TEXT NOT NULL DEFAULT '',
   parent_id TEXT,
   status TEXT NOT NULL DEFAULT 'active',
+  owner_agent_id TEXT,
+  success_metrics TEXT NOT NULL DEFAULT '{}',
+  target_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -634,6 +647,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   assignee_agent_id TEXT,
   reviewer_agent_id TEXT,
   parent_id TEXT,
+  project_id TEXT,
+  goal_id TEXT,
   current_run_id TEXT,
   checkout_agent_id TEXT,
   checkout_at TEXT,
@@ -760,6 +775,154 @@ CREATE TABLE IF NOT EXISTS recovery_actions (
 CREATE INDEX IF NOT EXISTS idx_recovery_actions_status ON recovery_actions(status);
 CREATE INDEX IF NOT EXISTS idx_recovery_actions_source
   ON recovery_actions(source_type, source_id);
+
+-- agent-management 3차 (paperclip spec B): task 댓글 — author_type은
+-- human|agent|system, content_type은 text|markdown. 길이/마크다운 검증과
+-- HTML 비실행 표시는 서비스/라우터 계층이 담당한다.
+CREATE TABLE IF NOT EXISTS task_comments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  author_type TEXT NOT NULL,
+  author_id TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'text',
+  created_at TEXT NOT NULL,
+  edited_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
+
+-- agent-management 3차 (paperclip spec B): task 산출물 — 메타데이터와
+-- 안전한 URI만 저장한다. 서버가 URI를 fetch하지 않으며 file:///javascript:/
+-- data:/UNC/경로 탈출은 서비스 계층이 거부한다.
+CREATE TABLE IF NOT EXISTS task_artifacts (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  run_id TEXT,
+  kind TEXT NOT NULL DEFAULT 'other',
+  name TEXT NOT NULL DEFAULT '',
+  uri TEXT NOT NULL DEFAULT '',
+  checksum_sha256 TEXT,
+  media_type TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_task ON task_artifacts(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_run ON task_artifacts(run_id);
+
+-- agent-management 3차 (paperclip spec C): 반복 업무 루틴 —
+-- schedule_kind(interval|cron_daily|cron_weekly) + timezone(IANA) +
+-- schedule JSON. max_concurrent 기본 1, enabled는 INTEGER 플래그.
+CREATE TABLE IF NOT EXISTS routines (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  project_id TEXT,
+  task_template TEXT NOT NULL DEFAULT '{}',
+  assignee_agent_id TEXT,
+  schedule_kind TEXT NOT NULL DEFAULT 'interval',
+  schedule TEXT NOT NULL DEFAULT '{}',
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  max_concurrent INTEGER NOT NULL DEFAULT 1,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at TEXT,
+  last_run_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routines_enabled_next ON routines(enabled, next_run_at);
+
+-- routine 1회 스케줄 실행 — idempotency_key UNIQUE로 동일
+-- routine/scheduled_for의 중복 task 생성을 막는다.
+CREATE TABLE IF NOT EXISTS routine_runs (
+  id TEXT PRIMARY KEY,
+  routine_id TEXT NOT NULL,
+  scheduled_for TEXT NOT NULL,
+  task_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  idempotency_key TEXT NOT NULL UNIQUE,
+  error_code TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_routine_runs_routine ON routine_runs(routine_id);
+
+-- agent-management 3차 (paperclip spec D): capability별 allow/deny 권한.
+-- scope_id는 NOT NULL DEFAULT '' — SQLite UNIQUE는 NULL을 서로 다른
+-- 값으로 취급해 중복 행을 허용하므로 빈 문자열로 정규화한다.
+-- deny 우선/scope precedence 판정은 서비스 계층이 담당한다.
+CREATE TABLE IF NOT EXISTS agent_permissions (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  effect TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'global',
+  scope_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(agent_id, capability, scope_type, scope_id, effect)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_permissions_agent ON agent_permissions(agent_id);
+
+-- agent-management 3차 (paperclip spec E): 외부 오케스트레이터(Paperclip 등)
+-- 읽기 전용 projection — provider+external_id UNIQUE. native
+-- agents/tasks/runs와 ID 네임스페이스를 섞지 않고, 토큰/크리덴셜/
+-- prompt·transcript 원문은 저장하지 않는다.
+CREATE TABLE IF NOT EXISTS external_agents (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
+  payload_summary TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_agents_company ON external_agents(provider, company_id);
+
+CREATE TABLE IF NOT EXISTS external_tasks (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  assignee_external_id TEXT,
+  status TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_tasks_assignee
+  ON external_tasks(provider, assignee_external_id);
+
+CREATE TABLE IF NOT EXISTS external_runs (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  task_external_id TEXT,
+  agent_external_id TEXT,
+  status TEXT NOT NULL DEFAULT '',
+  token_cost_summary TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runs_task
+  ON external_runs(provider, task_external_id);
+
+-- provider+company별 동기화 커서 — 부분 실패 시 커서를 전진시키지 않는다.
+CREATE TABLE IF NOT EXISTS external_sync_cursors (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
+  cursor TEXT NOT NULL DEFAULT '',
+  last_synced_at TEXT,
+  last_error_code TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, company_id)
+);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -1199,8 +1362,14 @@ CREATE TABLE IF NOT EXISTS projects (
   goal TEXT NOT NULL DEFAULT '',
   target_count INTEGER NOT NULL DEFAULT 0,
   goal_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  owner_agent_id TEXT,
+  repository_url TEXT,
+  repository_ref TEXT,
+  workspace_path TEXT,
   created_by TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
 
@@ -1285,6 +1454,9 @@ CREATE TABLE IF NOT EXISTS goals (
   description TEXT NOT NULL DEFAULT '',
   parent_id TEXT,
   status TEXT NOT NULL DEFAULT 'active',
+  owner_agent_id TEXT,
+  success_metrics TEXT NOT NULL DEFAULT '{}',
+  target_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -1332,6 +1504,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   assignee_agent_id TEXT,
   reviewer_agent_id TEXT,
   parent_id TEXT,
+  project_id TEXT,
+  goal_id TEXT,
   current_run_id TEXT,
   checkout_agent_id TEXT,
   checkout_at TEXT,
@@ -1444,6 +1618,136 @@ CREATE TABLE IF NOT EXISTS recovery_actions (
 CREATE INDEX IF NOT EXISTS idx_recovery_actions_status ON recovery_actions(status);
 CREATE INDEX IF NOT EXISTS idx_recovery_actions_source
   ON recovery_actions(source_type, source_id);
+
+-- agent-management 3차 (paperclip spec B-E): SQLite판과 동일 구조 —
+-- size_bytes만 BIGINT로 PG 정수 범위를 확보한다.
+CREATE TABLE IF NOT EXISTS task_comments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  author_type TEXT NOT NULL,
+  author_id TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'text',
+  created_at TEXT NOT NULL,
+  edited_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
+
+CREATE TABLE IF NOT EXISTS task_artifacts (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  run_id TEXT,
+  kind TEXT NOT NULL DEFAULT 'other',
+  name TEXT NOT NULL DEFAULT '',
+  uri TEXT NOT NULL DEFAULT '',
+  checksum_sha256 TEXT,
+  media_type TEXT NOT NULL DEFAULT '',
+  size_bytes BIGINT,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_task ON task_artifacts(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_run ON task_artifacts(run_id);
+
+CREATE TABLE IF NOT EXISTS routines (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  project_id TEXT,
+  task_template TEXT NOT NULL DEFAULT '{}',
+  assignee_agent_id TEXT,
+  schedule_kind TEXT NOT NULL DEFAULT 'interval',
+  schedule TEXT NOT NULL DEFAULT '{}',
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  max_concurrent INTEGER NOT NULL DEFAULT 1,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at TEXT,
+  last_run_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routines_enabled_next ON routines(enabled, next_run_at);
+
+CREATE TABLE IF NOT EXISTS routine_runs (
+  id TEXT PRIMARY KEY,
+  routine_id TEXT NOT NULL,
+  scheduled_for TEXT NOT NULL,
+  task_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  idempotency_key TEXT NOT NULL UNIQUE,
+  error_code TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_routine_runs_routine ON routine_runs(routine_id);
+
+CREATE TABLE IF NOT EXISTS agent_permissions (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  effect TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'global',
+  scope_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(agent_id, capability, scope_type, scope_id, effect)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_permissions_agent ON agent_permissions(agent_id);
+
+CREATE TABLE IF NOT EXISTS external_agents (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
+  payload_summary TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_agents_company ON external_agents(provider, company_id);
+
+CREATE TABLE IF NOT EXISTS external_tasks (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  assignee_external_id TEXT,
+  status TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_tasks_assignee
+  ON external_tasks(provider, assignee_external_id);
+
+CREATE TABLE IF NOT EXISTS external_runs (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  task_external_id TEXT,
+  agent_external_id TEXT,
+  status TEXT NOT NULL DEFAULT '',
+  token_cost_summary TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runs_task
+  ON external_runs(provider, task_external_id);
+
+CREATE TABLE IF NOT EXISTS external_sync_cursors (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
+  cursor TEXT NOT NULL DEFAULT '',
+  last_synced_at TEXT,
+  last_error_code TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, company_id)
+);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1530,6 +1834,10 @@ class Store(
     ManagementStoreMixin,
     CostStoreMixin,
     GovernanceStoreMixin,
+    TaskCollabStoreMixin,
+    RoutineStoreMixin,
+    PermissionStoreMixin,
+    ExternalSyncStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -1570,6 +1878,7 @@ class Store(
         self._migrate_agent_management_columns()
         self._migrate_cost_ledger_columns()
         self._migrate_recovery_actions_index()
+        self._migrate_phase3_columns()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -1798,6 +2107,77 @@ class Store(
         """기존 DB의 runs/projects에 goal_id 컬럼 보강 (Phase-3 goals)."""
         self._ensure_columns("runs", {"goal_id": "TEXT"})
         self._ensure_columns("projects", {"goal_id": "TEXT"})
+
+    def _migrate_phase3_columns(self) -> None:
+        """agent-management 3차 — goals/projects/tasks 컬럼 보강 + 상태 어휘 이행.
+
+        CREATE TABLE IF NOT EXISTS는 기존 테이블을 변경하지 않으므로 신규
+        컬럼은 _ensure_columns로 추가한다(두 dialect 공통 — _ensure_columns가
+        information_schema/PRAGMA 분기를 처리). 새 테이블(task_comments,
+        task_artifacts, routines, routine_runs, agent_permissions,
+        external_*)은 SCHEMA/SCHEMA_PG의 executescript가 담당한다.
+
+        상태 어휘 이행: spec 3차 A는 goals.status를 active|paused|achieved|
+        cancelled로 정의한다. 기존 행의 done→achieved, archived→cancelled를
+        1회 UPDATE로 변환한다 — WHERE 절이 변환 대상을 한정하므로 재실행해도
+        멱등이다. 신규 행의 어휘 강제는 서비스 계층(goals.py)의 몫이다.
+
+        projects.updated_at은 spec상 필수지만 기존 행에는 없으므로
+        created_at으로 백필한다."""
+        self._ensure_columns(
+            "goals",
+            {
+                "owner_agent_id": "TEXT",
+                "success_metrics": "TEXT NOT NULL DEFAULT '{}'",
+                "target_at": "TEXT",
+            },
+        )
+        self._ensure_columns(
+            "projects",
+            {
+                "status": "TEXT NOT NULL DEFAULT 'active'",
+                "owner_agent_id": "TEXT",
+                "repository_url": "TEXT",
+                "repository_ref": "TEXT",
+                "workspace_path": "TEXT",
+                "updated_at": "TEXT",
+            },
+        )
+        self._ensure_columns(
+            "tasks",
+            {
+                "project_id": "TEXT",
+                "goal_id": "TEXT",
+            },
+        )
+        # 신규 컬럼 위의 인덱스는 SCHEMA에 넣지 않는다 —
+        # _migrate_agent_management_columns의 kind 인덱스와 동일한 이유로
+        # 기존 DB는 executescript 시점에 컬럼이 없어 전체가 실패한다.
+        # 컬럼 보강 후 여기서 만든다(실패해도 경고만).
+        try:
+            with self.tx() as c:
+                c.execute("CREATE INDEX IF NOT EXISTS idx_goals_owner ON goals(owner_agent_id)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_projects_goal ON projects(goal_id)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_goal ON tasks(goal_id)")
+        except Exception as e:
+            logger.warning("phase3 column indexes skipped: %s", e)
+        try:
+            with self.tx() as c:
+                c.execute(
+                    "UPDATE goals SET status='achieved', updated_at=? WHERE status='done'",
+                    (_iso(_now()),),
+                )
+                c.execute(
+                    "UPDATE goals SET status='cancelled', updated_at=? WHERE status='archived'",
+                    (_iso(_now()),),
+                )
+                c.execute(
+                    "UPDATE projects SET updated_at=created_at"
+                    " WHERE updated_at IS NULL OR updated_at=''"
+                )
+        except Exception as e:
+            logger.warning("phase3 status/updated_at migration failed: %s", e)
 
     def _migrate_deferred_wakeup_scopes(self) -> None:
         """goal_id 도입으로 바뀐 scope_key 형식에 맞춰 deferred wakeup 재계산.

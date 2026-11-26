@@ -19,6 +19,7 @@ from typing import Any
 from .. import wakeups
 from ..models import (
     AGENT_WORK_STATUSES,
+    AgentCapability,
     AgentEventType,
     AgentKind,
     AgentStatus,
@@ -34,6 +35,7 @@ from ..models.enums import TaskPriority
 from ..store.db import Store
 from ..store.util import _iso, _now
 from ..workflows import WORKFLOWS
+from . import permissions as perm_svc
 
 logger = logging.getLogger("jobmate.management")
 
@@ -309,6 +311,24 @@ def validate_task_fields(fields: dict[str, Any]) -> str | None:
     return None
 
 
+def _validate_task_scope_refs(
+    store: Store,
+    fields: dict[str, Any],
+) -> None:
+    """spec 3차 A — task.project_id/goal_id 참조 존재 검증.
+
+    fields에 키가 있고 값이 비어 있지 않을 때만 검사한다 — None/''는
+    '해제' 의미로 허용. 존재하지 않는 참조는 422."""
+    pid = fields.get("project_id")
+    if pid:
+        if store.get_project(str(pid).strip()) is None:
+            raise ManagementError(422, "validation", "project not found")
+    gid = fields.get("goal_id")
+    if gid:
+        if store.get_goal(str(gid).strip()) is None:
+            raise ManagementError(422, "validation", "goal not found")
+
+
 def _resolve_task_uuid(store: Store, ref: str) -> dict[str, Any] | None:
     """task 참조(id 또는 'WMB-n' identifier)를 행으로 해석."""
     return store.get_task(ref)
@@ -348,13 +368,16 @@ def create_task(
     assignee_agent_id: str | None = None,
     reviewer_agent_id: str | None = None,
     parent_id: str | None = None,
+    project_id: str | None = None,
+    goal_id: str | None = None,
     created_by: str = "",
     actor: str = "",
 ) -> dict[str, Any]:
     """task 생성 + task_created 이벤트. 실패 시 ManagementError.
 
     parent_id는 id 또는 'WMB-n' identifier 모두 허용 — 저장 전 uuid로
-    해석한다. assignee/reviewer agent 존재도 patch와 동일하게 검증한다."""
+    해석한다. assignee/reviewer agent 존재도 patch와 동일하게 검증한다.
+    project_id/goal_id는 spec 3차 A의 계층 참조 — 존재하는 행만 허용."""
     verr = validate_task_fields({"status": status, "priority": priority, "title": title})
     if verr:
         raise ManagementError(422, "validation", verr)
@@ -365,6 +388,17 @@ def create_task(
         assignee_agent_id=assignee_agent_id,
         reviewer_agent_id=reviewer_agent_id,
     )
+    _validate_task_scope_refs(store, {"project_id": project_id, "goal_id": goal_id})
+    # spec 3차 D — assignee agent의 task:assign capability를 서버가 재검증.
+    # task는 아직 없으므로 project 스코프까지만 평가한다(global+project).
+    if assignee_agent_id:
+        perm_svc.require_permission(
+            store,
+            str(assignee_agent_id),
+            AgentCapability.TASK_ASSIGN.value,
+            project_id=str(project_id or ""),
+            actor=actor,
+        )
     parent_uuid: str | None = None
     if parent_id:
         parent = _resolve_task_uuid(store, str(parent_id))
@@ -383,6 +417,8 @@ def create_task(
         assignee_agent_id=assignee_agent_id,
         reviewer_agent_id=reviewer_agent_id,
         parent_id=parent_uuid,
+        project_id=project_id,
+        goal_id=goal_id,
         created_by=created_by,
     )
     if task is None:
@@ -485,6 +521,19 @@ def patch_task(
         assignee_agent_id=fields.get("assignee_agent_id"),
         reviewer_agent_id=fields.get("reviewer_agent_id"),
     )
+    _validate_task_scope_refs(store, fields)
+    # spec 3차 D — assignee 변경은 대상 agent의 task:assign capability를
+    # 서버가 재검증한다(task 스코프 — project/global 규칙도 함께 매칭).
+    # assign_task는 이 경로를 거치므로 별도 검사가 필요 없다.
+    new_assignee = fields.get("assignee_agent_id")
+    if new_assignee:
+        perm_svc.require_permission(
+            store,
+            str(new_assignee),
+            AgentCapability.TASK_ASSIGN.value,
+            task_id=str(task["id"]),
+            actor=actor,
+        )
     if "parent_id" in fields and fields["parent_id"]:
         parent = _resolve_task_uuid(store, str(fields["parent_id"]))
         if parent is None:
@@ -566,8 +615,20 @@ def assign_task(
     return updated
 
 
-def checkout_task(store: Store, task_id: str, agent_id: str, *, actor: str = "") -> dict[str, Any]:
-    """atomic checkout — 점유 충돌은 409. 성공 시 task를 in_progress로 진행."""
+def checkout_task(
+    store: Store,
+    task_id: str,
+    agent_id: str,
+    *,
+    actor: str = "",
+    human_actor: bool = False,
+) -> dict[str, Any]:
+    """atomic checkout — 점유 충돌은 409. 성공 시 task를 in_progress로 진행.
+
+    human_actor=True(명시적 lead 세션/로컬 admin — 라우터가 _explicit_lead_user
+    결과로 판정해 전달)이면 agent permission 검사를 건너뛴다 — lead가 agent
+    대신 checkout하는 관리 행위는 agent-actor 경로가 아니다. 머신 API 키 등
+    비-명시 호출은 agent-actor로 간주해 task:update capability를 재검증한다."""
     task = _require_task(store, task_id)
     agent = _require_agent(store, agent_id)
     canon = canonical_agent_status(agent.get("status"))
@@ -576,6 +637,16 @@ def checkout_task(store: Store, task_id: str, agent_id: str, *, actor: str = "")
             409,
             "agent_unavailable",
             f"agent status {canon} cannot accept work",
+        )
+    # spec 3차 D — checkout하는 agent 본인의 task:update capability를
+    # 서버가 재검증한다(agent-actor 경로; 명시적 lead checkout은 면제).
+    if not human_actor:
+        perm_svc.require_permission(
+            store,
+            agent_id,
+            AgentCapability.TASK_UPDATE.value,
+            task_id=str(task["id"]),
+            actor=actor,
         )
     if task["status"] in _TASK_TERMINAL:
         raise ManagementError(409, "conflict", f"task is {task['status']}")
@@ -742,6 +813,15 @@ def heartbeat(
         if desired:
             cur = str(task.get("status") or "")
             if desired != cur:
+                # spec 3차 D — heartbeat로 task 상태를 바꾸는 agent 본인의
+                # task:update capability를 서버가 재검증한다.
+                perm_svc.require_permission(
+                    store,
+                    agent_id,
+                    AgentCapability.TASK_UPDATE.value,
+                    task_id=str(task["id"]),
+                    actor=actor,
+                )
                 if desired == TaskStatus.IN_PROGRESS.value:
                     task_out = _advance_task_status(store, task["id"], desired)
                 elif can_transition_task(cur, desired):
@@ -875,7 +955,35 @@ def wake_agent(
         if assignee and assignee != agent_id:
             raise ManagementError(409, "conflict", "task assigned to another agent")
 
+    # spec 3차 D — wake되는 agent의 capability를 서버가 재검증한다.
+    # agent:wake는 항상, workflow kind의 run 생성은 run:execute,
+    # task-bound wake는 task:assign을 추가로 요구한다. idempotent replay는
+    # 부수효과가 없으므로 이 검사 이전에 반환된다(위 replay 블록 참조).
+    wake_task_scope = str(task["id"]) if task is not None else ""
+    perm_svc.require_permission(
+        store,
+        agent_id,
+        AgentCapability.AGENT_WAKE.value,
+        task_id=wake_task_scope,
+        actor=actor,
+    )
     kind = str(agent.get("kind") or AgentKind.WORKFLOW.value)
+    if kind == AgentKind.WORKFLOW.value:
+        perm_svc.require_permission(
+            store,
+            agent_id,
+            AgentCapability.RUN_EXECUTE.value,
+            task_id=wake_task_scope,
+            actor=actor,
+        )
+    if task is not None:
+        perm_svc.require_permission(
+            store,
+            agent_id,
+            AgentCapability.TASK_ASSIGN.value,
+            task_id=wake_task_scope,
+            actor=actor,
+        )
     if kind == AgentKind.EXTERNAL.value:
         # 외부 runner pull/push — 서버는 프로세스를 만들지 않는다.
         detail = {

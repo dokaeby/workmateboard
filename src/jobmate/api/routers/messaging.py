@@ -22,6 +22,7 @@ from ..jobs import (
     _maybe_generate_reports,
     _maybe_poll_gmail,
     _process_due_notification_jobs,
+    _process_due_routines,
     _process_due_schedules,
     _process_pending_messages,
 )
@@ -244,7 +245,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         _process_due_notification_jobs(store, adapters)
         schedule_jobs: list = []
         _process_due_schedules(store, settings, llm, adapters, defer=schedule_jobs)
-        _schedule_run_jobs(schedule_jobs, background_tasks)
+        # routines — spec 3차 C. schedule와 동일하게 defer→BackgroundTasks.
+        # claim CAS가 automation loop과의 중복 발사를 막는다.
+        routine_jobs: list = []
+        _process_due_routines(store, settings, llm, adapters, defer=routine_jobs)
+        _schedule_run_jobs(schedule_jobs + routine_jobs, background_tasks)
         _check_waiting_approvals(store, adapters)
         # watchdog 1 cycle — spec 2차 E. 서버리스 tick에서도 automation
         # loop과 동일 규칙으로 감지/복구/escalation을 수행한다.
