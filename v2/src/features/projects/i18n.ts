@@ -29,7 +29,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.loading": "로딩…",
     "common.cancel": "취소",
     "common.close": "닫기",
-    "common.refresh": "새로고침",
   },
   en: {
     "proj.title": "Projects",
@@ -57,7 +56,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.loading": "Loading…",
     "common.cancel": "Cancel",
     "common.close": "Close",
-    "common.refresh": "Refresh",
   },
 };
 

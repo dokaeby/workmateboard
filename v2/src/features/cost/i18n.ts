@@ -32,12 +32,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "cost.download": "다운로드",
     "cost.exportFail": "내보내기 실패",
     "ins.noData": "데이터 없음",
-    "common.last7": "최근 7일",
-    "common.last30": "최근 30일",
-    "common.last90": "최근 90일",
-    "common.last365": "최근 365일",
     "common.days": "일",
-    "common.refresh": "새로고침",
   },
   en: {
     "cost.title": "Cost",
@@ -68,12 +63,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "cost.download": "Download",
     "cost.exportFail": "Export failed",
     "ins.noData": "No data",
-    "common.last7": "Last 7 days",
-    "common.last30": "Last 30 days",
-    "common.last90": "Last 90 days",
-    "common.last365": "Last 365 days",
     "common.days": "d",
-    "common.refresh": "Refresh",
   },
 };
 

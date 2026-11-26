@@ -45,7 +45,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.added": "추가했습니다",
     "common.cancel": "취소",
     "common.close": "닫기",
-    "common.delete": "삭제",
     "common.loading": "로딩…",
   },
   en: {
@@ -90,7 +89,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.added": "Added",
     "common.cancel": "Cancel",
     "common.close": "Close",
-    "common.delete": "Delete",
     "common.loading": "Loading…",
   },
 };

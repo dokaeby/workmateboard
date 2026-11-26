@@ -42,7 +42,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.save": "저장",
     "common.running": "실행 중…",
     "common.run": "실행",
-    "common.delete": "삭제",
   },
   en: {
     "wf.title": "Workflow Builder",
@@ -83,7 +82,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.save": "Save",
     "common.running": "Running…",
     "common.run": "Run",
-    "common.delete": "Delete",
   },
 };
 

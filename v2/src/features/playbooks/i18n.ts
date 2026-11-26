@@ -22,7 +22,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.cancel": "취소",
     "common.create": "생성",
     "common.close": "닫기",
-    "common.delete": "삭제",
   },
   en: {
     "pb.title": "Playbooks",
@@ -43,7 +42,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.cancel": "Cancel",
     "common.create": "Create",
     "common.close": "Close",
-    "common.delete": "Delete",
   },
 };
 

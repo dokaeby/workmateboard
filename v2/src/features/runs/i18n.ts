@@ -4,7 +4,6 @@ import { registerI18n } from "../../shared/i18n";
 
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
-    "common.reload": "새로고침",
     "common.loading": "로딩…",
     "common.cancel": "취소",
     "common.close": "닫기",
@@ -50,7 +49,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "runs.hour": "{h}시간 {m}분",
   },
   en: {
-    "common.reload": "Refresh",
     "common.loading": "Loading…",
     "common.cancel": "Cancel",
     "common.close": "Close",

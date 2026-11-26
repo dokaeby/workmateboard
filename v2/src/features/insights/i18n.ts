@@ -32,10 +32,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "ins.tokensOut": "출력 토큰",
     "ins.topFails": "실패 상위 단계",
     "ins.times": "회",
-    "common.last7": "최근 7일",
-    "common.last30": "최근 30일",
-    "common.last90": "최근 90일",
-    "common.refresh": "새로고침",
   },
   en: {
     "ins.title": "Insights",
@@ -66,10 +62,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "ins.tokensOut": "Output tokens",
     "ins.topFails": "Top failing stages",
     "ins.times": "×",
-    "common.last7": "Last 7 days",
-    "common.last30": "Last 30 days",
-    "common.last90": "Last 90 days",
-    "common.refresh": "Refresh",
   },
 };
 

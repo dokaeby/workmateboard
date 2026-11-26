@@ -4,7 +4,6 @@ import { registerI18n } from "../../shared/i18n";
 
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
-    "common.reload": "새로고침",
     "monitor.title": "Agent Insights",
     "monitor.desc": "LLM/agent trace 분석 — 속도·비용 최적화 지표",
     "monitor.days": "최근 {n}일",
@@ -78,7 +77,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "monitor.insight.badCombo": "높은 실패율 조합: {stage} × {model} ({pct}%)",
   },
   en: {
-    "common.reload": "Refresh",
     "monitor.title": "Agent Insights",
     "monitor.desc": "LLM/agent trace analysis — speed & cost optimization metrics",
     "monitor.days": "Last {n} days",

@@ -4,7 +4,6 @@ import { registerI18n } from "../../shared/i18n";
 
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
-    "common.refresh": "새로고침",
     "radar.title": "Skill Radar",
     "radar.desc": "AI skill · plugin trending — GitHub Search API · 일일 Top 10 · LLM 3줄 요약",
     "radar.needLead": "lead 이상 권한 필요",
@@ -40,7 +39,6 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "radar.readme": "README",
   },
   en: {
-    "common.refresh": "Refresh",
     "radar.title": "Skill Radar",
     "radar.desc": "AI skill · plugin trending — GitHub Search API · daily Top 10 · 3-line LLM summaries",
     "radar.needLead": "Requires lead role or higher",
