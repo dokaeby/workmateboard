@@ -27,6 +27,7 @@ from ..schemas import (
     AgentHeartbeatRequest,
     AgentTransitionRequest,
     AgentWakeRequest,
+    CostEventCreateRequest,
     ManagementAgentCreateRequest,
     ManagementAgentPatchRequest,
     ManagementTaskCreateRequest,
@@ -554,3 +555,139 @@ def register(app: FastAPI, ctx: Any) -> None:
             limit=limit,
         )
         return JSONResponse(content={"items": items})
+
+    # ==================== cost ledger (2차) ====================
+
+    @app.post("/api/v1/management/cost-events", status_code=201)
+    def mgmt_create_cost_event(body: CostEventCreateRequest, request: Request) -> JSONResponse:
+        """외부 runner의 비용 보고 — 머신 API 키 전용(세션 쿠키 불가).
+
+        spec 2차 A: 정수 microusd만 허용(스키마 StrictInt + store 재검증),
+        idempotency_key UNIQUE로 재전송 중복 청구를 막는다."""
+        gate = _machine_gate(request)
+        if gate is not None:
+            return gate
+        try:
+            row, created = store.record_cost_event(
+                idempotency_key=body.idempotency_key,
+                agent_id=body.agent_id,
+                task_id=body.task_id,
+                run_id=body.run_id,
+                stage_run_id=body.stage_run_id,
+                provider=body.provider,
+                model=body.model,
+                billing_type=body.billing_type,
+                cost_status=body.cost_status,
+                input_tokens=body.input_tokens,
+                cached_input_tokens=body.cached_input_tokens,
+                output_tokens=body.output_tokens,
+                cost_microusd=body.cost_microusd,
+                pricing_source=body.pricing_source,
+                pricing_version=body.pricing_version,
+                occurred_at=body.occurred_at,
+            )
+        except ValueError as e:
+            return err(422, "validation", str(e), request)
+        if row is None:
+            return err(500, "internal_error", "cost event not recorded", request)
+        if created:
+            # spec 2차 H: cost event accepted — ids/provider/model/cost_status.
+            # 금액은 허용되지만 credential은 절대 기록하지 않는다.
+            logger.info(
+                "cost event accepted id=%s key=%s agent=%s run=%s stage_run=%s "
+                "provider=%s model=%s status=%s microusd=%s",
+                row.get("id"),
+                body.idempotency_key[:80],
+                body.agent_id[:40] or "-",
+                body.run_id or "-",
+                body.stage_run_id or "-",
+                body.provider[:40] or "-",
+                body.model[:60] or "-",
+                body.cost_status,
+                body.cost_microusd,
+            )
+            _audit_api(
+                request,
+                "mgmt_cost_event_create",
+                str(row.get("id") or ""),
+                {
+                    "key": body.idempotency_key[:80],
+                    "cost_status": body.cost_status,
+                    "model": body.model[:60],
+                },
+            )
+            return JSONResponse(status_code=201, content=row)
+        # 동일 idempotency_key 재전송 — 기존 행 재생(200).
+        return JSONResponse(content=row)
+
+    @app.get("/api/v1/management/cost-events")
+    def mgmt_list_cost_events(
+        request: Request,
+        agent_id: str | None = None,
+        task_id: str | None = None,
+        run_id: str | None = None,
+        stage_run_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        cost_status: str | None = None,
+        billing_type: str | None = None,
+        occurred_from: str | None = None,
+        occurred_to: str | None = None,
+        limit: int = 100,
+    ) -> JSONResponse:
+        """비용 원장 조회 — lead 이상. 최신순, limit 최대 500."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        items = store.list_cost_events(
+            agent_id=agent_id,
+            task_id=task_id,
+            run_id=run_id,
+            stage_run_id=stage_run_id,
+            provider=provider,
+            model=model,
+            cost_status=cost_status,
+            billing_type=billing_type,
+            occurred_from=occurred_from,
+            occurred_to=occurred_to,
+            limit=limit,
+        )
+        return JSONResponse(content={"items": items})
+
+    @app.get("/api/v1/management/costs/summary")
+    def mgmt_costs_summary(
+        request: Request,
+        scope: str = "global",
+        scope_id: str = "",
+        occurred_from: str | None = None,
+        occurred_to: str | None = None,
+    ) -> JSONResponse:
+        """스코프·기간별 비용 합계 — lead 이상.
+
+        scope는 'global' 또는 'type:id' 형태(agent:X, task:Y, workflow:Z,
+        project:P). spec 쿼리명(from/to)과 호환되도록 occurred_from/to를
+        별칭으로도 받는다."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        st = "global"
+        sid = ""
+        raw = (scope or "").strip().lower()
+        if ":" in raw:
+            st, _, sid = raw.partition(":")
+            sid = sid.strip()
+        else:
+            st = raw or "global"
+            sid = (scope_id or "").strip()
+        if st == "global":
+            sid = ""
+        if st not in budget_scope.SCOPE_TYPES:
+            return err(
+                422,
+                "validation",
+                f"scope must be one of {list(budget_scope.SCOPE_TYPES)} or 'type:id'",
+                request,
+            )
+        frm = occurred_from or request.query_params.get("from")
+        to = occurred_to or request.query_params.get("to")
+        return JSONResponse(content=store.cost_summary(st, sid, occurred_from=frm, occurred_to=to))

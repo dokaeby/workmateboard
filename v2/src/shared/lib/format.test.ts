@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmtAge, fmtElapsed, usd, jsonSummary } from "./format";
+import { fmtAge, fmtElapsed, usd, usdFromMicro, usdPreferMicro, jsonSummary } from "./format";
 import { setLang } from "../i18n";
 
 describe("fmtAge", () => {
@@ -56,6 +56,27 @@ describe("usd", () => {
     expect(usd(0.00012)).toBe("$0.0001");
     expect(usd(null)).toBe("$0.0000"); // Number(null)=0 → n<1 분기
     expect(usd(NaN)).toBe("$0.00");
+  });
+});
+
+describe("usdFromMicro", () => {
+  it("converts integer microusd to currency string", () => {
+    setLang("en");
+    expect(usdFromMicro(1_500_000)).toContain("1.50");
+    expect(usdFromMicro(0)).toContain("0.00");
+    expect(usdFromMicro(123)).toContain("0.0001"); // 0.000123 USD → 4자리
+    expect(usdFromMicro(null)).toBe(usd(null));
+    expect(usdFromMicro(NaN)).toBe(usd(null));
+    setLang("ko");
+  });
+});
+
+describe("usdPreferMicro", () => {
+  it("prefers microusd when present, falls back to usd float", () => {
+    setLang("en");
+    expect(usdPreferMicro(9.99, 2_000_000)).toContain("2.00");
+    expect(usdPreferMicro(1.5, null)).toBe(usd(1.5));
+    setLang("ko");
   });
 });
 

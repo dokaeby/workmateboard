@@ -58,6 +58,20 @@ def register(app: FastAPI, ctx: Any) -> None:
                 scope_type,
                 scope_id,
                 amount_usd=body.amount_usd if "amount_usd" in sent else budget_scope.UNSET,
+                amount_microusd=(
+                    body.amount_microusd if "amount_microusd" in sent else budget_scope.UNSET
+                ),
+                reservation_microusd=(
+                    body.reservation_microusd
+                    if "reservation_microusd" in sent
+                    else budget_scope.UNSET
+                ),
+                unpriced_usage_policy=(
+                    body.unpriced_usage_policy
+                    if "unpriced_usage_policy" in sent
+                    else budget_scope.UNSET
+                ),
+                window_kind=(body.window_kind if "window_kind" in sent else budget_scope.UNSET),
                 warn_percent=(body.warn_percent if "warn_percent" in sent else budget_scope.UNSET),
                 hard_stop_enabled=(
                     body.hard_stop_enabled if "hard_stop_enabled" in sent else budget_scope.UNSET
@@ -128,6 +142,7 @@ def register(app: FastAPI, ctx: Any) -> None:
                 incident_id,
                 body.action,
                 amount_usd=body.amount_usd,
+                amount_microusd=body.amount_microusd,
                 note=body.note,
                 actor=_actor_label(request),
             )

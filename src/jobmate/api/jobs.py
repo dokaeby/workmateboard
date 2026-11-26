@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .. import budget_scope, messenger, wakeups
+from .. import budget_scope, cost_ledger, messenger, wakeups
 from ..config import Settings
 from ..engine.trace import job_traceable
 from ..models import RunStatus
@@ -522,6 +522,9 @@ def _automation_loop(
     while not stop.is_set():
         try:
             _mark_cron_tick(store)
+            # 비용 원장 1회성 백필 — automation_state 가드로 매 tick 1쿼리 조기 반환.
+            # 배치 상한이 있어 대량 DB에서도 tick을 막지 않는다(2차 C).
+            cost_ledger.maybe_backfill_cost_events(store)
             _reap_stale_runs(store, settings, llm, adapters)
             _retention_sweep(store)
             _process_pending_messages(store, settings, llm, adapters)

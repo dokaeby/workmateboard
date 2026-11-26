@@ -43,6 +43,34 @@ export function usd(v: number | null | undefined): string {
   return `$${n.toFixed(n < 1 ? 4 : 2)}`;
 }
 
+const MICRO_PER_USD = 1_000_000;
+
+/** 정수 microusd(1 USD = 1,000,000) → 로케일 통화 문자열.
+ *  내부 계산은 microusd 정수로 유지하고 표시 계층에서만 USD로 변환한다. */
+export function usdFromMicro(micro: number | null | undefined): string {
+  const n = Number(micro);
+  if (micro == null || !isFinite(n)) return usd(null);
+  const v = n / MICRO_PER_USD;
+  try {
+    return new Intl.NumberFormat(getLang() === "en" ? "en-US" : "ko-KR", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: v !== 0 && Math.abs(v) < 0.01 ? 4 : 2,
+      maximumFractionDigits: 6,
+    }).format(v);
+  } catch {
+    return usd(v);
+  }
+}
+
+/** 신형 microusd 필드가 있으면 우선 사용, 없으면 레거시 *_usd float로 표시. */
+export function usdPreferMicro(
+  usdVal: number | null | undefined,
+  micro: number | null | undefined,
+): string {
+  return micro != null ? usdFromMicro(micro) : usd(usdVal);
+}
+
 /** URL 컨텍스트 검증 — javascript:/data:/프로토콜상대 URL 차단 (XSS 방어). */
 export function safeUrl(u: string | null | undefined): string {
   const s = String(u ?? "").trim();

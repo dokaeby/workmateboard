@@ -6,7 +6,7 @@ import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "../../shared/api
 import { useI18n } from "../../shared/i18n";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Badge, Button } from "../../shared/ui";
-import { usd, fmtTs, fmtAge } from "../../shared/lib/format";
+import { usd, usdFromMicro, fmtTs, fmtAge } from "../../shared/lib/format";
 import { buildForest, type Agent, type AgentNode, type AgentsResponse } from "./tree";
 import "./i18n";
 import "./agents.css";
@@ -90,9 +90,13 @@ function AgentForm({
   const [parent, setParent] = useState<string>(
     presetReportsTo ?? initial?.reports_to ?? "",
   );
-  const [budget, setBudget] = useState(
-    initial?.monthly_budget_usd == null ? "" : String(initial.monthly_budget_usd),
-  );
+  // microusd(정수)가 있으면 authoritative — USD 입력창용으로만 환산한다.
+  const [budget, setBudget] = useState(() => {
+    if (initial?.monthly_budget_microusd != null) {
+      return String(Number((initial.monthly_budget_microusd / 1_000_000).toFixed(6)));
+    }
+    return initial?.monthly_budget_usd == null ? "" : String(initial.monthly_budget_usd);
+  });
   const [status, setStatus] = useState<string>(initial ? statusOf(initial) : "active");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -150,9 +154,14 @@ function AgentForm({
       // 편집: 명시적 null로 보고 대상/예산 해제를 지원한다.
       body.reports_to = parent || null;
       body.monthly_budget_usd = budgetNum === undefined ? null : budgetNum;
+      body.monthly_budget_microusd =
+        budgetNum == null ? null : Math.round(budgetNum * 1_000_000);
     } else {
       if (parent) body.reports_to = parent;
-      if (budgetNum !== undefined) body.monthly_budget_usd = budgetNum;
+      if (budgetNum != null) {
+        body.monthly_budget_usd = budgetNum;
+        body.monthly_budget_microusd = Math.round(budgetNum * 1_000_000);
+      }
     }
 
     setBusy(true);
@@ -415,7 +424,13 @@ function AgentDrawer({
               <dl className="grid grid-cols-1 gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
                 <div>
                   <dt className="text-xs text-muted">{t("agents.monthlyBudget", "월 예산")}</dt>
-                  <dd className="text-ink">{agent.monthly_budget_usd != null ? usd(agent.monthly_budget_usd) : t("agents.noBudget", "제한 없음")}</dd>
+                  <dd className="text-ink">
+                    {agent.monthly_budget_microusd != null
+                      ? usdFromMicro(agent.monthly_budget_microusd)
+                      : agent.monthly_budget_usd != null
+                        ? usd(agent.monthly_budget_usd)
+                        : t("agents.noBudget", "제한 없음")}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-xs text-muted">{t("agents.reportsTo", "보고 대상")}</dt>

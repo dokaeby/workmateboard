@@ -2,10 +2,11 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, apiHeaders } from "../../shared/api/client";
+import type { CostSummary, CostEventsResponse, CostEvent } from "../../shared/api/types";
 import { useI18n } from "../../shared/i18n";
-import { PageHead, Card, Empty, Spinner, ErrorBox, Button } from "../../shared/ui";
-import { usd } from "../../shared/lib/format";
-import { BudgetSection } from "./budgets";
+import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
+import { usd, usdFromMicro, fmtTs } from "../../shared/lib/format";
+import { BudgetSection, BudgetBanner } from "./budgets";
 import "./i18n";
 
 
@@ -23,6 +24,156 @@ interface LlmUsage {
   days?: number;
   models?: Record<string, { calls?: number; tokens_in?: number; tokens_out?: number }>;
   daily?: { date?: string; tokens_in?: number; tokens_out?: number }[];
+}
+
+const COST_STATUS_TONE: Record<string, "ok" | "warn" | "accent" | "muted"> = {
+  reported: "ok",
+  estimated: "accent",
+  unpriced: "warn",
+};
+const COST_STATUS_LABEL: Record<string, string> = {
+  reported: "cost.stReported",
+  estimated: "cost.stEstimated",
+  unpriced: "cost.stUnpriced",
+};
+const COST_STATUS_FALLBACK: Record<string, string> = {
+  reported: "실측",
+  estimated: "추정",
+  unpriced: "미산정",
+};
+
+/** cost_status 배지 — 미등록 상태는 원문 표시. */
+function costStatusBadge(status: string | undefined, t: (k: string, f?: string) => string) {
+  const s = String(status || "");
+  return (
+    <Badge tone={COST_STATUS_TONE[s] || "muted"}>
+      {t(COST_STATUS_LABEL[s] || "", COST_STATUS_FALLBACK[s] || s || "-")}
+    </Badge>
+  );
+}
+
+/** 2차 비용 원장 카드 — /management/costs/summary + /management/cost-events.
+ *  금액은 microusd 정수로 받고 표시만 USD 문자열로 변환한다. */
+function LedgerSection() {
+  const { t } = useI18n();
+  const summary = useQuery({
+    queryKey: ["mgmt-cost-summary"],
+    queryFn: () => {
+      // "이번 달" = UTC 월 초부터 — 예산 window(UTC 월 경계)와 동일 기준.
+      const d = new Date();
+      d.setUTCDate(1);
+      d.setUTCHours(0, 0, 0, 0);
+      return apiGet<CostSummary>(
+        `/management/costs/summary?scope=global&from=${encodeURIComponent(d.toISOString())}`,
+      );
+    },
+    refetchInterval: 60000,
+  });
+  const events = useQuery({
+    queryKey: ["mgmt-cost-events"],
+    queryFn: () => apiGet<CostEventsResponse>("/management/cost-events?limit=20"),
+    refetchInterval: 60000,
+  });
+
+  const s = summary.data;
+  const byAgent = s?.by_agent || [];
+  const evts = events.data?.items || [];
+
+  return (
+    <>
+      <Card title={t("cost.ledgerTitle", "비용 원장 (관리)")} className="mt-3">
+        {summary.isLoading && <Spinner />}
+        {summary.error && (
+          <ErrorBox message={summary.error instanceof Error ? summary.error.message : String(summary.error)} onRetry={() => summary.refetch()} />
+        )}
+        {s && (
+          <>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Num label={t("cost.monthTotal", "이번 달 총 비용")}>
+                {s.total_microusd != null ? usdFromMicro(s.total_microusd) : "-"}
+              </Num>
+              {(s.unpriced_count ?? 0) > 0 && (
+                <Badge tone="warn">
+                  {t("cost.unpricedCount", "미산정 {n}건").replace("{n}", String(s.unpriced_count))}
+                </Badge>
+              )}
+            </div>
+            {byAgent.length > 0 && (
+              <>
+                <div className="mb-1 text-xs font-bold text-muted">{t("cost.byAgent", "에이전트별 비용")}</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs text-muted">
+                        <th className="py-1.5 pr-3">{t("cost.agent", "에이전트")}</th>
+                        <th className="py-1.5 pr-3">{t("cost.cost", "비용")}</th>
+                        <th className="py-1.5">{t("cost.unpriced", "미산정")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {byAgent.map((a, i) => (
+                        <tr key={a.agent_id || i} className="border-b border-border last:border-0">
+                          <td className="py-1.5 pr-3 font-mono text-xs">{a.agent_id || "-"}</td>
+                          <td className="py-1.5 pr-3">
+                            {a.total_microusd != null ? usdFromMicro(a.total_microusd) : "-"}
+                          </td>
+                          <td className="py-1.5">
+                            {(a.unpriced_count ?? 0) > 0 ? (
+                              <Badge tone="warn">{String(a.unpriced_count)}</Badge>
+                            ) : (
+                              <span className="text-muted">0</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </Card>
+
+      <Card title={t("cost.eventsTitle", "최근 비용 이벤트")} className="mt-3">
+        {events.isLoading && <Spinner />}
+        {events.error && (
+          <ErrorBox message={events.error instanceof Error ? events.error.message : String(events.error)} onRetry={() => events.refetch()} />
+        )}
+        {events.data && !evts.length && <Empty>{t("cost.noEvents", "비용 이벤트가 없습니다")}</Empty>}
+        {evts.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs text-muted">
+                  <th className="py-1.5 pr-3">{t("cost.when", "시각")}</th>
+                  <th className="py-1.5 pr-3">{t("cost.agent", "에이전트")}</th>
+                  <th className="py-1.5 pr-3">{t("cost.model", "모델")}</th>
+                  <th className="py-1.5 pr-3">{t("cost.status", "상태")}</th>
+                  <th className="py-1.5">{t("cost.cost", "비용")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {evts.map((ev: CostEvent) => (
+                  <tr key={ev.id} className="border-b border-border last:border-0">
+                    <td className="py-1.5 pr-3 text-xs text-muted">{fmtTs(ev.occurred_at || ev.created_at)}</td>
+                    <td className="py-1.5 pr-3 font-mono text-xs">{ev.agent_id || "-"}</td>
+                    <td className="py-1.5 pr-3 font-mono text-xs">{ev.model || "-"}</td>
+                    <td className="py-1.5 pr-3">{costStatusBadge(ev.cost_status, t)}</td>
+                    <td className="py-1.5">
+                      {ev.cost_status === "unpriced" || ev.cost_microusd == null
+                        ? <span className="text-muted">{t("cost.unpricedShort", "미산정")}</span>
+                        : usdFromMicro(ev.cost_microusd)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </>
+  );
 }
 
 const DAYS = ["7", "30", "90"];
@@ -126,6 +277,8 @@ export default function CostPage() {
         </Button>
       </PageHead>
 
+      <BudgetBanner />
+
       {summary.isLoading && <Spinner />}
       {summary.error && (
         <ErrorBox message={summary.error instanceof Error ? summary.error.message : String(summary.error)} onRetry={() => summary.refetch()} />
@@ -199,6 +352,8 @@ export default function CostPage() {
           </Card>
         </>
       )}
+
+      <LedgerSection />
 
       <BudgetSection />
 

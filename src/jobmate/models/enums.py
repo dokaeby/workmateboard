@@ -88,6 +88,36 @@ class AgentEventType(StrEnum):
     TASK_CANCELLED = "task_cancelled"
 
 
+class CostStatus(StrEnum):
+    """cost_events.cost_status 어휘 (paperclip spec 2차 A).
+
+    reported=provider 실청구, estimated=프로젝트 rate card 추정,
+    unpriced=가격 산정 불가 — unpriced는 cost_microusd가 반드시 NULL이며
+    0으로 대체 기록하지 않는다."""
+
+    REPORTED = "reported"
+    ESTIMATED = "estimated"
+    UNPRICED = "unpriced"
+
+
+class BillingType(StrEnum):
+    """cost_events.billing_type 어휘 (paperclip spec 2차 A)."""
+
+    METERED_API = "metered_api"
+    SUBSCRIPTION_INCLUDED = "subscription_included"
+    SUBSCRIPTION_OVERAGE = "subscription_overage"
+    CREDITS = "credits"
+    FIXED = "fixed"
+    UNKNOWN = "unknown"
+
+
+class BudgetWindowKind(StrEnum):
+    """budget_policies.window_kind 어휘 (paperclip spec 2차 B)."""
+
+    CALENDAR_MONTH_UTC = "calendar_month_utc"
+    LIFETIME = "lifetime"
+
+
 class LinkStatus(StrEnum):
     DISCOVERED = "discovered"
     EXTRACTED = "extracted"

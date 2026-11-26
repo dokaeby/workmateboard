@@ -12,6 +12,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
+from ..cost_ledger import emit_stage_cost_event
 from ..guide.loader import load_prompt
 from ..llm import LLMClient
 from ..models import (
@@ -219,6 +220,14 @@ class WorkflowRunner:
                 tokens_in=usage.get("tokens_in", 0),
                 tokens_out=usage.get("tokens_out", 0),
             )
+            self._emit_cost_event(
+                run_id,
+                stage_run.id,
+                model=agent.model.model,
+                provider=agent.model.provider,
+                tokens_in=usage.get("tokens_in", 0),
+                tokens_out=usage.get("tokens_out", 0),
+            )
             self.store.audit(
                 run_id,
                 f"agent:{agent.role}",
@@ -257,6 +266,16 @@ class WorkflowRunner:
                 stage_run.id,
                 status=StageStatus.FAILED,
                 error=str(e)[:500],
+                tokens_in=tok_in,
+                tokens_out=tok_out,
+            )
+            # 실패 시도도 소비 토큰이 있으면 원장에 기록 — 재시도마다
+            # 별도 stage_run/별도 cost event(idempotency_key가 attempt별 상이).
+            self._emit_cost_event(
+                run_id,
+                stage_run.id,
+                model=agent.model.model,
+                provider=agent.model.provider,
                 tokens_in=tok_in,
                 tokens_out=tok_out,
             )
@@ -330,6 +349,14 @@ class WorkflowRunner:
                 tokens_in=fn_tokens_in,
                 tokens_out=fn_tokens_out,
             )
+            # function 단계는 어떤 모델이 호출했는지 stage_run이 모른다 —
+            # model=''로 넘겨 토큰>0이면 unpriced로 기록한다(억지 단가 금지).
+            self._emit_cost_event(
+                run_id,
+                stage_run.id,
+                tokens_in=fn_tokens_in,
+                tokens_out=fn_tokens_out,
+            )
             update: dict[str, Any] = {
                 "stage_outputs": {stage.key: out},
                 "tokens_in": state.get("tokens_in", 0) + fn_tokens_in,
@@ -398,6 +425,38 @@ class WorkflowRunner:
         )
         self._project_management(run_id)
         return {"stage_outputs": {stage.key: out}, "approval": out}
+
+    def _emit_cost_event(
+        self,
+        run_id: str,
+        stage_run_id: str,
+        *,
+        model: str = "",
+        provider: str = "",
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+    ) -> None:
+        """비용 원장(cost_events)에 stage_run 사용량 1행 기록.
+
+        비용 기록 실패가 run을 깨면 안 되므로 모든 예외를 삼키고
+        warning만 남긴다 — 원장 누락은 watchdog/백필이 회수한다."""
+        try:
+            emit_stage_cost_event(
+                self.store,
+                run_id=run_id,
+                stage_run_id=stage_run_id,
+                model=model,
+                provider=provider,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+            )
+        except Exception as e:
+            logger.warning(
+                "cost event emission failed run=%s stage_run=%s: %s",
+                run_id,
+                stage_run_id,
+                str(e)[:200],
+            )
 
     # ---------- helpers ----------
     def _untrusted_block(

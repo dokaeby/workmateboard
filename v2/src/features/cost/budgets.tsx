@@ -2,40 +2,15 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiGet, apiDelete, ApiError } from "../../shared/api/client";
+import type {
+  BudgetPolicy,
+  BudgetOverview,
+  BudgetIncident,
+  IncidentsResponse,
+} from "../../shared/api/types";
 import { useI18n } from "../../shared/i18n";
 import { Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
-import { usd, fmtTs } from "../../shared/lib/format";
-
-interface BudgetPolicy {
-  id: string;
-  scope_type: "global" | "project" | "workflow";
-  scope_id: string;
-  amount_usd: number | null;
-  warn_percent: number;
-  hard_stop_enabled: boolean;
-  is_active: boolean;
-  month_spend_usd: number;
-  used_pct: number;
-  status: "ok" | "warning" | "hard_stop" | "disabled";
-  open_incidents: number;
-}
-interface BudgetOverview { policies?: BudgetPolicy[]; month?: string }
-
-interface BudgetIncident {
-  id: string;
-  policy_id?: string;
-  scope_type?: string;
-  scope_id?: string;
-  window_start?: string;
-  threshold_type?: "soft" | "hard" | string;
-  amount_limit?: number;
-  amount_observed?: number;
-  status?: string;
-  note?: string;
-  created_at?: string;
-  resolved_at?: string | null;
-}
-interface IncidentsResponse { items?: BudgetIncident[] }
+import { usd, usdPreferMicro, fmtTs } from "../../shared/lib/format";
 
 const SCOPE_LABEL: Record<string, string> = {
   global: "budg.scopeGlobal",
@@ -84,24 +59,46 @@ function policyPath(scopeType: string, scopeId: string): string {
   return `/budgets/policies/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`;
 }
 
-/** 정책 1행 — 금액/경고% 입력 + 하드스톱·활성 토글 + 삭제. */
+/** USD 입력값 → 정수 microusd (표시 계층 변환, 내부는 정수 유지). */
+function microFromUsdInput(v: string): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 1_000_000) : 0;
+}
+function usdFromMicroInput(v: number | null | undefined): string {
+  return v == null ? "" : String(Math.round((v / 1_000_000) * 1e6) / 1e6);
+}
+
+/** 정책 1행 — 금액/경고% 입력 + 미산정 정책·예약 + 하드스톱·활성 토글 + 삭제. */
 function PolicyRow({ p, onChanged }: { p: BudgetPolicy; onChanged: () => void }) {
   const { t } = useI18n();
   const [amount, setAmount] = useState(p.amount_usd == null ? "" : String(p.amount_usd));
   const [warn, setWarn] = useState(pctText(p.warn_percent));
+  const [unpriced, setUnpriced] = useState<string>(p.unpriced_usage_policy || "allow");
+  const [reservation, setReservation] = useState(usdFromMicroInput(p.reservation_microusd));
   const [busy, setBusy] = useState(false);
 
   const dirty =
     (p.amount_usd == null ? "" : String(p.amount_usd)) !== amount ||
-    pctText(p.warn_percent) !== warn;
+    pctText(p.warn_percent) !== warn ||
+    (p.unpriced_usage_policy || "allow") !== unpriced ||
+    usdFromMicroInput(p.reservation_microusd) !== reservation;
 
   const save = async () => {
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { warn_percent: Number(warn) };
-      if (amount.trim() === "") body.amount_usd = null;
-      else body.amount_usd = Number(amount);
-      await api(policyPath(p.scope_type, p.scope_id || "global"), { method: "PUT", json: body });
+      const body: Record<string, unknown> = {
+        warn_percent: Number(warn),
+        unpriced_usage_policy: unpriced,
+        reservation_microusd: microFromUsdInput(reservation),
+      };
+      if (amount.trim() === "") {
+        body.amount_usd = null;
+        body.amount_microusd = null;
+      } else {
+        body.amount_usd = Number(amount);
+        body.amount_microusd = microFromUsdInput(amount);
+      }
+      await api(policyPath(p.scope_type || "global", p.scope_id || "global"), { method: "PUT", json: body });
       onChanged();
     } catch (e) {
       alert(e instanceof ApiError ? e.message : String(e));
@@ -113,7 +110,7 @@ function PolicyRow({ p, onChanged }: { p: BudgetPolicy; onChanged: () => void })
   const toggle = async (field: "hard_stop_enabled" | "is_active", value: boolean) => {
     setBusy(true);
     try {
-      await api(policyPath(p.scope_type, p.scope_id || "global"), {
+      await api(policyPath(p.scope_type || "global", p.scope_id || "global"), {
         method: "PUT",
         json: { [field]: value },
       });
@@ -129,7 +126,7 @@ function PolicyRow({ p, onChanged }: { p: BudgetPolicy; onChanged: () => void })
     if (!confirm(t("budg.confirmDelete", "'{scope}' 예산 정책을 삭제할까요?").replace("{scope}", scopeText(p, t)))) return;
     setBusy(true);
     try {
-      await apiDelete(policyPath(p.scope_type, p.scope_id || "global"));
+      await apiDelete(policyPath(p.scope_type || "global", p.scope_id || "global"));
       onChanged();
     } catch (e) {
       alert(e instanceof ApiError ? e.message : String(e));
@@ -149,14 +146,14 @@ function PolicyRow({ p, onChanged }: { p: BudgetPolicy; onChanged: () => void })
     <div className="border-b border-border py-3 last:border-0">
       <div className="flex flex-wrap items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{scopeText(p, t)}</span>
-        <Badge tone={STATUS_TONE[p.status] || "muted"}>
-          {t(STATUS_LABEL[p.status] || "", STATUS_FALLBACK[p.status] || p.status)}
+        <Badge tone={STATUS_TONE[p.status || ""] || "muted"}>
+          {t(STATUS_LABEL[p.status || ""] || "", STATUS_FALLBACK[p.status || ""] || p.status)}
         </Badge>
-        {p.open_incidents > 0 && <Badge tone="warn">{t("budg.incidents", "{n}건").replace("{n}", String(p.open_incidents))}</Badge>}
+        {(p.open_incidents ?? 0) > 0 && <Badge tone="warn">{t("budg.incidents", "{n}건").replace("{n}", String(p.open_incidents))}</Badge>}
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted">
         <span>{t("budg.spent", "이번 달")}</span>
-        <b className="text-ink">{usd(p.month_spend_usd)}</b>
+        <b className="text-ink">{usdPreferMicro(p.month_spend_usd, p.month_spend_microusd)}</b>
         <span>/</span>
         <input
           value={amount}
@@ -174,6 +171,23 @@ function PolicyRow({ p, onChanged }: { p: BudgetPolicy; onChanged: () => void })
           className="w-14 rounded-md border border-border bg-surface px-2 py-1 text-xs"
         />
         <span>%</span>
+        <select
+          value={unpriced}
+          onChange={(e) => setUnpriced(e.target.value)}
+          aria-label={t("budg.unpricedPolicyAria", "미산정 사용량 정책")}
+          className="rounded-md border border-border bg-surface px-1.5 py-1 text-xs"
+        >
+          <option value="allow">{t("budg.unpricedAllow", "허용")}</option>
+          <option value="block">{t("budg.unpricedBlock", "차단")}</option>
+        </select>
+        <input
+          value={reservation}
+          onChange={(e) => setReservation(e.target.value)}
+          type="number" min="0" step="0.01" placeholder="0"
+          aria-label={t("budg.reservationAria", "런 시작 예약액 (USD)")}
+          title={t("budg.reservationHint", "새 실행 시작 전 예약으로 잡히는 금액 — 실제 비용으로 기록되지 않습니다")}
+          className="w-20 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+        />
         <Button variant="secondary" className="px-2 py-0.5 text-xs" disabled={busy || !dirty} onClick={save}>
           {t("common.save", "저장")}
         </Button>
@@ -216,6 +230,8 @@ function NewPolicyForm({ onDone }: { onDone: () => void }) {
   const [amount, setAmount] = useState("");
   const [warn, setWarn] = useState("80");
   const [hardStop, setHardStop] = useState(true);
+  const [unpriced, setUnpriced] = useState("allow");
+  const [reservation, setReservation] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; err?: boolean }>({ text: "" });
 
@@ -241,8 +257,11 @@ function NewPolicyForm({ onDone }: { onDone: () => void }) {
         method: "PUT",
         json: {
           amount_usd: Number(amount),
+          amount_microusd: microFromUsdInput(amount),
           warn_percent: Number(warn) || 80,
           hard_stop_enabled: hardStop,
+          unpriced_usage_policy: unpriced,
+          reservation_microusd: microFromUsdInput(reservation || "0"),
           is_active: true,
         },
       });
@@ -304,6 +323,22 @@ function NewPolicyForm({ onDone }: { onDone: () => void }) {
           %
         </label>
         <label className="flex items-center gap-1 text-xs text-muted">
+          {t("budg.unpricedPolicy", "미산정 사용량")}
+          <select value={unpriced} onChange={(e) => setUnpriced(e.target.value)} className={inputCls}>
+            <option value="allow">{t("budg.unpricedAllow", "허용")}</option>
+            <option value="block">{t("budg.unpricedBlock", "차단")}</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1 text-xs text-muted">
+          {t("budg.reservationUsd", "예약액 (USD)")}
+          <input
+            value={reservation}
+            onChange={(e) => setReservation(e.target.value)}
+            type="number" min="0" step="0.01" placeholder="0"
+            className={`${inputCls} w-24`}
+          />
+        </label>
+        <label className="flex items-center gap-1 text-xs text-muted">
           <input type="checkbox" checked={hardStop} onChange={(e) => setHardStop(e.target.checked)} />
           {t("budg.hardStop", "하드 스톱")}
         </label>
@@ -358,6 +393,7 @@ export function BudgetSection() {
         return;
       }
       body.amount_usd = amt;
+      body.amount_microusd = microFromUsdInput(raiseAmount);
     }
     const msg = action === "keep_paused"
       ? t("budg.confirmKeep", "이 인시던트를 '유지'로 처리할까요? 실행은 계속 일시정지 상태로 남습니다.")
@@ -378,7 +414,10 @@ export function BudgetSection() {
 
   const startRaise = (inc: BudgetIncident) => {
     setRaiseFor(inc.id);
-    setRaiseAmount(String(Math.ceil((Number(inc.amount_observed) || 0) * 1.2 * 100) / 100));
+    const obsUsd = inc.observed_spend_microusd != null
+      ? inc.observed_spend_microusd / 1_000_000
+      : Number(inc.amount_observed) || 0;
+    setRaiseAmount(String(Math.ceil(obsUsd * 1.2 * 100) / 100));
   };
 
   return (
@@ -421,9 +460,17 @@ export function BudgetSection() {
                   ? t("budg.thresholdHard", "하드 한도 초과")
                   : t("budg.thresholdSoft", "경고 한도 도달")}
               </Badge>
+              {(inc.unpriced_event_count ?? 0) > 0 && (
+                <Badge tone="warn">
+                  {t("budg.unpricedEvents", "미산정 {n}건").replace("{n}", String(inc.unpriced_event_count))}
+                </Badge>
+              )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-              <span>{usd(inc.amount_observed)} / {usd(inc.amount_limit)}</span>
+              <span>
+                {usdPreferMicro(inc.amount_observed, inc.observed_spend_microusd)} /{" "}
+                {usdPreferMicro(inc.amount_limit, inc.amount_limit_microusd)}
+              </span>
               <span>{fmtTs(inc.created_at)}</span>
               {inc.note && <span className="truncate">{inc.note}</span>}
             </div>
@@ -471,5 +518,42 @@ export function BudgetSection() {
         ))}
       </Card>
     </>
+  );
+}
+
+/** 예산 경고/하드스톱 배너 — 비용 페이지 상단에 정책 상태를 요약 표시.
+ *  budget-overview 쿼리는 BudgetSection과 키를 공유해 중복 fetch가 없다. */
+export function BudgetBanner() {
+  const { t } = useI18n();
+  const overview = useQuery({
+    queryKey: ["budget-overview"],
+    queryFn: () => apiGet<BudgetOverview>("/budgets/overview"),
+    refetchInterval: 60000,
+  });
+  const policies = overview.data?.policies || [];
+  const hard = policies.filter((p) => p.status === "hard_stop");
+  const warn = policies.filter((p) => p.status === "warning");
+  if (!hard.length && !warn.length) return null;
+  const isHard = hard.length > 0;
+  const names = [...hard, ...warn].map((p) => scopeText(p, t)).join(", ");
+  return (
+    <div
+      className={`mb-3 rounded-lg border p-3 text-sm ${
+        isHard
+          ? "border-err-border bg-err-soft text-err"
+          : "border-warn-border bg-warn-soft text-warn"
+      }`}
+    >
+      <b>
+        {isHard
+          ? t("budg.bannerHard", "예산 하드 스톱 발생")
+          : t("budg.bannerWarn", "예산 경고")}
+      </b>
+      {" — "}
+      {isHard
+        ? t("budg.bannerHardDesc", "한도에 도달해 실행이 중지되었습니다")
+        : t("budg.bannerWarnDesc", "예산 사용률이 경고 기준을 넘었습니다")}
+      <span className="ml-1 text-xs opacity-80">({names})</span>
+    </div>
   );
 }

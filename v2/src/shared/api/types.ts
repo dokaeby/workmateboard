@@ -30,7 +30,29 @@ export interface ApprovalItem {
   title_key?: string;
   title_params?: Record<string, unknown>;
 }
-export interface ApprovalsResponse { items: ApprovalItem[] }
+export interface ApprovalsResponse { items: ApprovalQueueItem[] }
+
+/** 2차 범용 승인 요청 — /approvals 큐에 kind="approval_request"로 합류한다.
+ *  결정은 POST /management/approvals/{id}/decision (pending 상태에서만). */
+export interface ApprovalRequestItem {
+  kind: "approval_request";
+  id: string;
+  action_type?: string;   // run_resume|budget_raise|agent_hire|agent_terminate|external_send|deploy|destructive_tool|recovery
+  risk_level?: string;    // low|medium|high|critical
+  status?: string;        // pending|approved|rejected|expired|cancelled
+  summary?: string;
+  resource_type?: string;
+  resource_id?: string;
+  task_id?: string;
+  run_id?: string;
+  expires_at?: string | null;
+  created_at?: string;
+  decision_comment?: string | null;
+  title?: string;
+  title_key?: string;
+  title_params?: Record<string, unknown>;
+}
+export type ApprovalQueueItem = ApprovalItem | ApprovalRequestItem;
 
 export interface Run {
   id: string;
@@ -85,6 +107,81 @@ export interface RunDiff {
   summary?: string;
 }
 
+/** 2차 비용 원장 — 금액은 정수 microusd(1 USD = 1,000,000).
+ *  unpriced 이벤트는 cost_microusd가 null이며 0으로 대체하지 않는다. */
+export type CostStatus = "reported" | "estimated" | "unpriced" | (string & {});
+export interface CostEvent {
+  id: string;
+  agent_id?: string;
+  task_id?: string | null;
+  run_id?: string | null;
+  stage_run_id?: string | null;
+  provider?: string;
+  model?: string;
+  billing_type?: string;
+  cost_status?: CostStatus;
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  cost_microusd?: number | null;
+  pricing_source?: string | null;
+  pricing_version?: string | null;
+  occurred_at?: string;
+  created_at?: string;
+}
+export interface CostEventsResponse { items?: CostEvent[] }
+
+export interface CostSummaryAgent {
+  agent_id?: string;
+  total_microusd?: number;
+  unpriced_count?: number;
+}
+export interface CostSummary {
+  total_microusd?: number;
+  unpriced_count?: number;
+  by_agent?: CostSummaryAgent[];
+  [k: string]: unknown;
+}
+
+/** 2차 예산 정책/인시던트 — amount_microusd가 authoritative, *_usd는 파생 레거시. */
+export interface BudgetPolicy {
+  id: string;
+  scope_type?: string;
+  scope_id?: string;
+  amount_usd?: number | null;
+  amount_microusd?: number | null;
+  unpriced_usage_policy?: "block" | "allow" | (string & {});
+  reservation_microusd?: number;
+  warn_percent?: number;
+  hard_stop_enabled?: boolean;
+  is_active?: boolean;
+  month_spend_usd?: number;
+  month_spend_microusd?: number | null;
+  used_pct?: number;
+  status?: string;
+  open_incidents?: number;
+}
+export interface BudgetOverview { policies?: BudgetPolicy[]; month?: string }
+
+export interface BudgetIncident {
+  id: string;
+  policy_id?: string;
+  scope_type?: string;
+  scope_id?: string;
+  window_start?: string;
+  threshold_type?: "soft" | "hard" | (string & {});
+  amount_limit?: number | null;
+  amount_limit_microusd?: number | null;
+  amount_observed?: number | null;
+  observed_spend_microusd?: number | null;
+  unpriced_event_count?: number;
+  status?: string;
+  note?: string;
+  created_at?: string;
+  resolved_at?: string | null;
+}
+export interface IncidentsResponse { items?: BudgetIncident[] }
+
 export interface AuditEvent {
   id?: string;
   actor?: string;
@@ -127,6 +224,7 @@ export interface Prefs {
   radar_interval?: string;
   gmail_check_minutes?: number;
   monthly_budget_usd?: number;
+  monthly_budget_microusd?: number;
   notify_rules?: unknown[];
   [k: string]: unknown;
 }

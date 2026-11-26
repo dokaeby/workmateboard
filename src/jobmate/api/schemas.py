@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 
 class RunCreateRequest(BaseModel):
@@ -173,17 +173,57 @@ class ShareCreateRequest(BaseModel):
     ref_id: str = Field(default="", max_length=200)
 
 
+class CostEventCreateRequest(BaseModel):
+    """POST /management/cost-events — 외부 runner의 비용 보고 (머신 키 전용).
+
+    spec 2차 A: 비용 입력은 음수/NaN/float/float 문자열/bool을 거부하고
+    정수 microusd만 받는다 — StrictInt가 bool·str·float을 모두 차단한다.
+    cost_status='unpriced'이면 cost_microusd는 반드시 null(0 대체 금지),
+    priced 상태는 정수 필수 — store 계층이 불변식을 다시 강제한다."""
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    agent_id: str = Field(default="", max_length=64)
+    task_id: str | None = Field(default=None, max_length=64)
+    run_id: str | None = Field(default=None, max_length=64)
+    stage_run_id: str | None = Field(default=None, max_length=64)
+    provider: str = Field(default="", max_length=64)
+    model: str = Field(default="", max_length=200)
+    billing_type: str = Field(default="unknown", max_length=40)
+    cost_status: str = Field(default="unpriced", max_length=20)
+    input_tokens: StrictInt = Field(default=0, ge=0)
+    cached_input_tokens: StrictInt = Field(default=0, ge=0)
+    output_tokens: StrictInt = Field(default=0, ge=0)
+    cost_microusd: StrictInt | None = Field(default=None, ge=0)
+    pricing_source: str = Field(default="", max_length=100)
+    pricing_version: str = Field(default="", max_length=40)
+    occurred_at: str | None = Field(default=None, max_length=64)
+
+
 class BudgetPolicyRequest(BaseModel):
     """PUT /budgets/policies/{scope_type}[/{scope_id}] — 부분 갱신.
 
     amount_usd null/<=0이면 정책 비활성(is_active=0).
+    amount_microusd가 amount_usd보다 우선하는 microusd 권위 필드 —
+    둘 다 보내면 microusd가 한도가 되고 amount_usd는 표시용 파생으로 기록.
     warn_percent/hard_stop_enabled/is_active의 명시 null은 미전송과
     동일 — 기존 값을 유지한다(서비스 계층에서 UNSET으로 정규화)."""
 
     amount_usd: float | None = Field(default=None, allow_inf_nan=False)
+    amount_microusd: StrictInt | None = Field(default=None, ge=0)
+    reservation_microusd: StrictInt | None = Field(default=None, ge=0)
+    unpriced_usage_policy: Literal["block", "allow"] | None = None
+    window_kind: Literal["calendar_month_utc", "lifetime"] | None = None
     warn_percent: int | None = Field(default=None, ge=1, le=100)
     hard_stop_enabled: bool | None = None
     is_active: bool | None = None
+
+
+class BudgetIncidentResolveRequest(BaseModel):
+    action: Literal["keep_paused", "raise_budget_and_resume", "dismiss"]
+    amount_usd: float | None = Field(default=None, allow_inf_nan=False)
+    # microusd 권위 신규 한도 — amount_usd보다 우선한다.
+    amount_microusd: StrictInt | None = Field(default=None, ge=0)
+    note: str = Field(default="", max_length=500)
 
 
 class AgentCreateRequest(BaseModel):
@@ -236,12 +276,6 @@ class EvalPatchRequest(BaseModel):
     input: dict[str, Any] | None = None
     checks: list[dict[str, Any]] | None = Field(default=None, max_length=100)
     status: str | None = Field(default=None, max_length=20)
-
-
-class BudgetIncidentResolveRequest(BaseModel):
-    action: Literal["keep_paused", "raise_budget_and_resume", "dismiss"]
-    amount_usd: float | None = Field(default=None, allow_inf_nan=False)
-    note: str = Field(default="", max_length=500)
 
 
 # ---------- agent-management 1차 (/api/v1/management) ----------

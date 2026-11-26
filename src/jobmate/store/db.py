@@ -23,6 +23,7 @@ from .agents import AgentStoreMixin
 from .budgets import BudgetStoreMixin
 from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
+from .costs import CostStoreMixin
 from .evals import EvalStoreMixin
 from .goals import GoalStoreMixin
 from .inbox import InboxStoreMixin
@@ -673,6 +674,38 @@ CREATE TABLE IF NOT EXISTS task_runs (
   PRIMARY KEY (task_id, run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_task_runs_run ON task_runs(run_id);
+
+-- agent-management 2차 (paperclip spec): 비용 원장 — 정수 microusd만
+-- 저장한다(float 금액 금지). cost_status='unpriced'이면 cost_microusd는
+-- 반드시 NULL(0 대체 금지). idempotency_key UNIQUE로 stage_run당 1건/
+-- 외부 runner 재전송 중복을 막는다.
+-- agent_id는 spec상 필수지만 runs.agent_id가 비어 있는 run이 많아
+-- 미태깅은 ''로 저장한다(스펙 대비 의도적 완화 — docs §24 참조).
+CREATE TABLE IF NOT EXISTS cost_events (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  agent_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT,
+  run_id TEXT,
+  stage_run_id TEXT,
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  billing_type TEXT NOT NULL DEFAULT 'unknown',
+  cost_status TEXT NOT NULL DEFAULT 'unpriced',
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_microusd INTEGER,
+  pricing_source TEXT NOT NULL DEFAULT '',
+  pricing_version TEXT NOT NULL DEFAULT '',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cost_events_agent ON cost_events(agent_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_cost_events_task ON cost_events(task_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_cost_events_run ON cost_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_cost_events_stage ON cost_events(stage_run_id);
+CREATE INDEX IF NOT EXISTS idx_cost_events_occurred ON cost_events(occurred_at);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -1282,6 +1315,34 @@ CREATE TABLE IF NOT EXISTS task_runs (
   PRIMARY KEY (task_id, run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_task_runs_run ON task_runs(run_id);
+
+-- agent-management 2차 (paperclip spec): SQLite판과 동일 구조 —
+-- 정수 컬럼은 BIGINT로 PG 정수 범위를 확보한다.
+CREATE TABLE IF NOT EXISTS cost_events (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  agent_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT,
+  run_id TEXT,
+  stage_run_id TEXT,
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  billing_type TEXT NOT NULL DEFAULT 'unknown',
+  cost_status TEXT NOT NULL DEFAULT 'unpriced',
+  input_tokens BIGINT NOT NULL DEFAULT 0,
+  cached_input_tokens BIGINT NOT NULL DEFAULT 0,
+  output_tokens BIGINT NOT NULL DEFAULT 0,
+  cost_microusd BIGINT,
+  pricing_source TEXT NOT NULL DEFAULT '',
+  pricing_version TEXT NOT NULL DEFAULT '',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cost_events_agent ON cost_events(agent_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_cost_events_task ON cost_events(task_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_cost_events_run ON cost_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_cost_events_stage ON cost_events(stage_run_id);
+CREATE INDEX IF NOT EXISTS idx_cost_events_occurred ON cost_events(occurred_at);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1366,6 +1427,7 @@ class Store(
     GoalStoreMixin,
     EvalStoreMixin,
     ManagementStoreMixin,
+    CostStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -1404,6 +1466,7 @@ class Store(
         self._migrate_deferred_wakeup_scopes()
         self._migrate_workflow_version_columns()
         self._migrate_agent_management_columns()
+        self._migrate_cost_ledger_columns()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -1697,6 +1760,49 @@ class Store(
                 c.execute("CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind)")
         except Exception as e:
             logger.warning("agents kind index skipped: %s", e)
+
+    def _migrate_cost_ledger_columns(self) -> None:
+        """agent-management 2차 — budget_policies/budget_incidents의
+        microusd·unpriced 컬럼 보강 + amount_usd → amount_microusd 백필.
+
+        CREATE TABLE IF NOT EXISTS는 기존 테이블을 변경하지 않으므로
+        컬럼은 _ensure_columns로 추가한다. 기존 *_usd REAL 컬럼은 호환용으로
+        유지하고, microusd 컬럼이 신규 권위 경로다(paperclip spec 2차 B).
+        amount_microusd 백필은 ROUND(amount_usd * 1e6) — float 읽기를
+        정수로 변환하는 1회성 마이그레이션이며 런타임 금액 계산에는
+        float를 쓰지 않는다."""
+        big = "BIGINT" if self._pg else "INTEGER"
+        self._ensure_columns(
+            "budget_policies",
+            {
+                "amount_microusd": f"{big} NOT NULL DEFAULT 0",
+                "reservation_microusd": f"{big} NOT NULL DEFAULT 0",
+                "unpriced_usage_policy": "TEXT NOT NULL DEFAULT 'allow'",
+            },
+        )
+        self._ensure_columns(
+            "budget_incidents",
+            {
+                "observed_spend_microusd": big,
+                "unpriced_event_count": "INTEGER NOT NULL DEFAULT 0",
+                "reason_code": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        # amount_usd > 0 이고 amount_microusd가 아직 0인 행만 백필 —
+        # 명시적으로 0을 쓴 정책(비활성 의미)과 이미 마이그레이션된 행은
+        # 건드리지 않는다. 마이그레이션은 기동 시 1회 실행된다.
+        try:
+            cast = "BIGINT" if self._pg else "INTEGER"
+            with self.tx() as c:
+                cur = c.execute(
+                    "UPDATE budget_policies SET amount_microusd ="  # noqa: S608 - cast는 'BIGINT'/'INTEGER' 고정 리터럴
+                    f" CAST(ROUND(amount_usd * 1000000) AS {cast})"
+                    " WHERE amount_microusd = 0 AND amount_usd > 0"
+                )
+            if getattr(cur, "rowcount", 0):
+                logger.info("budget_policies microusd backfill: %d rows", cur.rowcount)
+        except Exception as e:
+            logger.warning("budget_policies microusd backfill failed: %s", e)
 
     def _migrate_workflow_version_columns(self) -> None:
         """custom_workflows에 latest_revision/updated_at 보강 + 기존 spec 백필.

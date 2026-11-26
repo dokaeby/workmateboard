@@ -12,6 +12,8 @@ export interface Agent {
   reports_to?: string | null;
   status?: AgentStatus;
   monthly_budget_usd?: number | null;
+  /** 2차 — 정수 microusd가 오면 표시/편집의 authoritative 값. */
+  monthly_budget_microusd?: number | null;
   created_at?: string;
   updated_at?: string;
   runs_30d?: number;
