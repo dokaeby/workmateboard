@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "appr.title": "승인 대기",
-    "appr.desc": "실행·세션·트리거 승인을 오래된 순으로 — 30초마다 자동 갱신",
+    "appr.desc": "실행·세션·트리거 승인을 오래된 순으로, 30초마다 자동 갱신",
     "appr.approveAll": "전체 승인",
     "appr.approving": "승인 중…",
     "appr.empty": "대기 중인 승인이 없습니다",
@@ -25,7 +25,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   },
   en: {
     "appr.title": "Approvals",
-    "appr.desc": "Run, session, and trigger approvals, oldest first — auto-refreshes every 30s",
+    "appr.desc": "Run, session, and trigger approvals, oldest first. Auto-refreshes every 30s",
     "appr.approveAll": "Approve all",
     "appr.approving": "Approving…",
     "appr.empty": "No pending approvals",
@@ -33,7 +33,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "appr.approve": "Approve",
     "appr.reject": "Reject",
     "appr.detail": "Details",
-    "appr.go": "Go handle",
+    "appr.go": "Handle it",
     "appr.kindRun": "Run",
     "appr.kindSession": "Session",
     "appr.kindTrigger": "Trigger",

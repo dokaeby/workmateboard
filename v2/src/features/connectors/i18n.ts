@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "conn.title": "커넥터",
-    "conn.desc": "외부 서비스 연동 — 토큰은 서버에 암호화되어 저장됩니다",
+    "conn.desc": "외부 서비스 연동 — 토큰은 서버에서 암호화해 저장됩니다",
     "conn.add": "커넥터 추가",
     "conn.empty": "연결된 커넥터가 없습니다",
     "conn.needName": "이름을 입력하세요",

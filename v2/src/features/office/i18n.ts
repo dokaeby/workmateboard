@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "office.title": "Agent Office",
-    "office.desc": "dev_review 워크플로 진행 상황과 활성 에이전트 세션 — 자동 갱신",
+    "office.desc": "dev_review 워크플로 진행 상황과 활성 에이전트 세션 · 자동 갱신",
     "office.pipeline": "단계 진행",
     "office.runDetail": "실행 상세",
     "office.runs": "실행 목록",
@@ -72,7 +72,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   },
   en: {
     "office.title": "Agent Office",
-    "office.desc": "dev_review workflow progress and active agent sessions — auto-refresh",
+    "office.desc": "dev_review workflow progress and active agent sessions · auto-refresh",
     "office.pipeline": "Pipeline",
     "office.runDetail": "Run detail",
     "office.runs": "Runs",

@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "dev.title": "개발자",
-    "dev.desc": "연동·인증 구성 상태 — 값이 아닌 설정 여부만 표시",
+    "dev.desc": "연동·인증 구성 상태, 값이 아닌 설정 여부만 표시",
     "dev.integrations": "연동",
     "dev.none": "연동 정보가 없습니다",
     "dev.name": "이름",
@@ -25,7 +25,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   },
   en: {
     "dev.title": "Developer",
-    "dev.desc": "Integration and auth configuration status — shows whether things are set, never values",
+    "dev.desc": "Integration and auth configuration status. Shows which items are set, never the values",
     "dev.integrations": "Integrations",
     "dev.none": "No integration info",
     "dev.name": "Name",

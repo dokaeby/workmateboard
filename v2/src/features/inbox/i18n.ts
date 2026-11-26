@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "inbox.title": "알림",
-    "inbox.desc": "세션 주의·승인·일정·리포트 알림 — 읽지 않은 알림만 보기 가능",
+    "inbox.desc": "세션 주의·승인·일정·리포트 알림 — 읽지 않은 것만 볼 수 있음",
     "inbox.unread": "읽지 않음",
     "inbox.all": "전체",
     "inbox.readAll": "모두 읽음",
@@ -30,7 +30,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "inbox.rptExecDaily": "경영 일일",
     "inbox.rptExecWeekly": "경영 주간",
     "inbox.rptGenerate": "생성",
-    "inbox.rptGenerating": "리포트 생성 중… (시간이 걸릴 수 있습니다)",
+    "inbox.rptGenerating": "리포트 생성 중… (시간이 걸릴 수 있음)",
     "inbox.rptEmpty": "리포트를 불러오려면 버튼을 누르세요",
     "inbox.rptNoSections": "리포트 섹션이 없습니다",
     "inbox.cards": "카드",

@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "cost.title": "비용",
-    "cost.desc": "LLM/세션 비용 상세 — 월 예산은 설정에서 관리",
+    "cost.desc": "LLM/세션 비용 상세, 월 예산은 설정에서 관리",
     "cost.daysAria": "비용 기간",
     "cost.budget": "예산",
     "cost.budgetExceeded": "월 예산 초과",
@@ -36,7 +36,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   },
   en: {
     "cost.title": "Cost",
-    "cost.desc": "LLM/session cost details — the monthly budget is managed in Settings",
+    "cost.desc": "LLM/session cost details. The monthly budget is managed in Settings",
     "cost.daysAria": "Cost period",
     "cost.budget": "Budget",
     "cost.budgetExceeded": "Monthly budget exceeded",

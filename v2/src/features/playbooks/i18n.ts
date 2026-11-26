@@ -11,7 +11,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "pb.unnamed": "(이름 없음)",
     "pb.namePh": "이름 (예: 주간 리뷰)",
     "pb.noWorkflow": "워크플로 없음",
-    "pb.taskPh": "작업 내용 (task) — 플레이북 실행 시 이 입력이 사용됩니다",
+    "pb.taskPh": "작업 내용 (task) — 플레이북을 실행할 때 쓰입니다",
     "pb.needAll": "이름·워크플로·작업 내용을 모두 입력하세요",
     "pb.run": "실행",
     "pb.running": "실행 중…",

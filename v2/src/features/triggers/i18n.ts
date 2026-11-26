@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "trg.title": "트리거",
-    "trg.desc": "세션 상태가 조건에 맞으면 워크플로/플레이북/리포트를 자동 실행",
+    "trg.desc": "세션 상태가 조건에 맞으면 워크플로·플레이북·리포트를 자동 실행",
     "trg.add": "트리거 추가",
     "trg.empty": "등록된 트리거가 없습니다",
     "trg.match": "조건 (match)",

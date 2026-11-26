@@ -5,7 +5,7 @@ import { registerI18n } from "../../shared/i18n";
 export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   ko: {
     "team.title": "팀",
-    "team.desc": "멤버별 실행·세션 활동 — 60초마다 자동 갱신",
+    "team.desc": "멤버별 실행·세션 활동, 60초마다 자동 갱신",
     "team.empty": "팀 멤버가 없습니다",
     "team.email": "이메일",
     "team.name": "이름",
@@ -20,7 +20,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
   },
   en: {
     "team.title": "Team",
-    "team.desc": "Per-member run and session activity — auto-refreshes every 60s",
+    "team.desc": "Per-member run and session activity. Auto-refreshes every 60s",
     "team.empty": "No team members",
     "team.email": "Email",
     "team.name": "Name",
@@ -28,7 +28,7 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "team.runs": "Runs",
     "team.sessions": "Sessions",
     "team.lastActive": "Last active",
-    "team.me": "me",
+    "team.me": "Me",
     "team.changeRole": "Change role",
     "team.noId": "User ID is missing",
     "team.leadOnly": "This page requires a lead role or higher.",
