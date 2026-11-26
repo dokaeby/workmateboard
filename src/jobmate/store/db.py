@@ -17,6 +17,7 @@ from ..models import RunStatus as RunStatus
 from ..models import StageStatus as StageStatus
 from .admin import AdminStoreMixin
 from .agent_sessions import AgentSessionStoreMixin
+from .agents import AgentStoreMixin
 from .budgets import BudgetStoreMixin
 from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
@@ -26,6 +27,7 @@ from .radar import RadarStoreMixin
 from .runs import RunStoreMixin
 from .usage import UsageStoreMixin
 from .users import UserStoreMixin
+from .util import _iso, _now
 from .wakeups import WakeupStoreMixin
 
 logger = logging.getLogger("jobmate.store")
@@ -45,6 +47,7 @@ CREATE TABLE IF NOT EXISTS runs (
   metadata TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
   project TEXT NOT NULL DEFAULT '',
+  agent_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -516,6 +519,26 @@ CREATE TABLE IF NOT EXISTS wakeup_requests (
 CREATE INDEX IF NOT EXISTS idx_wakeup_scope ON wakeup_requests(scope_key, status);
 CREATE INDEX IF NOT EXISTS idx_wakeup_run ON wakeup_requests(run_id);
 CREATE INDEX IF NOT EXISTS idx_wakeup_idem ON wakeup_requests(idempotency_key);
+
+-- agents: 에이전트 레지스트리/조직도 — adapter_type(claude|codex|gemini|
+-- devin|custom) + reports_to 계층 + status(active|paused|archived).
+-- status는 라이프사이클과 분리된 운영 상태(Paperclip agents 포팅).
+CREATE TABLE IF NOT EXISTS agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  adapter_type TEXT NOT NULL,
+  role TEXT,
+  description TEXT,
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  reports_to TEXT REFERENCES agents(id),
+  status TEXT NOT NULL DEFAULT 'active',
+  monthly_budget_usd REAL,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agents_reports_to ON agents(reports_to);
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -531,6 +554,7 @@ CREATE TABLE IF NOT EXISTS runs (
   metadata TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
   project TEXT NOT NULL DEFAULT '',
+  agent_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -988,6 +1012,24 @@ CREATE TABLE IF NOT EXISTS wakeup_requests (
 CREATE INDEX IF NOT EXISTS idx_wakeup_scope ON wakeup_requests(scope_key, status);
 CREATE INDEX IF NOT EXISTS idx_wakeup_run ON wakeup_requests(run_id);
 CREATE INDEX IF NOT EXISTS idx_wakeup_idem ON wakeup_requests(idempotency_key);
+
+-- agents: 에이전트 레지스트리/조직도 — SQLite판과 동일 구조
+CREATE TABLE IF NOT EXISTS agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  adapter_type TEXT NOT NULL,
+  role TEXT,
+  description TEXT,
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  reports_to TEXT REFERENCES agents(id),
+  status TEXT NOT NULL DEFAULT 'active',
+  monthly_budget_usd DOUBLE PRECISION,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agents_reports_to ON agents(reports_to);
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1068,6 +1110,7 @@ class Store(
     ProjectStoreMixin,
     BudgetStoreMixin,
     WakeupStoreMixin,
+    AgentStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -1101,6 +1144,7 @@ class Store(
         self._migrate_run_columns()
         self._migrate_budget_incident_index()
         self._migrate_wakeup_idempotency_index()
+        self._migrate_agent_name_index()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -1158,10 +1202,14 @@ class Store(
         self._ensure_columns("users", {"email_verified": "INTEGER NOT NULL DEFAULT 1"})
 
     def _migrate_run_columns(self) -> None:
-        """기존 DB의 runs에 created_by/project 컬럼 보강."""
+        """기존 DB의 runs에 created_by/project/agent_id 컬럼 보강."""
         self._ensure_columns(
             "runs",
-            {"created_by": "TEXT NOT NULL DEFAULT ''", "project": "TEXT NOT NULL DEFAULT ''"},
+            {
+                "created_by": "TEXT NOT NULL DEFAULT ''",
+                "project": "TEXT NOT NULL DEFAULT ''",
+                "agent_id": "TEXT",
+            },
         )
 
     def _migrate_budget_incident_index(self) -> None:
@@ -1233,6 +1281,47 @@ class Store(
                 )
         except Exception as e:
             logger.warning("wakeup_requests idempotency unique index skipped: %s", e)
+
+    def _migrate_agent_name_index(self) -> None:
+        """agents.lower(name) UNIQUE 인덱스 — 앱 레벨 ci 중복 검사의 레이스 백스톱.
+
+        SCHEMA에 넣지 않는 이유는 _migrate_budget_incident_index와 동일 —
+        기존 DB에 대소문자만 다른 중복 이름이 있으면 executescript 전체가
+        실패해 기동이 멈춘다. 여기서는 최신 행만 이름을 유지하고 나머지는
+        id 접미를 붙여 보존한다(runs.agent_id/reports_to는 id 참조라 영향
+        없음). 인덱스 생성마저 실패하면 경고만 남기고 진행한다 —
+        find_agent_by_name 사전 검사와 IntegrityError→409 매핑이 계속 동작."""
+        try:
+            rows = self._conn.execute(
+                "SELECT id, name, updated_at, created_at FROM agents"
+                " ORDER BY updated_at DESC, created_at DESC, id DESC"
+            ).fetchall()
+            seen: set[str] = set()
+            renames: list[tuple[str, str]] = []
+            for r in rows:
+                key = str(r["name"] or "").strip().lower()
+                if not key:
+                    continue
+                if key in seen:
+                    # 최신이 아닌 중복 — 이름에 id 접미를 붙여 유일성 확보
+                    new_name = f"{r['name']}·dup·{r['id']}"[:100]
+                    renames.append((new_name, str(r["id"])))
+                else:
+                    seen.add(key)
+            if renames:
+                with self.tx() as c:
+                    for new_name, aid in renames:
+                        c.execute(
+                            "UPDATE agents SET name=?, updated_at=? WHERE id=?",
+                            (new_name, _iso(_now()), aid),
+                        )
+                logger.info("agents name dedupe: renamed %d duplicate rows", len(renames))
+            with self.tx() as c:
+                c.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(lower(name))"
+                )
+        except Exception as e:
+            logger.warning("agents name unique index skipped: %s", e)
 
     @property
     def _conn(self) -> Any:

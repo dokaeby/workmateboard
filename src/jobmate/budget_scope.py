@@ -20,7 +20,7 @@ from .store.util import clean_scope_id
 
 logger = logging.getLogger("jobmate.budget")
 
-SCOPE_TYPES = ("global", "workflow", "project")
+SCOPE_TYPES = ("global", "workflow", "project", "agent")
 WINDOW_KIND = "calendar_month_utc"
 
 # 부분 갱신에서 "필드 미전송"과 "명시 null"을 구분하는 sentinel.
@@ -78,8 +78,10 @@ def _scope_label(policy: dict[str, Any]) -> str:
     return f"{st}:{sid}"
 
 
-def _relevant_policies(store: Store, workflow_key: str, project: str) -> list[dict[str, Any]]:
-    """global + 매칭 workflow + 매칭 project의 active 정책."""
+def _relevant_policies(
+    store: Store, workflow_key: str, project: str, agent_id: str = ""
+) -> list[dict[str, Any]]:
+    """global + 매칭 workflow + 매칭 project + 매칭 agent의 active 정책."""
     out = []
     for p in store.list_budget_policies(active_only=True):
         st = str(p.get("scope_type") or "")
@@ -90,21 +92,30 @@ def _relevant_policies(store: Store, workflow_key: str, project: str) -> list[di
             out.append(p)
         elif st == "project" and project and sid == project:
             out.append(p)
+        elif st == "agent" and agent_id and sid == agent_id:
+            out.append(p)
     return out
 
 
-def evaluate_admission(store: Store, workflow_key: str, project: str = "") -> list[dict[str, Any]]:
+def evaluate_admission(
+    store: Store, workflow_key: str, project: str = "", agent_id: str = ""
+) -> list[dict[str, Any]]:
     """run 생성 전 예산 심사 — 차단 정책 목록 반환(빈 리스트면 허용).
 
     각 관련 정책의 당월 지출을 계산해 warn/hard 임계 초과 인시던트를
     (멱등으로) 생성하고 인박스에 알린다. hard_stop_enabled이고
-    month_spend >= amount_usd이면 blocking."""
+    month_spend >= amount_usd이면 blocking.
+
+    agent_id를 알면 agent 스코프 정책(scope_id=agent_id)과
+    agents.monthly_budget_usd(암묵 상한 — 정책 행 없이 직접 차단)도
+    함께 심사한다."""
     # 호출자가 넘기는 project 태그도 policy scope_id와 동일 정규화 —
     # runs.project 컬럼 생성 시 정규화와 매칭 규칙을 맞춘다.
     project = clean_scope_id(project)
+    agent_id = clean_scope_id(agent_id)
     month, window_start = month_window()
     blocks: list[dict[str, Any]] = []
-    for p in _relevant_policies(store, workflow_key, project):
+    for p in _relevant_policies(store, workflow_key, project, agent_id):
         amount = float(p.get("amount_usd") or 0)
         if amount <= 0:
             continue
@@ -162,6 +173,37 @@ def evaluate_admission(store: Store, workflow_key: str, project: str = "") -> li
                     "used_pct": used_pct,
                 }
             )
+    # agents.monthly_budget_usd — budget_policies 행 없이 에이전트 레지스트리에
+    # 직접 설정하는 월간 상한. calendar_month_utc 윈도우·agent 스코프 지출과
+    # 동일 기준으로 hard block만 적용한다(인시던트/인박스는 정책 전용 —
+    # 정책 행이 없으므로 생성하지 않는다).
+    if agent_id:
+        agent = store.get_agent(agent_id)
+        mb = (agent or {}).get("monthly_budget_usd")
+        try:
+            mb_limit = float(mb) if mb is not None else 0.0
+        except (TypeError, ValueError):
+            mb_limit = 0.0
+        if mb_limit > 0:
+            spend = scope_spend_usd(store, "agent", agent_id, month)
+            if spend >= mb_limit:
+                logger.warning(
+                    "agent monthly_budget exceeded agent=%s spend=%.4f limit=%.4f",
+                    agent_id,
+                    spend,
+                    mb_limit,
+                )
+                blocks.append(
+                    {
+                        "policy_id": "",
+                        "scope_type": "agent",
+                        "scope_id": agent_id,
+                        "scope": f"agent:{(agent or {}).get('name') or agent_id}",
+                        "amount_usd": mb_limit,
+                        "month_spend_usd": round(spend, 6),
+                        "used_pct": round(spend / mb_limit * 100, 1),
+                    }
+                )
     return blocks
 
 

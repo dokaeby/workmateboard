@@ -166,6 +166,7 @@ def create_app(
             "created_at": run.created_at.isoformat(),
             "updated_at": run.updated_at.isoformat(),
             "project": run.project,
+            "agent_id": run.agent_id,
             "coalesced_count": store.coalesced_counts_for_runs([run_id]).get(run_id, 0),
             "stages": [s.model_dump(mode="json") for s in store.get_stage_runs(run_id)],
             "approvals": [a.model_dump(mode="json") for a in store.get_approvals(run_id)],
@@ -1335,6 +1336,9 @@ padding:32px;max-width:360px;text-align:center">
     from types import SimpleNamespace
 
     from .routers import (
+        agents as _r_agents,
+    )
+    from .routers import (
         auth as _r_auth,
     )
     from .routers import (
@@ -1380,6 +1384,7 @@ padding:32px;max-width:360px;text-align:center">
     _r_misc.register(app, ctx)
     _r_builder.register(app, ctx)
     _r_budgets.register(app, ctx)
+    _r_agents.register(app, ctx)
     return app
 
 

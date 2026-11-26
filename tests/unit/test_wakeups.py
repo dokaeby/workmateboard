@@ -197,6 +197,25 @@ def test_scope_key_canonical():
     assert scope_key_for("w", {"a": 1, "b": 2}) == scope_key_for("w", {"b": 2, "a": 1})
     assert scope_key_for("w", {"a": 1}) != scope_key_for("w", {"a": 2})
     assert scope_key_for("w", {}) != scope_key_for("x", {})
+    # agent_id는 scope의 일부 — 동일 input·다른 agent는 다른 scope
+    assert scope_key_for("w", {"a": 1}, "ag1") != scope_key_for("w", {"a": 1}, "ag2")
+    assert scope_key_for("w", {"a": 1}, "ag1") != scope_key_for("w", {"a": 1})
+    assert scope_key_for("w", {"a": 1}, "ag1") == scope_key_for("w", {"a": 1}, "ag1")
+
+
+def test_agent_id_partitions_coalescing_scope():
+    """동일 input·다른 agent_id → 별도 run. 같은 agent_id → coalesce."""
+    s = _store()
+    r1 = _admit(s, "same", agent_id="ag1")
+    r2 = _admit(s, "same", agent_id="ag2")
+    assert r1["action"] == "created" and r2["action"] == "created"
+    assert r1["run_id"] != r2["run_id"]
+    assert s.get_run(r1["run_id"]).agent_id == "ag1"
+    assert s.get_run(r2["run_id"]).agent_id == "ag2"
+    # 같은 agent 재요청 → 첫 run에 coalesce
+    r3 = _admit(s, "same", agent_id="ag1")
+    assert r3["action"] == "coalesced" and r3["run_id"] == r1["run_id"]
+    assert len(s.list_runs()) == 2
 
 
 def test_deferred_idempotent_retry_returns_deferred():

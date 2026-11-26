@@ -20,6 +20,7 @@ class RunStoreMixin:
         trace_id: str,
         metadata: dict[str, Any] | None = None,
         created_by: str = "",
+        agent_id: str = "",
     ) -> Run:
         # input.project 자유 태그를 컬럼으로도 유지 (PATCH /runs/{id}와 동일 경로).
         # budget policy scope_id와 동일 정규화(clean_scope_id)를 적용해야
@@ -40,12 +41,13 @@ class RunStoreMixin:
             metadata=metadata or {},
             created_by=created_by,
             project=project,
+            agent_id=(agent_id or "").strip()[:64],
         )
         with self.tx() as c:
             c.execute(
                 "INSERT INTO runs(id,workflow_key,workflow_version,input,status,trace_id,"
-                "error,metadata,created_by,project,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "error,metadata,created_by,project,agent_id,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run.id,
                     run.workflow_key,
@@ -57,6 +59,7 @@ class RunStoreMixin:
                     json.dumps(run.metadata),
                     run.created_by,
                     project,
+                    run.agent_id or None,
                     _iso(run.created_at),
                     _iso(run.updated_at),
                 ),
@@ -177,6 +180,7 @@ class RunStoreMixin:
             metadata=_loads(row["metadata"]),
             created_by=row["created_by"] if "created_by" in row.keys() else "",
             project=row["project"] if "project" in row.keys() else "",
+            agent_id=row["agent_id"] if "agent_id" in row.keys() and row["agent_id"] else "",
             created_at=_dt(row["created_at"]) or _now(),
             updated_at=_dt(row["updated_at"]) or _now(),
         )

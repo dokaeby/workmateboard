@@ -234,7 +234,7 @@ class BudgetStoreMixin:
 
         알 수 없는 scope_type은 필터 없이 전체 지출을 반환하던 버그가 있어
         빈 결과(지출 0)로 처리한다."""
-        if scope_type not in ("global", "workflow", "project"):
+        if scope_type not in ("global", "workflow", "project", "agent"):
             return []
         sql = (
             "SELECT sr.model, sr.tokens_in, sr.tokens_out FROM stage_runs sr"
@@ -246,6 +246,10 @@ class BudgetStoreMixin:
             params.append(scope_id)
         elif scope_type == "project" and scope_id:
             sql += " AND r.project = ?"
+            params.append(scope_id)
+        elif scope_type == "agent" and scope_id:
+            # agent 스코프 — runs.agent_id 태그 기준 귀속
+            sql += " AND r.agent_id = ?"
             params.append(scope_id)
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]

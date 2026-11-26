@@ -60,6 +60,18 @@ def register(app: FastAPI, ctx: Any) -> None:
             gate = _lead_gate(request)
             if gate is not None:
                 return gate
+        # agents 레지스트리 태깅 — 명시된 agent_id는 존재하는 active/paused
+        # 에이전트여야 runs.agent_id에 기록돼 통계 귀속이 된다. archived는
+        # 신규 run 태깅을 거부한다(기존 run 이력은 보존). best-effort:
+        # bridge 세션의 tool→agent 자동 추론은 하지 않는다(명시 태깅만).
+        agent_id = body.agent_id.strip()
+        agent_row: dict[str, Any] | None = None
+        if agent_id:
+            agent_row = store.get_agent(agent_id)
+            if agent_row is None:
+                return err(422, "validation", "agent not found", request)
+            if str(agent_row.get("status") or "") == "archived":
+                return err(422, "validation", "agent is archived", request)
         # 월간 LLM 예산 집행 — MTD 비용이 monthly_budget_usd를 초과하면
         # run 생성 자체를 거부한다(usage/summary의 budget_exceeded와 동일 기준).
         # llm_usage 전수 합산 비용이 크므로 60초 인메모리 캐시를 둔다.
@@ -97,7 +109,9 @@ def register(app: FastAPI, ctx: Any) -> None:
             input_data["project"] = project
         if body.metadata:
             input_data["meta"] = body.metadata
-        blocks = budget_scope.evaluate_admission(store, body.workflow, project)
+        # agent_id를 넘겨 agent 스코프 정책/agents.monthly_budget_usd도
+        # 함께 심사한다.
+        blocks = budget_scope.evaluate_admission(store, body.workflow, project, agent_id=agent_id)
         if blocks:
             _audit_api(
                 request,
@@ -128,6 +142,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             created_by=_actor_label(request),
             version=WORKFLOWS[body.workflow].version,
             job_payload={"task": body.task},
+            agent_id=agent_id,
         )
         action = str(res.get("action") or "")
         if action == "conflict":

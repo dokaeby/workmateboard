@@ -29,7 +29,7 @@ const VALID_VIEWS = new Set<ViewKey>([
   "office", "radar", "gmail", "calendar", "runs", "inbox", "projects",
   "sessionlog", "risks", "approvals", "perf", "insights", "automation",
   "system", "archive", "cost", "developer", "playbooks", "connectors",
-  "triggers", "builder", "team", "audit", "settings",
+  "triggers", "builder", "team", "audit", "settings", "agents",
 ]);
 
 const RPT_KIND_EN: Record<string, string> = {

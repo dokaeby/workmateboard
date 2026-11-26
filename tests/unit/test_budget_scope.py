@@ -294,6 +294,62 @@ def test_project_scope_normalization_matches_policy():
     assert len(budget_scope.evaluate_admission(s, "dev_review", " proj\tA ")) == 1
 
 
+def test_agent_scope_policy_block_and_allow():
+    """scope_type='agent' 정책 — runs.agent_id 태그 지출만 집계해 차단/허용."""
+    s = _store()
+    agent = s.create_agent("Bot", "claude")
+    assert agent is not None
+    aid = agent["id"]
+    other = s.create_agent("Other", "claude")
+    assert other is not None
+
+    # agent A 태그 run에 $15 지출, 태그 없는 run에 $3 지출
+    ra = s.create_run("dev_review", "1", {"task": "t"}, trace_id="a", agent_id=aid)
+    _add_spend(s, ra.id, tokens_out=1_000_000)  # $15
+    rn = s.create_run("dev_review", "1", {"task": "t2"}, trace_id="n")
+    _add_spend(s, rn.id, tokens_in=1_000_000)  # $3
+
+    month, _ = budget_scope.month_window()
+    # agent 스코프 지출 = 태그된 run만 ($15), 무태그 run 제외
+    assert budget_scope.scope_spend_usd(s, "agent", aid, month) == pytest.approx(15.0)
+    assert budget_scope.scope_spend_usd(s, "agent", other["id"], month) == pytest.approx(0.0)
+
+    # 한도 $10 → agent_id를 아는 평가만 차단, 모르는 평가는 허용
+    budget_scope.upsert_policy(s, "agent", aid, amount_usd=10.0)
+    blocks = budget_scope.evaluate_admission(s, "dev_review", "", agent_id=aid)
+    assert len(blocks) == 1
+    assert blocks[0]["scope_type"] == "agent" and blocks[0]["scope_id"] == aid
+    # agent_id 미전달 호출(스케줄/트리거 등)은 agent 정책을 모른다 → 허용
+    assert budget_scope.evaluate_admission(s, "dev_review", "") == []
+    # 다른 에이전트는 영향 없음
+    assert budget_scope.evaluate_admission(s, "dev_review", "", agent_id=other["id"]) == []
+
+    # 한도 상향 → 허용
+    budget_scope.upsert_policy(s, "agent", aid, amount_usd=100.0)
+    budget_scope._spend_cache.clear()
+    assert budget_scope.evaluate_admission(s, "dev_review", "", agent_id=aid) == []
+
+
+def test_agent_monthly_budget_usd_enforced():
+    """agents.monthly_budget_usd — 정책 행 없이 직접 설정하는 월간 상한.
+    calendar_month_utc agent 스코프 지출 >= 한도면 hard block."""
+    s = _store()
+    agent = s.create_agent("Capped", "claude", monthly_budget_usd=10.0)
+    assert agent is not None
+    aid = agent["id"]
+    r = s.create_run("dev_review", "1", {"task": "t"}, trace_id="a", agent_id=aid)
+    _add_spend(s, r.id, tokens_out=1_000_000)  # $15 > $10
+
+    blocks = budget_scope.evaluate_admission(s, "dev_review", "", agent_id=aid)
+    assert len(blocks) == 1
+    assert blocks[0]["scope_type"] == "agent" and blocks[0]["amount_usd"] == 10.0
+    # agent_id 미전달 평가·예산 미설정 에이전트는 허용
+    assert budget_scope.evaluate_admission(s, "dev_review", "") == []
+    free = s.create_agent("Free", "claude")
+    assert free is not None
+    assert budget_scope.evaluate_admission(s, "dev_review", "", agent_id=free["id"]) == []
+
+
 def test_overview_status():
     s = _store()
     r = s.create_run("dev_review", "1", {"task": "t"}, trace_id="a")

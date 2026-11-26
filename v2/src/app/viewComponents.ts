@@ -30,6 +30,7 @@ export const VIEW_COMPONENTS: Partial<Record<ViewKey, ComponentType>> = {
   triggers: lazy(() => import("../features/triggers")),
   builder: lazy(() => import("../features/builder")),
   team: lazy(() => import("../features/team")),
+  agents: lazy(() => import("../features/agents")),
   audit: lazy(() => import("../features/audit")),
   settings: lazy(() => import("../features/settings")),
 };

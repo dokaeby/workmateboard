@@ -18,6 +18,9 @@ class RunCreateRequest(BaseModel):
     # force_new=true면 기존 run과 무관하게 deferred로 예약(종결 후 실행).
     force_new: bool = False
     idempotency_key: str = Field(default="", max_length=200)
+    # agents 레지스트리 태깅 — runs.agent_id에 기록돼 에이전트별
+    # runs_30d/cost_30d_usd 통계에 귀속된다. 미지정 시 NULL.
+    agent_id: str = Field(default="", max_length=64)
 
 
 class ApprovalRequest(BaseModel):
@@ -150,6 +153,38 @@ class BudgetPolicyRequest(BaseModel):
     warn_percent: int | None = Field(default=None, ge=1, le=100)
     hard_stop_enabled: bool | None = None
     is_active: bool | None = None
+
+
+class AgentCreateRequest(BaseModel):
+    """POST /agents — name/adapter_type 필수, 나머지 선택."""
+
+    name: str = Field(min_length=1, max_length=200)
+    adapter_type: str = Field(min_length=1, max_length=32)
+    role: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    capabilities: list[Annotated[str, Field(max_length=100)]] | None = Field(
+        default=None, max_length=50
+    )
+    reports_to: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
+    monthly_budget_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class AgentPatchRequest(BaseModel):
+    """PATCH /agents/{id} — model_fields_set에 있는 필드만 부분 갱신.
+
+    reports_to=null/빈 문자열은 상위 해제, monthly_budget_usd=null은 한도 해제."""
+
+    name: str | None = Field(default=None, max_length=200)
+    adapter_type: str | None = Field(default=None, max_length=32)
+    role: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    capabilities: list[Annotated[str, Field(max_length=100)]] | None = Field(
+        default=None, max_length=50
+    )
+    reports_to: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=20)
+    monthly_budget_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class BudgetIncidentResolveRequest(BaseModel):

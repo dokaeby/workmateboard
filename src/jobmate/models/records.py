@@ -24,6 +24,9 @@ class Run(BaseModel):
     created_by: str = ""
     # 프로젝트 태그 — 자유 형식 문자열(마스터 projects.name과 ci 매칭)
     project: str = ""
+    # agents 레지스트리 태깅 — ''/미설정이면 미귀속. best-effort 귀속이며
+    # 세션→에이전트 자동 추론은 하지 않는다(POST /runs의 agent_id 명시만).
+    agent_id: str = ""
 
 
 class StageRun(BaseModel):
