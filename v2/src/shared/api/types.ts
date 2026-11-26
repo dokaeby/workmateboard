@@ -6,7 +6,7 @@ export type ViewKey =
   | "projects" | "sessionlog" | "risks" | "approvals" | "perf"
   | "insights" | "automation" | "system" | "archive" | "cost"
   | "developer" | "playbooks" | "connectors" | "triggers" | "builder"
-  | "team" | "audit" | "settings" | "agents" | "goals";
+  | "team" | "audit" | "settings" | "agents" | "goals" | "evals";
 
 export interface Me {
   id?: string;

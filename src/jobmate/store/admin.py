@@ -33,11 +33,15 @@ class AdminStoreMixin:
           (미완료 queued/deferred는 진행 중 요청일 수 있어 보존)
         - budget_incidents: open 아닌 행 created_at < now-180d 삭제
           (open 인시던트는 정책 감시 중이므로 보존)
+        - eval_runs: status <> 'pending'이고 created_at < now-365d 삭제
+          (pending은 lazy 채점 대기 중이므로 보존; evals 픽스처 자체는
+          이력이므로 유지)
         반환값: 테이블별 삭제/정리 건수."""
         now = now or _now()
         d30 = _iso(now - timedelta(days=30))
         d90 = _iso(now - timedelta(days=90))
         d180 = _iso(now - timedelta(days=180))
+        d365 = _iso(now - timedelta(days=365))
         now_iso = _iso(now)
         counts: dict[str, int] = {}
         with self.tx() as c:
@@ -94,6 +98,12 @@ class AdminStoreMixin:
                 (d180,),
             )
             counts["budget_incidents"] = int(getattr(cur, "rowcount", 0) or 0)
+            # eval_runs 채점 이력 — pending(lazy 채점 대기)은 보존.
+            cur = c.execute(
+                "DELETE FROM eval_runs WHERE status <> 'pending' AND created_at < ?",
+                (d365,),
+            )
+            counts["eval_runs"] = int(getattr(cur, "rowcount", 0) or 0)
         return counts
 
     # ---- agent_sessions 브릿지/헬스 집계 ----

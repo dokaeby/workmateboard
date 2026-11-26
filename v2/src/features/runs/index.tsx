@@ -369,7 +369,10 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
 
 export default function RunsPage() {
   const { t } = useI18n();
-  const [selected, setSelected] = useState<string | null>(null);
+  // ?run=<id> 딥링크(예: evals 뷰의 실행 링크) — 마운트 시 1회만 읽는다.
+  const [selected, setSelected] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get("run"),
+  );
   const [showNew, setShowNew] = useState(false);
   const { data, isLoading, error, refetch } = useRunsList();
   const role = useAppStore((s) => s.role);

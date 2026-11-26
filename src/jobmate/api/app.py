@@ -1364,6 +1364,9 @@ padding:32px;max-width:360px;text-align:center">
         builder as _r_builder,
     )
     from .routers import (
+        evals as _r_evals,
+    )
+    from .routers import (
         events as _r_events,
     )
     from .routers import (
@@ -1405,6 +1408,7 @@ padding:32px;max-width:360px;text-align:center">
     _r_budgets.register(app, ctx)
     _r_agents.register(app, ctx)
     _r_goals.register(app, ctx)
+    _r_evals.register(app, ctx)
     return app
 
 

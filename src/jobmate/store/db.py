@@ -23,6 +23,7 @@ from .agents import AgentStoreMixin
 from .budgets import BudgetStoreMixin
 from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
+from .evals import EvalStoreMixin
 from .goals import GoalStoreMixin
 from .inbox import InboxStoreMixin
 from .projects import ProjectStoreMixin
@@ -579,6 +580,38 @@ CREATE TABLE IF NOT EXISTS goals (
 );
 CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+
+-- evals: 저장된 입력 픽스처 + 결정적 체크 (Paperclip pillar-3).
+-- name은 lower() UNIQUE 인덱스로 대소문자 무시 중복을 막는다
+-- (agents/goals의 앱 레벨 ci 검사 + 인덱스 이중 방어와 동일 패턴).
+CREATE TABLE IF NOT EXISTS evals (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  workflow_key TEXT NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  checks TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evals_name_lower ON evals(lower(name));
+CREATE INDEX IF NOT EXISTS idx_evals_status ON evals(status);
+
+-- eval_runs: eval 1회 실행의 채점 결과 — run이 terminal이 되면 lazy 채점.
+CREATE TABLE IF NOT EXISTS eval_runs (
+  id TEXT PRIMARY KEY,
+  eval_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  score REAL,
+  results TEXT NOT NULL DEFAULT '[]',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  scored_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_eval ON eval_runs(eval_id);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
 """
 
 # PostgreSQL 스키마 — SCHEMA과 동일 구조, PG 타입/시퀀스로 변환
@@ -1105,6 +1138,35 @@ CREATE TABLE IF NOT EXISTS goals (
 );
 CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+
+-- evals/eval_runs: SQLite판과 동일 구조 (score만 DOUBLE PRECISION)
+CREATE TABLE IF NOT EXISTS evals (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  workflow_key TEXT NOT NULL,
+  input TEXT NOT NULL DEFAULT '{}',
+  checks TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evals_name_lower ON evals(lower(name));
+CREATE INDEX IF NOT EXISTS idx_evals_status ON evals(status);
+
+CREATE TABLE IF NOT EXISTS eval_runs (
+  id TEXT PRIMARY KEY,
+  eval_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  score DOUBLE PRECISION,
+  results TEXT NOT NULL DEFAULT '[]',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  scored_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_eval ON eval_runs(eval_id);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
 """
 
 _PG_DSN_PREFIXES = ("postgres://", "postgresql://")
@@ -1187,6 +1249,7 @@ class Store(
     WakeupStoreMixin,
     AgentStoreMixin,
     GoalStoreMixin,
+    EvalStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 

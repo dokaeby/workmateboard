@@ -218,6 +218,26 @@ class AgentPatchRequest(BaseModel):
     monthly_budget_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
+class EvalCreateRequest(BaseModel):
+    """POST /evals — name/workflow_key/input/checks. input.task 필수(서비스 검증)."""
+
+    name: str = Field(min_length=1, max_length=200)
+    workflow_key: str = Field(min_length=1, max_length=120)
+    input: dict[str, Any]
+    checks: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    status: str | None = Field(default=None, max_length=20)
+
+
+class EvalPatchRequest(BaseModel):
+    """PATCH /evals/{id} — model_fields_set에 있는 필드만 부분 갱신."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    workflow_key: str | None = Field(default=None, min_length=1, max_length=120)
+    input: dict[str, Any] | None = None
+    checks: list[dict[str, Any]] | None = Field(default=None, max_length=100)
+    status: str | None = Field(default=None, max_length=20)
+
+
 class BudgetIncidentResolveRequest(BaseModel):
     action: Literal["keep_paused", "raise_budget_and_resume", "dismiss"]
     amount_usd: float | None = Field(default=None, allow_inf_nan=False)
