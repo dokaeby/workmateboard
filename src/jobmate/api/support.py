@@ -644,7 +644,7 @@ def _fire_trigger_action(
         rid = store.save_report(kind, content)
         store.upsert_inbox_item(
             "report",
-            f"{kind} 리포트 (트리거)",
+            f"{kind} 리포트(트리거)",
             body=(
                 f"runs={content['runs']['total']} failed={content['runs']['failed']} "
                 f"pending={content['approvals']['pending']}"

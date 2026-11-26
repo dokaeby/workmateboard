@@ -60,11 +60,11 @@ def _log_safe_url(url: str) -> str:
 
 def _verification_body(verify_url: str) -> tuple[str, str]:
     return (
-        "[jobMate] 이메일 인증을 완료해주세요",
-        "jobMate 가입을 완료하려면 아래 링크를 열어주세요.\n\n"
+        "[jobMate] 이메일 인증을 완료해 주세요",
+        "jobMate 가입을 완료하려면 아래 링크를 열어 주세요.\n\n"
         f"{verify_url}\n\n"
         "링크는 24시간 동안 유효합니다.\n"
-        "본인이 가입을 요청하지 않았다면 이 메일을 무시하세요.\n",
+        "본인이 가입을 요청하지 않았다면 이 메일은 무시하셔도 됩니다.\n",
     )
 
 

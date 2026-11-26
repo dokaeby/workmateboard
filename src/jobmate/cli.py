@@ -28,19 +28,19 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="jobmate")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("run", help="dev_review run 실행 (동기)")
+    sp = sub.add_parser("run", help="dev_review run을 동기로 실행")
     sp.add_argument("task")
     sp.add_argument("--workflow", default="dev_review")
 
     sp = sub.add_parser("status", help="run 상태 조회")
     sp.add_argument("run_id")
 
-    sp = sub.add_parser("approve", help="승인 대기 run 승인/거부")
+    sp = sub.add_parser("approve", help="승인 대기 중인 run 승인/거부")
     sp.add_argument("run_id")
     sp.add_argument("decision", choices=["approve", "reject"])
     sp.add_argument("--comment", default="")
 
-    sp = sub.add_parser("resume", help="인터럽트된 run 재개(내부용)")
+    sp = sub.add_parser("resume", help="인터럽트된 run 재개 (내부용)")
     sp.add_argument("run_id")
     sp.add_argument("decision", choices=["approve", "reject"])
 
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser(
         "agent-bridge",
-        help="로컬 에이전트 세션(claude/codex/gemini/devin) 수집 → API push",
+        help="로컬 에이전트 세션(claude/codex/gemini/devin)을 수집해 API로 push",
     )
     sp.add_argument(
         "--url",
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument(
         "--api-key-env",
         default="JOBMATE_API_KEY",
-        help="API 키를 담은 환경변수 이름 (기본: JOBMATE_API_KEY)",
+        help="API 키가 담긴 환경변수 이름 (기본: JOBMATE_API_KEY)",
     )
     sp.add_argument("--interval", type=float, default=15.0, help="스캔 주기(초)")
     sp.add_argument("--once", action="store_true", help="1회 스캔+push 후 종료")
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument(
         "--credentials",
         default=None,
-        help="OAuth client JSON(credentials.json) 경로 — --client-id/--client-secret 대신 사용",
+        help="OAuth client JSON(credentials.json) 경로. --client-id/--client-secret 대신 사용",
     )
     sp.add_argument("--client-id", default=None)
     sp.add_argument("--client-secret", default=None)
@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.client_id and args.client_secret:
                 cid, csec = args.client_id, args.client_secret
             else:
-                print("--credentials 또는 --client-id/--client-secret 필요", file=sys.stderr)
+                print("--credentials나 --client-id/--client-secret가 필요합니다", file=sys.stderr)
                 return 1
             path = issue_token(
                 args.kind, client_id=cid, client_secret=csec, token_path=args.token_path

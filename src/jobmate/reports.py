@@ -99,7 +99,7 @@ def _build_exec_report(store: Store, kind: str, days: int, now: datetime) -> dic
     highlights: list[str] = []
     if total_runs:
         highlights.append(
-            f"기간 내 run {total_runs}건 — 성공 {succeeded}, 실패 {failed}"
+            f"기간 내 run {total_runs}건: 성공 {succeeded}, 실패 {failed}"
             + (f", 승인 대기 {waiting}" if waiting else "")
         )
     if tools_sorted:
@@ -112,7 +112,7 @@ def _build_exec_report(store: Store, kind: str, days: int, now: datetime) -> dic
         top_stage, top_n = failures[0]
         highlights.append(f"주요 실패 단계: {top_stage} ({top_n}회)")
     if pending_approvals:
-        highlights.append(f"승인 대기 {pending_approvals}건 — 확인 필요")
+        highlights.append(f"승인 대기 {pending_approvals}건, 확인이 필요합니다")
     if risk_items:
         sev = str(risk_items[0].get("severity") or "")
         highlights.append(
@@ -127,7 +127,7 @@ def _build_exec_report(store: Store, kind: str, days: int, now: datetime) -> dic
         f"[{label} 임원 리포트] {days}일간 run {total_runs}건"
         f"(성공 {succeeded}·실패 {failed}·승인 대기 {waiting}), "
         f"에이전트 세션 {total_sessions}건, LLM 추정 비용 ${total_cost:.4f}. "
-        f"승인 대기 {pending_approvals}건, 리스크 {len(risk_items)}건."
+        f"승인 대기 {pending_approvals}건과 리스크 {len(risk_items)}건이 남아 있습니다."
     )
 
     return {

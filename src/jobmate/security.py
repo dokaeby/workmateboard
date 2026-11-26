@@ -69,8 +69,8 @@ def enforce_production_secrets() -> None:
         return
     if not _key_material():
         raise RuntimeError(
-            "JOBMATE_ENCRYPTION_KEY(또는 JOBMATE_API_KEY/CRON_SECRET) 미설정 — "
-            "프로덕션 모드에서는 저장 데이터 암호화 키가 필수입니다. "
+            "JOBMATE_ENCRYPTION_KEY(또는 JOBMATE_API_KEY/CRON_SECRET)가 설정되지 않았습니다. "
+            "프로덕션 모드에서는 저장 데이터 암호화 키가 필수이며, "
             "키 없이 기동하면 민감값이 평문으로 DB에 저장됩니다."
         )
 
@@ -88,7 +88,8 @@ def encrypt_str(value: str) -> str:
     if f is None:
         if production_mode():
             raise RuntimeError(
-                "암호화 키 미설정 상태에서 encrypt_str 호출 — JOBMATE_ENCRYPTION_KEY를 설정하세요."
+                "암호화 키가 설정되지 않은 상태에서 encrypt_str이 호출되었습니다. "
+                "JOBMATE_ENCRYPTION_KEY를 설정하세요."
             )
         return value
     return PREFIX + f.encrypt(value.encode()).decode()

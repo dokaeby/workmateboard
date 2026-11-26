@@ -135,7 +135,7 @@ def main() -> None:
     # 활성화할 것(인증 없이 원격 노출하면 DB 조회 도구가 무방비가 된다).
     transport = os.environ.get("JOBMATE_MCP_TRANSPORT", "stdio").strip().lower()
     if transport != "stdio":
-        raise SystemExit(f"MCP transport '{transport}' is not supported — only stdio is allowed")
+        raise SystemExit(f"MCP transport '{transport}' is not supported (only stdio is allowed)")
     mcp.run(transport="stdio")
 
 

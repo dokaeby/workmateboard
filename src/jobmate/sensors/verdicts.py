@@ -17,7 +17,10 @@ def downgrade_approve(verdict: Verdict) -> Verdict:
         return verdict.model_copy(
             update={
                 "decision": "request_changes",
-                "summary": f"[sensor] approve 강등: blocker/major finding 존재 — {verdict.summary}",
+                "summary": (
+                    f"[sensor] approve 강등: blocker/major finding이 있어 "
+                    f"request_changes로 변경. {verdict.summary}"
+                ),
             }
         )
     return verdict

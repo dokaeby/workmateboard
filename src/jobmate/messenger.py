@@ -21,10 +21,10 @@ logger = logging.getLogger("jobmate.messenger")
 
 HELP_TEXT = (
     "jobMate 커맨드:\n"
-    "• 승인해 [run_id] — 대기 중인 run 승인 (run_id 생략 시 최신)\n"
-    "• 시작 <workflow> <작업> — run 생성 (예: 시작 dev_review 버그 수정)\n"
-    "• 현황 — 최근 7일 요약\n"
-    "• 도움말 — 이 목록"
+    "• 승인해 [run_id]: 대기 중인 run을 승인합니다 (run_id를 빼면 가장 최근 것)\n"
+    "• 시작 <workflow> <작업>: run을 생성합니다 (예: 시작 dev_review 버그 수정)\n"
+    "• 현황: 최근 7일 요약\n"
+    "• 도움말: 이 목록"
 )
 
 _APPROVE_RE = re.compile(r"^(?:승인(?:해|하기)?|approve)\b\s*(?P<run_id>[0-9a-zA-Z_-]*)\s*$", re.I)

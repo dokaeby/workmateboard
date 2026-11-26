@@ -512,7 +512,7 @@ def _radar_weekly_digest(ctx: FunctionContext, today: str) -> None:
     top_label = ", ".join(f"{n} +{g}" for n, g in top if g > 0) or "-"
     total_gain = sum(gain.values())
     body = (
-        f"신규 {len(new_entries)}개 · 이탈 {len(exited)}개 · "
+        f"신규 {len(new_entries)}개, 이탈 {len(exited)}개, "
         f"주간 star 증가 {total_gain:,}\n급상승: {top_label}"
     )
     _radar_notify(ctx, "SkillRadar 주간 리포트", body)

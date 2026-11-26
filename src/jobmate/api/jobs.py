@@ -244,7 +244,7 @@ def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
         except Exception as e:
             logger.warning("inbox approval item failed run=%s: %s", run.id, str(e)[:200])
         try:
-            messenger.notify(f"승인 대기: {run.workflow_key} — {task or run.id}")
+            messenger.notify(f"승인 대기: {run.workflow_key} ({task or run.id})")
         except Exception:
             logger.debug("messenger notify failed", exc_info=True)
         logger.info("waiting_approval push sent run=%s", run.id)

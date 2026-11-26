@@ -188,7 +188,7 @@ class RadarStoreMixin:
             for r in rows:
                 c.execute(
                     "UPDATE runs SET status='cancelled', error=?, updated_at=? WHERE id=?",
-                    ("radar_auto_cleanup: approval not required", now, r["id"]),
+                    ("radar_auto_cleanup: approval was not required", now, r["id"]),
                 )
             c.execute(
                 "DELETE FROM inbox_items WHERE kind='approval' AND title LIKE '%skill_radar%'"

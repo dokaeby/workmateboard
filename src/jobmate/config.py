@@ -199,10 +199,11 @@ def _enforce_production_db(settings: Settings) -> None:
     if has_pg_dsn(settings):
         return
     raise RuntimeError(
-        "JOBMATE_MODE=release 또는 VERCEL 환경에서는 PostgreSQL DSN이 필수입니다 "
-        "(JOBMATE_DATABASE_URL 또는 POSTGRES_URL/POSTGRES_PRISMA_URL). "
-        "DSN 없이 기동하면 /tmp SQLite에 모든 데이터가 휘발됩니다. "
-        "일회성 로컬 검증이 필요하면 JOBMATE_ALLOW_EPHEMERAL_DB=1로 명시적으로 opt-out 하세요."
+        "JOBMATE_MODE=release 또는 VERCEL 환경에서는 PostgreSQL DSN이 필수입니다. "
+        "JOBMATE_DATABASE_URL, POSTGRES_URL, POSTGRES_PRISMA_URL 중 하나를 설정하세요. "
+        "DSN 없이 기동하면 /tmp SQLite를 사용하게 되고 모든 데이터가 휘발됩니다. "
+        "일회성 로컬 검증이 필요하면 JOBMATE_ALLOW_EPHEMERAL_DB=1로 명시적으로 "
+        "opt-out 할 수 있습니다."
     )
 
 

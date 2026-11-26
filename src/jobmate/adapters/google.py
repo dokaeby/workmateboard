@@ -402,7 +402,7 @@ def issue_token(
                 result["state"] = qs.get("state", [""])[0]
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write("jobMate 인증 완료 — 이 창을 닫아도 됩니다.".encode())
+                self.wfile.write("jobMate 인증이 완료되었습니다. 이 창을 닫아도 됩니다.".encode())
             else:
                 result["error"] = qs.get("error", ["unknown"])[0]
                 self.send_response(400)
@@ -424,7 +424,7 @@ def issue_token(
         "state": state,
     }
     auth_url = f"{AUTH_URI}?{urllib.parse.urlencode(params)}"
-    print(f"다음 URL을 브라우저에서 여세요:\n{auth_url}")
+    print(f"브라우저에서 다음 URL을 여세요:\n{auth_url}")
     webbrowser.open(auth_url)
 
     # handle_request()는 server.timeout 동안 1회 select 대기할 뿐이라
@@ -437,7 +437,7 @@ def issue_token(
         server.handle_request()
     server.server_close()
     if "code" not in result and "error" not in result:
-        raise GoogleAuthError(f"oauth timeout — no callback within {timeout}s")
+        raise GoogleAuthError(f"oauth timeout: no callback within {timeout}s")
     if "error" in result:
         raise GoogleAuthError(f"oauth error: {result['error']}")
     if result.get("state") != state:
@@ -458,7 +458,7 @@ def issue_token(
         raise GoogleAuthError(f"code exchange failed: {r.status_code} {r.text[:200]}")
     body = r.json()
     if "refresh_token" not in body:
-        raise GoogleAuthError("refresh_token not returned — prompt=consent 필요")
+        raise GoogleAuthError("refresh_token not returned; prompt=consent is required")
     path = Path(token_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     # google-auth Credentials.to_json()과 동일 필드를 포함해

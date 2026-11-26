@@ -289,32 +289,32 @@ def developer_status(store: Store, settings: Settings, adapters: dict[str, Any])
         {
             "name": "gmail",
             "configured": bool(adapters.get("gmail")),
-            "note": "Gmail 토큰 파일/env JSON이 있을 때 수집 활성",
+            "note": "Gmail 토큰 파일이나 env JSON이 있으면 수집됩니다",
         },
         {
             "name": "calendar",
             "configured": bool(adapters.get("calendar")),
-            "note": "Google Calendar 토큰 파일/env JSON 설정 시 활성",
+            "note": "Google Calendar 토큰 파일이나 env JSON을 설정하면 활성화됩니다",
         },
         {
             "name": "github_radar",
             "configured": _env(settings.github_token_env),
-            "note": "GitHub API 토큰 — skillRadar 저장소 수집",
+            "note": "GitHub API 토큰으로 skillRadar 저장소를 수집합니다",
         },
         {
             "name": "slack",
             "configured": _env("JOBMATE_SLACK_WEBHOOK_URL"),
-            "note": "Slack Incoming Webhook — 알림/커맨드",
+            "note": "Slack Incoming Webhook으로 알림과 커맨드를 처리합니다",
         },
         {
             "name": "telegram",
             "configured": _telegram_configured(),
-            "note": "Telegram 봇 토큰 + chat_id — 알림/커맨드",
+            "note": "Telegram 봇 토큰과 chat_id로 알림과 커맨드를 처리합니다",
         },
         {
             "name": "llm_default",
             "configured": llm_default_ok,
-            "note": f"기본 LLM ({settings.default_model}) — {settings.llm_api_key_env}",
+            "note": f"기본 LLM ({settings.default_model}), {settings.llm_api_key_env} 사용",
         },
         {
             "name": "llm_codex",
@@ -324,7 +324,7 @@ def developer_status(store: Store, settings: Settings, adapters: dict[str, Any])
         {
             "name": "codex_bridge",
             "configured": bool(bridge.get("last_push_at")),
-            "note": "agent-bridge 최근 push 여부 (agent_sessions)",
+            "note": "agent-bridge의 최근 push 여부 (agent_sessions)",
         },
     ]
     return {

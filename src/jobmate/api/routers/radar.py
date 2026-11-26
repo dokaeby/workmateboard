@@ -97,11 +97,16 @@ def register(app: FastAPI, ctx: Any) -> None:
         limit: int = 10,
     ) -> JSONResponse:
         if not topic or len(topic) > 100:
-            return err(400, "validation", "topic 파라미터가 필요합니다", request)
+            return err(400, "validation", "topic 파라미터를 지정해야 합니다", request)
         if platform != "all" and platform not in settings.radar_platforms:
-            return err(400, "validation", "platform은 all 또는 radar_platforms 중 하나", request)
+            return err(
+                400,
+                "validation",
+                "platform은 all 또는 radar_platforms 중 하나여야 합니다",
+                request,
+            )
         if lang not in _RADAR_LANGS:
-            return err(400, "validation", "lang은 ko|en|zh 중 하나", request)
+            return err(400, "validation", "lang은 ko|en|zh 중 하나여야 합니다", request)
         limit = max(1, min(limit, 50))
         best: dict[str, dict[str, Any]] = {}
         for row in _radar_recent():
@@ -132,7 +137,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     @app.get("/api/v1/radar/related-topics")
     def radar_related_topics(request: Request, topic: str) -> JSONResponse:
         if not topic or len(topic) > 100:
-            return err(400, "validation", "topic 파라미터가 필요합니다", request)
+            return err(400, "validation", "topic 파라미터를 지정해야 합니다", request)
         co: dict[str, int] = {}
         for row in _radar_recent():
             topics = set(json.loads(row.get("topics_json") or "[]"))
@@ -151,11 +156,16 @@ def register(app: FastAPI, ctx: Any) -> None:
     ) -> JSONResponse:
         days = _RADAR_RANKING_PERIODS.get(period)
         if days is None:
-            return err(400, "validation", "period은 week|month 중 하나", request)
+            return err(400, "validation", "period은 week|month 중 하나여야 합니다", request)
         if platform != "all" and platform not in settings.radar_platforms:
-            return err(400, "validation", "platform은 all 또는 radar_platforms 중 하나", request)
+            return err(
+                400,
+                "validation",
+                "platform은 all 또는 radar_platforms 중 하나여야 합니다",
+                request,
+            )
         if lang not in _RADAR_LANGS:
-            return err(400, "validation", "lang은 ko|en|zh 중 하나", request)
+            return err(400, "validation", "lang은 ko|en|zh 중 하나여야 합니다", request)
         agg: dict[str, dict[str, Any]] = {}
         for row in _radar_recent(days):
             if platform != "all" and row.get("platform") != platform:
@@ -196,10 +206,10 @@ def register(app: FastAPI, ctx: Any) -> None:
     @app.get("/api/v1/radar/repo/{full_name:path}")
     def radar_repo_detail(request: Request, full_name: str, lang: str = "ko") -> JSONResponse:
         if lang not in _RADAR_LANGS:
-            return err(400, "validation", "lang은 ko|en|zh 중 하나", request)
+            return err(400, "validation", "lang은 ko|en|zh 중 하나여야 합니다", request)
         row = store.radar_repo_latest(full_name)
         if row is None:
-            return err(404, "not_found", "수집된 저장소가 아닙니다", request)
+            return err(404, "not_found", "수집된 저장소가 없습니다", request)
         topics = set(json.loads(row.get("topics_json") or "[]"))
         co: dict[str, int] = {}
         for other_row in _radar_recent():

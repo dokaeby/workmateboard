@@ -127,7 +127,7 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 "stale_approval",
                 severity,
                 f"승인 대기 지연: {getattr(r, 'workflow_key', '')}",
-                f"{task or r.id} — {_fmt_duration(age)}째 승인 대기 중입니다.",
+                f"{task or r.id}: {_fmt_duration(age)}째 승인 대기 중입니다.",
                 "run",
                 r.id,
                 getattr(r, "updated_at", None),
@@ -148,13 +148,14 @@ def detect_risks(store: Store) -> dict[str, Any]:
             continue
         severity = "medium" if health == "stale" else "low"
         sess_at = s.get("last_event_at") or s.get("updated_at")
+        health_ko = {"stale": "멈춤 의심", "long_idle": "장기 유휴"}.get(health, health)
         items.append(
             _risk(
                 "idle_session",
                 severity,
-                f"세션 {health}: {s.get('tool') or ''} {s.get('session_key', '')[:12]}",
-                f"상태 {s.get('status')} — 마지막 이벤트 "
-                f"{_fmt_duration(_age_seconds(sess_at, now) or 0)} 전.",
+                f"세션 {health_ko}: {s.get('tool') or ''} {s.get('session_key', '')[:12]}",
+                f"상태 {s.get('status')}, 마지막 이벤트는 "
+                f"{_fmt_duration(_age_seconds(sess_at, now) or 0)} 전입니다.",
                 "session",
                 str(s.get("session_key") or ""),
                 sess_at,
@@ -201,7 +202,7 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 "cost_spike",
                 "medium",
                 "오늘 LLM 비용 급증",
-                f"오늘 추정 비용 ${today_cost:.2f} — 7일 일평균 ${avg7:.2f}의 3배 초과.",
+                f"오늘 추정 비용 ${today_cost:.2f}로 7일 일평균 ${avg7:.2f}의 3배를 넘었습니다.",
                 "cost",
                 "",
                 now.isoformat(),
@@ -228,7 +229,7 @@ def detect_risks(store: Store) -> dict[str, Any]:
                 "trigger_failure",
                 "medium",
                 f"트리거 오류: {t.get('id')}",
-                f"마지막 발화 시 오류 — {err_msg[:160]}",
+                f"마지막 발화 때 오류가 났습니다: {err_msg[:160]}",
                 "trigger",
                 str(t.get("id") or ""),
                 trig_at,
@@ -264,7 +265,7 @@ def detect_risks(store: Store) -> dict[str, Any]:
                     "budget",
                     "high",
                     "월 예산 초과",
-                    f"이번 달 추정 비용 ${mtd:.2f} > 예산 ${budget:.2f}.",
+                    f"이번 달 추정 비용 ${mtd:.2f}로 월 예산 ${budget:.2f}을 넘었습니다.",
                     "cost",
                     "",
                     now.isoformat(),

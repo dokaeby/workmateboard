@@ -74,7 +74,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(
                 429,
                 "too_many_attempts",
-                "가입 시도 횟수 초과 — 잠시 후 다시 시도하세요",
+                "가입 시도 횟수가 너무 많습니다. 잠시 후 다시 시도하세요",
                 request,
             )
         _signup_record(ip)
@@ -129,7 +129,10 @@ def register(app: FastAPI, ctx: Any) -> None:
         if _login_throttled(key):
             logger.warning("login throttled: %s", key)
             return err(
-                429, "too_many_attempts", "시도 횟수 초과 — 잠시 후 다시 시도하세요", request
+                429,
+                "too_many_attempts",
+                "시도 횟수가 너무 많습니다. 잠시 후 다시 시도하세요",
+                request,
             )
         row = store.get_user_password_hash(email)
         # 미가입/Google-only 계정도 동일 비용의 scrypt 검증을 1회 수행 —
@@ -154,7 +157,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(
                 403,
                 "email_not_verified",
-                "이메일 인증이 필요합니다 — 가입 시 발송된 인증 메일을 확인하거나 재발송하세요",
+                "이메일 인증이 필요합니다. 가입 시 발송된 인증 메일을 확인하거나 재발송하세요",
                 request,
             )
         _login_record(key, ok=True)
@@ -437,7 +440,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         expected = request.cookies.get(OAUTH_STATE_COOKIE, "")
         if not state or not expected or not hmac.compare_digest(state, expected):
             logger.warning("google oauth state mismatch")
-            return err(400, "bad_state", "OAuth state 불일치", request)
+            return err(400, "bad_state", "OAuth state가 일치하지 않습니다", request)
         client_id = _google_oauth_env("CLIENT_ID")
         client_secret = _google_oauth_env("CLIENT_SECRET")
         if not client_id or not client_secret:

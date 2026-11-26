@@ -333,7 +333,7 @@ class ToolExecutor:
             if not _is_allowed_test_command(normalized):
                 logger.warning("run_tests denied command: %s", normalized[:80])
                 raise ToolDeniedError(
-                    "command not allowed — only configured test/lint/typecheck "
+                    "command not allowed: only configured test/lint/typecheck "
                     "command prefixes are permitted"
                 )
             proc = subprocess.run(  # noqa: S603

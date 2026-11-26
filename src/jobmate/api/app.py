@@ -512,7 +512,7 @@ def create_app(
             return {
                 "ok": False,
                 "status": 409,
-                "error": f"run status is {run.status.value}, not waiting_approval",
+                "error": f"run is {run.status.value}, expected waiting_approval",
             }
         # 동시 run 세마포어 — resume의 graph.invoke도 LLM을 태우므로
         # 신규 run과 같은 슬롯을 공유한다. claim 전에 획득해 슬롯 대기 중
@@ -771,7 +771,7 @@ def create_app(
                 return True
             res = _do_approve(target, "approve", "messenger", actor="messenger")
             if res["ok"]:
-                _messenger_reply(provider, chat_id, f"run {target} 승인을 재개했습니다.")
+                _messenger_reply(provider, chat_id, f"run {target}을(를) 승인했습니다.")
             else:
                 _messenger_reply(
                     provider, chat_id, f"승인 실패({res['status']}): {str(res['error'])[:200]}"

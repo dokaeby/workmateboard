@@ -381,7 +381,7 @@ def normalize_items(
                 dig_path(it, "name")
                 or dig_path(it, "summary")
                 or dig_path(it, "key")
-                or "(untitled)"
+                or "(제목 없음)"
             )
         out.append(
             {
