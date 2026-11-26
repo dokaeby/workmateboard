@@ -8,7 +8,7 @@ import type { OfficeNodeDef } from "./layout";
 import type {
   BoardAuditEvent, BoardRun, BoardStageRun, StageBoardProps,
 } from "./types";
-import { fmtDuration, fmtElapsedRun, fmtTsRaw } from "./format";
+import { diffCap200, fmtDuration, fmtElapsedRun, fmtTsRaw } from "./format";
 
 // ── 상세 패널 ──
 
@@ -22,11 +22,13 @@ export function Kv({ k, v, children }: { k: string; v?: ReactNode; children?: Re
 }
 
 export function StageDetail({
-  node, sr, t,
+  node, sr, t, now,
 }: {
   node: OfficeNodeDef;
   sr: BoardStageRun | null;
   t: (k: string, f?: string) => string;
+  /** 부모(StageBoard)의 1초 틱 — 실행 중 단계 소요시간 계산용 */
+  now: number;
 }) {
   const head = (
     <div className="text-base font-bold text-ink" style={{ margin: "0 0 4px", overflowWrap: "anywhere" }}>
@@ -51,7 +53,6 @@ export function StageDetail({
     </div>
   ) : null;
   const outSlice = sr.status === "failed" ? 800 : 1200;
-  const now = Date.now();
   return (
     <div>
       {head}
@@ -109,14 +110,6 @@ export function OrchDetail({ run, t }: { run: BoardRun; t: (k: string, f?: strin
   );
 }
 
-export function diffCap200(diff: string | undefined, t: (k: string, f?: string) => string): string {
-  const s = String(diff ?? "");
-  const lines = s.split("\n");
-  return lines.length > 200
-    ? lines.slice(0, 200).join("\n") + "\n" + t("office.diffTruncated", "… (이하 생략)")
-    : s;
-}
-
 export function DiffPreview({ diff, t }: { diff: StageBoardProps["diff"]; t: (k: string, f?: string) => string }) {
   const [open, setOpen] = useState<number | null>(null);
   const files = diff?.files || [];
@@ -159,13 +152,12 @@ export function DiffPreview({ diff, t }: { diff: StageBoardProps["diff"]; t: (k:
 export function EventLog({ audit, t }: { audit: BoardAuditEvent[]; t: (k: string, f?: string) => string }) {
   const ref = useRef<HTMLDivElement>(null);
   const prevLen = useRef(0);
-  const grew = audit.length > prevLen.current;
   useEffect(() => {
     // 새 이벤트가 추가되면 하단으로 스크롤, 길이 감소(run 교체) 시 맨 위로
     const el = ref.current;
-    if (el) el.scrollTop = grew ? el.scrollHeight : 0;
+    if (el) el.scrollTop = audit.length > prevLen.current ? el.scrollHeight : 0;
     prevLen.current = audit.length;
-  }, [audit.length, grew]);
+  }, [audit.length]);
 
   return (
     <div

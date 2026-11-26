@@ -100,5 +100,5 @@ export function useSseInvalidation(enabled = true): void {
       es?.close();
       es = null;
     };
-  }, [queryClient]);
+  }, [queryClient, enabled]);
 }

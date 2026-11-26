@@ -49,7 +49,7 @@ function useOfficePins(): [Set<string>, (id: string) => void] {
 }
 
 export function OfficeSpriteSection({ paused = false }: { paused?: boolean }) {
-  const { lang, t } = useI18n();
+  const { t } = useI18n();
   const [selId, setSelId] = useState<string | null>(null);
   const [lifeEvents, setLifeEvents] = useState<LifeEvent[]>([]);
   const [imgFailed, setImgFailed] = useState(false);
@@ -126,13 +126,11 @@ export function OfficeSpriteSection({ paused = false }: { paused?: boolean }) {
     setSelId((prev) => (id && (keep || id !== prev) ? id : null));
   }, []);
 
-  const summary = useMemo(() => {
-    const c = (m: string) => people.filter((p) => modeOf(p) === m).length;
-    const w = c("working"), d = c("decision"), r = c("rest");
-    const subs = people.reduce((n, p) => n + (p.subCount || 0), 0);
-    return I18N.t("sum", { w, d, r }) + (subs ? I18N.t("sum.subs", { n: subs }) : "");
-    // lang 은 useI18n 구독용 — 언어가 바뀌면 I18N.t 가 새 언어로 다시 만든다
-  }, [people, lang]);
+  // 매 렌더 계산 — useI18n 구독으로 언어가 바뀌면 I18N.t 가 새 언어로 다시 만든다
+  const c = (m: string) => people.filter((p) => modeOf(p) === m).length;
+  const w = c("working"), d = c("decision"), r = c("rest");
+  const subTotal = people.reduce((n, p) => n + (p.subCount || 0), 0);
+  const summary = I18N.t("sum", { w, d, r }) + (subTotal ? I18N.t("sum.subs", { n: subTotal }) : "");
 
   // 레거시 bar(): 그림 로드 실패 → 연결 실패 → 로딩 순으로 안내 줄을 채운다
   const notice = [

@@ -2,7 +2,7 @@
  * 레거시 index.html의 loadOffice/officeState 기능을 React Query 기반으로 이행.
  * 상단 스프라이트 보드는 레거시 office/(office-view/life/world/path/atlas + jobmate-bridge)
  * 의 2D 캔버스 사무실을 sprites/ 모듈로 이식한 것. */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../shared/api/client";
 import { useI18n } from "../../shared/i18n";
@@ -11,7 +11,8 @@ import { fmtTs } from "../../shared/lib/format";
 import { OfficeStageBoard } from "./StageSection";
 import { useOfficeDemo } from "./demoState";
 import "./i18n";
-import { pickRun, StatusBadge } from "./bits";
+import { pickRun } from "./bits-helpers";
+import { StatusBadge } from "./bits";
 import { PipelineCard, RunDetailPanel, AuditFeed } from "./RunPanels";
 import { OfficeBottomGrid } from "./BottomGrid";
 import { OfficeSpriteSection } from "./SpriteSection";
@@ -36,10 +37,13 @@ export default function OfficePage() {
   // 기본 선택: 자동 선택된 run. 사용자가 목록에서 다른 run을 고르면 유지.
   const activeRunId = selRunId || picked?.id || null;
 
-  // 목록에서 사라진 run을 선택 중이면 자동 선택으로 복귀
-  useEffect(() => {
+  // 목록에서 사라진 run을 선택 중이면 자동 선택으로 복귀 —
+  // 렌더 중 상태 조정 패턴(React 권장): runs가 바뀐 렌더에서 바로 보정한다.
+  const [prevRuns, setPrevRuns] = useState(runs);
+  if (runs !== prevRuns) {
+    setPrevRuns(runs);
     if (selRunId && runs && !runs.some((r) => r.id === selRunId)) setSelRunId(null);
-  }, [runs, selRunId]);
+  }
 
   return (
     <div className="w-full space-y-4 p-4">

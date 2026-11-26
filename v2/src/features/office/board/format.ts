@@ -36,6 +36,15 @@ export function fmtDuration(sr: BoardStageRun | null | undefined, now: number): 
   return fmtSecs((end - start) / 1000);
 }
 
+/** diff 본문 200줄 제한 — 레거시 diffCap200과 동일 */
+export function diffCap200(diff: string | undefined, t: (k: string, f?: string) => string): string {
+  const s = String(diff ?? "");
+  const lines = s.split("\n");
+  return lines.length > 200
+    ? lines.slice(0, 200).join("\n") + "\n" + t("office.diffTruncated", "… (이하 생략)")
+    : s;
+}
+
 /** stage_key별 최신 attempt — 레거시 officeState.stages와 동일 규칙. */
 export function latestStageRuns(stageRuns: BoardStageRun[] | undefined): Map<string, BoardStageRun> {
   const map = new Map<string, BoardStageRun>();

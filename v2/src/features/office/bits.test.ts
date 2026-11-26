@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pickRun, stageTone, sessionArtifacts, scheduleInputText, STAGE_ORDER } from "./bits";
+import { pickRun, stageTone, sessionArtifacts, scheduleInputText, STAGE_ORDER } from "./bits-helpers";
 import type { RunListItem } from "./types";
 
 describe("pickRun", () => {

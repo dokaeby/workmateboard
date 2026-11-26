@@ -121,21 +121,19 @@ export function OfficeSidePanel({ people, selectedId, onPick, events, onTogglePi
       (order[modeOf(a)] ?? 2) - (order[modeOf(b)] ?? 2) || a.name.localeCompare(b.name));
   }, [people]);
 
-  const groups = useMemo(() => {
-    const map = new Map<string, PersonInput[]>();
-    for (const p of sorted) {
-      const k = p.project || "";
-      if (!map.has(k)) map.set(k, []);
-      map.get(k)!.push(p);
-    }
-    const list = [...map.entries()].map(([proj, members]) => ({
-      proj, members, busy: members.some((m) => modeOf(m) !== "rest"),
-    }));
-    const other = I18N.t("group.other");
-    list.sort((a, b) => (a.busy === b.busy ? 0 : a.busy ? -1 : 1)
-      || (a.proj || other).localeCompare(b.proj || other));
-    return list;
-  }, [sorted, t]);
+  // 매 렌더 계산 — useI18n 구독으로 언어가 바뀌면 I18N.t("group.other")가 새 언어로 다시 만든다
+  const groupMap = new Map<string, PersonInput[]>();
+  for (const p of sorted) {
+    const k = p.project || "";
+    if (!groupMap.has(k)) groupMap.set(k, []);
+    groupMap.get(k)!.push(p);
+  }
+  const otherLabel = I18N.t("group.other");
+  const groups = [...groupMap.entries()].map(([proj, members]) => ({
+    proj, members, busy: members.some((m) => modeOf(m) !== "rest"),
+  }));
+  groups.sort((a, b) => (a.busy === b.busy ? 0 : a.busy ? -1 : 1)
+    || (a.proj || otherLabel).localeCompare(b.proj || otherLabel));
 
   const working = sorted.filter((p) => modeOf(p) === "working").length;
   const subs = people.reduce((n, p) => n + (p.subCount || 0), 0);

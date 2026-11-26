@@ -32,11 +32,13 @@ function iosNeedsStandalone(): boolean {
 
 export default function PushSection() {
   const { t } = useI18n();
-  const [subscribed, setSubscribed] = useState<boolean | null>(null); // null = 확인 중
+  // 미지원 브라우저는 확인 없이 바로 "꺼짐" — 지원 시 null(확인 중)로 시작해 effect에서 조회
+  const [subscribed, setSubscribed] = useState<boolean | null>(() =>
+    pushSupported() ? null : false,
+  );
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!pushSupported()) { setSubscribed(false); return; }
     try {
       const reg = await navigator.serviceWorker.getRegistration("/");
       const sub = reg ? await reg.pushManager.getSubscription() : null;
@@ -46,7 +48,12 @@ export default function PushSection() {
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!pushSupported()) return;
+    // effect 본문 동기 setState 방지 — 다음 틱에서 비동기 조회 시작
+    const id = setTimeout(() => { void refresh(); }, 0);
+    return () => clearTimeout(id);
+  }, [refresh]);
 
   const toggle = async () => {
     if (busy) return;

@@ -10,8 +10,8 @@ import {
   STAGE_LABEL,
   latestStageRuns,
   stageTone,
-  StatusBadge,
-} from "./bits";
+} from "./bits-helpers";
+import { StatusBadge } from "./bits";
 import { useRunDetail } from "./hooks";
 
 // ── 파이프라인 스테이지 카드 ──

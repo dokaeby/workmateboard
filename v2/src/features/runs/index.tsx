@@ -2,12 +2,13 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "../../shared/api/client";
-import type { Run, StageRun, RunStats, RunDiff, AuditEvent, RunListItem } from "../../shared/api/types";
+import type { StageRun, RunStats } from "../../shared/api/types";
 import { useI18n, type TFn } from "../../shared/i18n";
 import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
+import { useRunsList, useRunDetail, useRunDiff, useRunAudit } from "./hooks";
 
 
 
@@ -19,15 +20,6 @@ const STATUS_TONE: Record<string, "ok" | "warn" | "err" | "accent" | "muted"> = 
 function StatusBadge({ status }: { status: string }) {
   return <Badge tone={STATUS_TONE[status] ?? "muted"}>{status}</Badge>;
 }
-
-export function useRunsList() {
-  return useQuery({
-    queryKey: ["runs"],
-    queryFn: () => apiGet<RunListItem[]>("/runs?limit=200"),
-    refetchInterval: 10000,
-  });
-}
-
 
 function fmtSecs(sec: number | null | undefined, t: TFn): string {
   const s = Number(sec);
@@ -166,36 +158,6 @@ function RunStatsCard() {
       </div>
     </details>
   );
-}
-
-export function useRunDetail(id: string | null) {
-  return useQuery({
-    queryKey: ["run", id],
-    queryFn: () => apiGet<Run>(`/runs/${encodeURIComponent(id!)}`),
-    enabled: !!id,
-    refetchInterval: (q) => {
-      const s = (q.state.data as Run | undefined)?.status;
-      return s === "running" || s === "queued" ? 3000 : false;
-    },
-  });
-}
-
-export function useRunDiff(id: string | null) {
-  return useQuery({
-    queryKey: ["run-diff", id],
-    queryFn: () => apiGet<RunDiff>(`/runs/${encodeURIComponent(id!)}/diff`),
-    enabled: !!id,
-  });
-}
-
-export function useRunAudit(id: string | null) {
-  return useQuery({
-    queryKey: ["run-audit", id],
-    queryFn: () => apiGet<AuditEvent[]>(`/runs/${encodeURIComponent(id!)}/audit`),
-    enabled: !!id,
-    refetchInterval: 3000,
-    retry: 1,
-  });
 }
 
 // ── 승인 대상 diff 미리보기 (GET /runs/{id}/diff) ──

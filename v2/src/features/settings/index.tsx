@@ -175,21 +175,24 @@ export default function SettingsPage() {
   };
 
   /* ── 시스템 상태 lazy — 카드가 뷰포트에 들어오면 첫 로드 ── */
-  const systemRef = useRef<HTMLDivElement | null>(null);
-  const [healthActive, setHealthActive] = useState(false);
+  // 콜백 ref로 실제 마운트 시점을 추적 — draft 로딩 전 early return 동안은
+  // 엘리먼트가 없으므로 useRef+1회 effect로는 observer가 영구 미발화한다
+  const [systemEl, setSystemEl] = useState<HTMLDivElement | null>(null);
+  // IntersectionObserver 미지원 환경은 lazy 로드 없이 즉시 활성화
+  const [healthActive, setHealthActive] = useState(
+    () => typeof window !== "undefined" && !("IntersectionObserver" in window),
+  );
   useEffect(() => {
-    const el = systemRef.current;
-    if (!el || healthActive) return;
-    if (!("IntersectionObserver" in window)) { setHealthActive(true); return; }
+    if (!systemEl || healthActive) return;
     const io = new IntersectionObserver((entries) => {
       if (entries.some((en) => en.isIntersecting)) {
         io.disconnect();
         setHealthActive(true);
       }
     }, { rootMargin: "120px" });
-    io.observe(el);
+    io.observe(systemEl);
     return () => io.disconnect();
-  }, [healthActive]);
+  }, [systemEl, healthActive]);
 
   if (settingsQ.isLoading || !draft) {
     return (
@@ -386,7 +389,7 @@ export default function SettingsPage() {
       <PushSection />
 
       {/* ══ 시스템 상태 + 사용자 관리 (admin) ══ */}
-      <div ref={systemRef}>
+      <div ref={setSystemEl}>
         <Card title={t("settings.sec.system", "시스템 상태")} className="mb-4">
           <p className="mb-3 text-sm text-muted">{t("settings.sec.system.desc", "서버·브리지·스케줄러 상태를 확인합니다.")}</p>
           {isAdmin ? (

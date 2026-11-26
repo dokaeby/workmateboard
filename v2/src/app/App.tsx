@@ -369,14 +369,16 @@ function LoginOverlay({ authError }: { authError?: string | null }) {
 export default function App() {
   const { view, setView, role, setRole, setPrefs } = useAppStore();
   const [unauth, setUnauth] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
+  // ?auth_error= OAuth 실패 코드는 마운트 시 1회만 읽는다 (이펙트 내 동기 setState 회피)
+  const [authError] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get("auth_error"),
+  );
 
-  // 딥링크 파라미터 — /?view=X 리다이렉트·?auth_error= OAuth 실패를 복원
+  // 딥링크 파라미터 — /?view=X 리다이렉트 복원
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const v = q.get("view");
     if (v && NAV_ITEMS.some((n) => n.view === v)) setView(v as ViewKey);
-    setAuthError(q.get("auth_error"));
   }, [setView]);
 
   const me = useQuery({ queryKey: ["me"], queryFn: fetchMe, staleTime: 60000 });

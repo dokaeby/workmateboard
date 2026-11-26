@@ -239,7 +239,7 @@ export function StageBoard({
             </>
           ) : selNode ? (
             <>
-              <StageDetail node={selNode} sr={selStageRun} t={t} />
+              <StageDetail node={selNode} sr={selStageRun} t={t} now={now} />
               {showDiff && diff && <DiffPreview diff={diff} t={t} />}
               {showApprove && selNode.code === "HUM" && (
                 <div style={{ marginTop: 12, display: "flex", gap: 8 }}>

@@ -18,7 +18,7 @@ function Kv({ k, v }: { k: string; v: ReactNode }) {
 
 export default function SystemHealth({ active }: { active: boolean }) {
   const { t } = useI18n();
-  const { data, isLoading, error, refetch, isFetching } = useQuery({
+  const { data, isLoading, error, refetch, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["health-detail"],
     queryFn: () => apiGet<HealthDetail>("/health/detail"),
     enabled: active,
@@ -40,7 +40,8 @@ export default function SystemHealth({ active }: { active: boolean }) {
     : "-";
   const lastPush = data.bridge?.last_push_at || "";
   const pushTs = Date.parse(lastPush);
-  const stale = !isNaN(pushTs) && Date.now() - pushTs > 10 * 60 * 1000;
+  // 렌더 순수성 유지를 위해 "현재 시각" 대신 쿼리 데이터 갱신 시각을 기준으로 경과 판정
+  const stale = !isNaN(pushTs) && dataUpdatedAt - pushTs > 10 * 60 * 1000;
   const machines = Array.isArray(data.bridge?.machines) ? data.bridge!.machines! : [];
   const cronTs = data.cron?.last_tick_at;
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import { useI18n } from "../../shared/i18n";
@@ -13,7 +13,7 @@ import type {
   EndedSessionsResponse,
   ActivityItem,
 } from "./types";
-import { sessionArtifacts, localDateStr, scheduleInputText, SESSION_STATUS_TONE } from "./bits";
+import { sessionArtifacts, localDateStr, scheduleInputText, SESSION_STATUS_TONE } from "./bits-helpers";
 
 // ── 활성 세션 목록 + 활동 기록 + 통계/스케줄 — 하단 3열 그리드 ──
 // 세션 선택 상태를 공유하기 위해 한 컴포넌트로 묶고, 카드 배치는
@@ -22,6 +22,12 @@ import { sessionArtifacts, localDateStr, scheduleInputText, SESSION_STATUS_TONE 
 export function OfficeBottomGrid() {
   const { t } = useI18n();
   const [selKey, setSelKey] = useState<string | null>(null);
+  // 세션 경과시간 표시용 현재 시각 — 10초 틱(세션 refetch 주기와 동일)
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 10000);
+    return () => clearInterval(id);
+  }, []);
   const { data, isLoading, error, refetch } = useQuery({
     // "active"/"all" 키 분리 — 같은 키에 다른 queryFn을 쓰면 React Query가
     // dedupe하면서 include_ended=false 결과가 모든 뷰에 캐시된다.
@@ -78,7 +84,7 @@ export function OfficeBottomGrid() {
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
                   <span>{s.tool}</span>
                   {s.project && <span className="rounded bg-surface px-1">{s.project}</span>}
-                  {s.last_event_at && <span>{fmtAge(Math.max(0, (Date.now() - new Date(s.last_event_at).getTime()) / 1000))}</span>}
+                  {s.last_event_at && <span>{fmtAge(Math.max(0, (now - new Date(s.last_event_at).getTime()) / 1000))}</span>}
                   {s.est_cost_usd ? <span>${s.est_cost_usd.toFixed(4)}</span> : null}
                 </div>
                 {(s.doing || s.ask) && (
