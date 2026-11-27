@@ -571,15 +571,28 @@ def test_remote_login_denied_in_open_mode(monkeypatch):
     store.close()
 
 
-def test_remote_verify_issues_no_session(monkeypatch):
-    """인증 링크 자체는 유효 처리하되(이메일 인증은 완료) 세션 쿠키는 발급하지 않는다."""
+def test_remote_verify_denied_in_open_mode(monkeypatch):
+    """무키 원격 오픈 모드에서는 인증 링크 소비 자체를 차단 — 토큰이 소모되지 않는다."""
     client, store = _remote_open_client(monkeypatch)
     store.create_user("verify@b.com", "", "V")
     token = store.create_email_verification("verify@b.com")
     r = client.get(f"/api/v1/auth/verify?token={token}")
-    assert r.status_code == 200
-    assert store.get_user_by_email("verify@b.com")["email_verified"] is True
-    assert "jobmate_session" not in r.headers.get("set-cookie", "")
+    assert r.status_code == 403
+    # 토큰 미소비 — 인증 완료 처리도 일어나지 않는다
+    assert store.get_user_by_email("verify@b.com")["email_verified"] is not True
+    store.close()
+
+
+def test_remote_auth_endpoints_denied_in_open_mode(monkeypatch):
+    """verify/resend/google/callback 전부 원격 오픈 모드에서 진입 차단."""
+    client, store = _remote_open_client(monkeypatch)
+    store.create_user("verify@b.com", "", "V")
+    r = client.post("/api/v1/auth/verify/resend", json={"email": "verify@b.com"})
+    assert r.status_code == 403
+    r = client.get("/api/v1/auth/google")
+    assert r.status_code == 403
+    r = client.get("/api/v1/auth/google/callback?code=c&state=s")
+    assert r.status_code == 403
     store.close()
 
 

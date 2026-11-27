@@ -180,6 +180,8 @@ def register(app: FastAPI, ctx: Any) -> None:
 
         /api/v1/auth/ prefix는 미들웨어 인증 예외이므로 남용 방지로
         미가입/이미 인증 이메일에도 동일한 응답 형태를 반환한다(계정 열거 방지)."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         email = str(body.get("email", "")).strip().lower()
         if not _EMAIL_RE.match(email):
             return err(400, "invalid_email", "이메일 형식이 올바르지 않습니다", request)
@@ -204,11 +206,15 @@ def register(app: FastAPI, ctx: Any) -> None:
         return JSONResponse({"sent": sent})
 
     @app.get("/api/v1/auth/verify")
-    def auth_verify(request: Request, token: str = "") -> HTMLResponse:
+    def auth_verify(request: Request, token: str = "") -> Any:
         """인증 링크 — 유효 토큰이면 email_verified=1 + 세션 쿠키 발급.
 
         consume은 UPDATE ... WHERE used_at IS NULL AND expires_at>? 의 원자적
         rowcount 판정 — 동시 요청이 같은 토큰을 둘 다 유효하다고 보지 않는다."""
+        # 무키 원격 오픈 모드에서는 토큰 소비·인증 완료 자체를 차단한다 —
+        # signup/login이 원격에서 막혀 있으므로 정상 원격 사용자는 존재하지 않는다.
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         token_hash = hash_token(token) if token else ""
         email = store.consume_email_verification(token_hash) if token_hash else None
         if email is None:
@@ -224,8 +230,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         store.audit("", email, "auth_email_verified", user["id"], {})
         logger.info("email verified: user=%s", user["id"])
         resp = HTMLResponse(_VERIFY_OK_HTML)
-        if not _remote_open_mode(request):
-            _set_session(resp, request, user["id"])
+        _set_session(resp, request, user["id"])
         return resp
 
     @app.post("/api/v1/auth/logout")
@@ -322,18 +327,6 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(401, "unauthorized", "로그인이 필요합니다", request)
         uid = str(user["id"])
         email = str(user.get("email") or "")
-        # 마지막 admin 보호 — 삭제 후 관리자가 0명이 되는 것을 막는다.
-        if _effective_role(user) == "admin":
-            admins = [u for u in store.list_users() if _effective_role(u) == "admin"]
-            if len(admins) <= 1:
-                store.audit("", email, "auth_account_delete_blocked", uid, {"reason": "last_admin"})
-                logger.warning("account delete blocked: last admin user=%s", uid)
-                return err(
-                    409,
-                    "last_admin",
-                    "마지막 관리자 계정은 삭제할 수 없습니다",
-                    request,
-                )
         row = store.get_user_password_hash(email)
         if row is not None and row[1]:
             # 비밀번호 계정 — 현재 비밀번호 재확인 (타인 세션 탈취 대비)
@@ -358,9 +351,27 @@ def register(app: FastAPI, ctx: Any) -> None:
                     "confirm_email이 가입 이메일과 일치해야 합니다",
                     request,
                 )
-        # 감사 기록은 actor 마스킹 전에 남긴다 — 삭제 후에도 행위가 추적된다
-        store.audit("", email, "auth_account_delete", uid, {})
-        counts = store.delete_user_cascade(uid)
+        # 마지막 admin 보호 + 삭제를 store 락 안에서 원자적으로 — 동시
+        # 삭제/강등 요청이 둘 다 admin 수를 통과해 관리자가 0명이 되는
+        # TOCTOU를 막는다(프로세스 내 직렬화; 멀티 인스턴스는 한계).
+        with store.exclusive():
+            if _effective_role(user) == "admin":
+                admins = [u for u in store.list_users() if _effective_role(u) == "admin"]
+                if len(admins) <= 1:
+                    store.audit(
+                        "", email, "auth_account_delete_blocked", uid, {"reason": "last_admin"}
+                    )
+                    logger.warning("account delete blocked: last admin user=%s", uid)
+                    return err(
+                        409,
+                        "last_admin",
+                        "마지막 관리자 계정은 삭제할 수 없습니다",
+                        request,
+                    )
+            # 감사 기록은 actor 마스킹 전에 남긴다 — 삭제 후에도 행위가 추적된다.
+            # delete가 실패하면 감사도 남기지 않기 위해 삭제 성공 후 기록한다.
+            counts = store.delete_user_cascade(uid)
+            store.audit("", email, "auth_account_delete", uid, {})
         logger.info("account deleted: user=%s removed=%s", uid, counts)
         resp = JSONResponse({"status": "deleted", "removed": counts})
         resp.delete_cookie(SESSION_COOKIE, path="/")
@@ -410,6 +421,8 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.get("/api/v1/auth/google")
     def auth_google(request: Request) -> Any:
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         client_id = _google_oauth_env("CLIENT_ID")
         if not client_id:
             return err(501, "not_configured", "Google 로그인이 설정되지 않았습니다", request)
@@ -443,6 +456,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         def back(q: str) -> RedirectResponse:
             return RedirectResponse(f"/?auth_error={q}", status_code=302)
 
+        # 콜백 최종 처리 전에 진입 차단 — OAuth 왕복 동안 DB 계정 생성
+        # (create_user/_maybe_first_user_admin)이 이미 실행된 뒤 막히면
+        # 원격 공격자가 첫 사용자 admin을 선점할 수 있다.
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         if error:
             return back("google_denied")
         expected = request.cookies.get(OAUTH_STATE_COOKIE, "")
@@ -501,17 +519,26 @@ def register(app: FastAPI, ctx: Any) -> None:
                 # 비어 있는 Google-only 계정(기존 Google 로그인 계정)에만 허용.
                 cred = store.get_user_password_hash(email)
                 if cred is not None and cred[1]:
-                    store.audit(
-                        "",
-                        email,
-                        "auth_google_link_refused",
-                        user["id"],
-                        {"reason": "password_account"},
-                    )
-                    logger.warning(
-                        "google login refused: password account exists user=%s", user["id"]
-                    )
-                    return back("google_account_conflict")
+                    if user.get("email_verified"):
+                        store.audit(
+                            "",
+                            email,
+                            "auth_google_link_refused",
+                            user["id"],
+                            {"reason": "password_account"},
+                        )
+                        logger.warning(
+                            "google login refused: password account exists user=%s",
+                            user["id"],
+                        )
+                        return back("google_account_conflict")
+                    # 미인증 계정 — 공격자가 피해자 이메일로 비밀번호 가입을
+                    # 심어둬도(미인증) Google이 이메일 소유권을 증명했으므로
+                    # 공격자 해시를 비우고 Google 계정을 연결한다. 그렇지 않으면
+                    # cred[1] 존재만으로 피해자의 Google 로그인이 영구 차단된다.
+                    store.set_user_password(user["id"], "")
+                    store.audit("", email, "auth_google_claim_unverified", user["id"], {})
+                    logger.info("google login claimed unverified account: user=%s", user["id"])
                 store.link_google_sub(user["id"], gsub)
         if user is None:
             # Google이 이메일 소유권을 증명했으므로 인증 완료로 간주
@@ -526,7 +553,6 @@ def register(app: FastAPI, ctx: Any) -> None:
         store.audit("", email, "auth_login_google", user["id"], {})
         logger.info("auth login via google: user=%s", user["id"])
         resp = RedirectResponse("/", status_code=302)
-        if not _remote_open_mode(request):
-            _set_session(resp, request, user["id"])
+        _set_session(resp, request, user["id"])
         resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
         return resp

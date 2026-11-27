@@ -49,8 +49,26 @@ class FetchError(Exception):
     """외부 fetch 실패 — 네트워크/HTTP/파싱 오류를 하나로 묶는다."""
 
 
+# NAT64 well-known prefix — 마지막 32bit에 IPv4가 내장된다.
+_NAT64_WKP = ipaddress.ip_network("64:ff9b::/96")
+
+
 def _ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return not (
+    # IPv4-mapped IPv6(::ffff:8.8.8.8) — 내장 IPv4 기준으로 판정한다.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        # 6to4/터널드에 내장된 IPv4가 사설 대역일 수 있다 — Python 3.12.0~3.12.3의
+        # ipaddress 테이블은 CVE-2024-4032 수정 전이라 is_global만으로는 부족.
+        if ip.sixtofour is not None or ip.teredo is not None:
+            return False
+        if ip in _NAT64_WKP:
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+            return _ip_is_public(embedded)
+    # is_global 필수 — is_private/is_loopback 등 개별 플래그만으로는
+    # RFC 6598 CGNAT(100.64.0.0/10), 198.18.0.0/15, 문서용 대역 등이
+    # 전부 False라 공인으로 통과한다(Tailscale/클라우드 내부망 SSRF).
+    return ip.is_global and not (
         ip.is_private
         or ip.is_loopback
         or ip.is_link_local
@@ -142,17 +160,51 @@ def is_safe_fetch_url(url: str) -> bool:
     return _ip_is_public(ip)
 
 
+def _resolves_all_loopback(host: str) -> bool:
+    """DNS 해석 결과가 전부 loopback IP인지 검사 — *.localhost 전용.
+
+    `.localhost`는 접미사만으로 loopback을 신뢰할 수 없다 — split-horizon/
+    사내 DNS가 임의 IP로 해석할 수 있고, validate_outbound_url은 loopback
+    호스트에 http+자격증명을 허용하므로 해석 결과를 실제로 검증한다."""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    ips: list[str] = []
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            return False
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            return False
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if not ip.is_loopback:
+            return False
+        ips.append(str(ip))
+    return bool(ips)
+
+
 def is_loopback_hostname(host: str) -> bool:
-    """loopback 호스트 판정 — localhost 계열 또는 loopback IP 리터럴."""
+    """loopback 호스트 판정 — localhost, loopback IP 리터럴, *.localhost.
+
+    `*.localhost`는 실제 DNS 해석 결과가 전부 loopback일 때만 인정한다
+    (사내 DNS가 임의 IP로 해석하는 경우 fail-closed)."""
     h = (host or "").strip().lower().rstrip(".")
     if not h:
         return False
-    if h == "localhost" or h.endswith(".localhost"):
+    if h == "localhost":
         return True
     try:
         ip = ipaddress.ip_address(h)
     except ValueError:
-        return False
+        return h.endswith(".localhost") and _resolves_all_loopback(h)
+    # IPv4-mapped IPv6(::ffff:127.0.0.1) 언래핑 — security.is_loopback_host와
+    # 동일 판정을 유지한다.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     return ip.is_loopback
 
 

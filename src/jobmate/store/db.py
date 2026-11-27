@@ -189,6 +189,17 @@ class Store(
         with self._lock, self._conn:
             yield self._conn
 
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """check-then-act 구간을 프로세스 내에서 직렬화한다.
+
+        마지막 admin 삭제/강등처럼 "조건 확인 → 변경"이 원자적이어야 하는
+        경로에서 사용 — 각 store 메서드의 개별 tx()는 호출 사이에 락을
+        놓으므로, 여러 호출을 하나의 임계구역으로 묶을 때 이 컨텍스트를 쓴다.
+        멀티 인스턴스 배포에서는 인스턴스 간 경합이 남는다(한계로 문서화)."""
+        with self._lock:
+            yield
+
     # ---- runs ----
 
     # ---- stage_runs ----

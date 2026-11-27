@@ -53,8 +53,19 @@ def is_loopback_request(request: Any) -> bool:
     # 모든 외부 클라이언트가 127.0.0.1로 보인다 — 프록시가 붙이는
     # X-Forwarded-For/Forwarded가 있으면 loopback으로 신뢰하지 않는다
     # (직접 연결한 공격자가 헤더를 넣어도 비-loopback 판정 → fail-closed).
+    # X-Real-IP(Nginx 기본)·CF-Connecting-IP·True-Client-IP만 붙이는
+    # 리버스 프록시 뒤에서도 client.host가 127.0.0.1로 보이므로 함께 검사한다.
     headers = getattr(request, "headers", None)
-    if headers is not None and (headers.get("x-forwarded-for") or headers.get("forwarded")):
+    if headers is not None and any(
+        headers.get(h)
+        for h in (
+            "x-forwarded-for",
+            "forwarded",
+            "x-real-ip",
+            "cf-connecting-ip",
+            "true-client-ip",
+        )
+    ):
         return False
     client = getattr(request, "client", None)
     return is_loopback_host(getattr(client, "host", None))

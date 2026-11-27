@@ -4,6 +4,8 @@ _pg_translate 출력은 psycopg3 플레이스홀더 규칙(%s/%b/%t, %% 이스�
 따라야 하므로, 가능하면 psycopg 내부 쿼리 파서(_split_query)로도 검증한다.
 """
 
+import threading
+
 import pytest
 
 from jobmate.store.pg_dialect import _is_pg_dsn, _pg_translate
@@ -123,6 +125,8 @@ def _bare_pgconn():
     conn = object.__new__(_PGConn)
     conn._dsn = "postgres://fake/db"
     conn._txs = []
+    conn._lock = threading.RLock()
+    conn._reconnect_lock = threading.Lock()
     conn._reconnects = 0
     conn._reconnect = lambda: setattr(conn, "_reconnects", conn._reconnects + 1)  # type: ignore[attr-defined]
     return conn, psycopg
@@ -157,6 +161,38 @@ def test_pgconn_nested_tx_lifo():
         with conn:
             pass
     assert events == ["enter:tx0", "enter:tx1", "exit:tx1", "exit:tx0"]
+    assert conn._txs == []
+
+
+def test_pgconn_nested_enter_failure_no_reconnect():
+    """중첩 tx 진입 실패 시 재접속 금지 — self._c 교체가 바깥 트랜잭션을 파괴."""
+    conn, psycopg = _bare_pgconn()
+    events: list[str] = []
+
+    class FailTx:
+        def __enter__(self) -> "FailTx":
+            raise psycopg.OperationalError("dead")
+
+        def __exit__(self, *a: object) -> bool:
+            return False
+
+    class FakeC:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def transaction(self) -> object:
+            self.calls += 1
+            # 첫 번째(바깥) tx는 성공, 두 번째(안쪽) tx는 진입 실패
+            return _FakeTx(events, "outer") if self.calls == 1 else FailTx()
+
+    conn._c = FakeC()
+    with conn:
+        with pytest.raises(psycopg.OperationalError):
+            with conn:
+                pass
+    # 재접속 없이 바깥 트랜잭션이 정상 종료돼야 한다
+    assert conn._reconnects == 0
+    assert events == ["enter:outer", "exit:outer"]
     assert conn._txs == []
 
 

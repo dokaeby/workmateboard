@@ -107,36 +107,101 @@ _PYTEST_ALLOWED_LONG_OPTS = frozenset(
 _PYTEST_VALUE_SHORTS = ("-k", "-m", "-r", "-l")
 _PYTEST_FLAG_SHORTS_RE = re.compile(r"-[qvsx]+")
 
-# ruff/mypy denylist — 이 옵션들과의 접두사 관계(양방향)에 있는 토큰은 차단.
-_RUFF_DENIED_LONG_OPTS = (
-    "--fix",
-    "--fix-only",
-    "--unsafe-fixes",
-    "--config",
-    "--output-file",
-    "--cache-dir",
-    "--add-noqa",
+# ruff/mypy도 pytest와 동일하게 허용 플래그 allowlist로 관리한다.
+# denylist는 새 옵션(리포트/코드로드/실행 계열)이 추가될 때마다 우회가
+# 생기므로, 명시 허용 목록에 없는 `-` 토큰은 전부 거부한다.
+# 파일 쓰기(--output-file/--*-report/--cache-dir/--config)·코드 로드
+# (--shadow-file/--custom-typeshed/--python-executable)·패키지 설치
+# (--install-types)·소스 수정(--fix/--add-noqa) 옵션은 목록에 없으므로
+# `=` 결합·단축 결합 등 어떤 형태로 와도 차단된다.
+_RUFF_ALLOWED_LONG_OPTS = frozenset(
+    {
+        "--select",
+        "--ignore",
+        "--extend-select",
+        "--extend-ignore",
+        "--per-file-ignores",
+        "--output-format",
+        "--statistics",
+        "--show-source",
+        "--diff",
+        "--no-cache",
+        "--isolated",
+        "--respect-gitignore",
+        "--force-exclude",
+        "--preview",
+        "--target-version",
+        "--line-length",
+        "--exit-zero",
+        "--show-settings",
+        "--exclude",
+        "--extend-exclude",
+    }
 )
-_MYPY_DENIED_LONG_OPTS = (
-    "--html-report",
-    "--xml-report",
-    "--txt-report",
-    "--linecount-report",
-    "--any-exprs-report",
-    "--cobertura-report",
-    "--junit-xml",
-    "--cache-dir",
-    "--install-types",
-    "--non-interactive",
-    "--config-file",
-    "--config",
-    "--custom-typeshed-dir",
-    "--shadow-file",
-    "--python-executable",
-    "--package",
-    "--module",
+# ruff 단축 옵션 — 출력/수정 계열이 없으므로 플래그 묶음만 허용.
+_RUFF_FLAG_SHORTS_RE = re.compile(r"-[vqVh]+")
+
+_MYPY_ALLOWED_LONG_OPTS = frozenset(
+    {
+        # 분석 동작 플래그
+        "--strict",
+        "--ignore-missing-imports",
+        "--check-untyped-defs",
+        "--disallow-untyped-defs",
+        "--disallow-incomplete-defs",
+        "--disallow-untyped-calls",
+        "--disallow-untyped-decorators",
+        "--disallow-any-generics",
+        "--disallow-any-unimported",
+        "--disallow-any-expr",
+        "--disallow-any-decorated",
+        "--disallow-any-explicit",
+        "--disallow-subclassing-any",
+        "--warn-redundant-casts",
+        "--warn-unused-ignores",
+        "--warn-return-any",
+        "--warn-unreachable",
+        "--strict-equality",
+        "--strict-concatenate",
+        "--strict-bytes",
+        "--extra-checks",
+        "--show-error-codes",
+        "--show-column-numbers",
+        "--show-error-end",
+        "--show-error-context",
+        "--hide-error-context",
+        "--show-absolute-path",
+        "--show-traceback",
+        "--no-error-summary",
+        "--pretty",
+        "--no-pretty",
+        "--no-color-output",
+        "--no-implicit-optional",
+        "--explicit-package-bases",
+        "--namespace-packages",
+        "--fast-module-lookup",
+        "--fast-deps",
+        "--skip-version-check",
+        "--no-incremental",
+        "--no-site-packages",
+        "--no-silence-site-packages",
+        "--allow-redefinition",
+        "--local-partial-types",
+        # 값 옵션 — 분석 범위/에러 코드만 바꾸며 파일 쓰기·코드 실행 없음
+        "--enable-error-code",
+        "--disable-error-code",
+        "--enable-incomplete-feature",
+        "--follow-imports",
+        "--follow-imports-for-stubs",
+        "--python-version",
+        "--platform",
+        "--always-true",
+        "--always-false",
+        "--exclude",
+    }
 )
-_MYPY_DENIED_SHORT_OPTS = ("-p", "-c", "-m")
+# mypy 단축 옵션 — -c(프로그램 텍스트)/-m/-p(모듈·패키지)는 제외.
+_MYPY_FLAG_SHORTS_RE = re.compile(r"-[hV]+")
 
 # env 확장 등 미등록 접두사용 명령에 적용하는 기존 denylist(보수적 유지).
 _GENERIC_DENIED_LONG_OPTS = (
@@ -217,26 +282,58 @@ def _denylist_args_ok(
     return True
 
 
-def _validate_tool_args(tool: str | None, tokens: list[str]) -> bool:
+def _allowlist_args_ok(
+    tokens: list[str], allowed_long: frozenset[str], flag_shorts: re.Pattern[str]
+) -> bool:
+    """허용 플래그 allowlist 검사 — pytest와 동일 정책.
+
+    `--opt=value`는 base가 허용 목록에 있을 때만 통과(축약·미등록 전부 거부).
+    단축 옵션은 flag_shorts 정규식에 맞는 플래그 묶음만 허용.
+    그 외 `-` 토큰과 `--` 이후를 포함한 모든 토큰은 위치 인자로 보고
+    _path_arg_safe를 적용한다."""
+    for tok in tokens:
+        if tok == "--":
+            continue
+        if tok.startswith("--"):
+            if tok.split("=", 1)[0] not in allowed_long:
+                return False
+        elif tok.startswith("-") and tok != "-":
+            if not flag_shorts.fullmatch(tok):
+                return False
+        elif not _path_arg_safe(tok):
+            return False
+    return True
+
+
+def _validate_tool_args(tool: str | None, tokens: list[str], prefix: str = "") -> bool:
     """도구별 인자 검증. 통과하면 True."""
     if tool == "pytest":
         return all(_pytest_arg_ok(t) for t in tokens)
     if tool == "ruff":
+        # 접두사에 `check`가 이미 있으면(env 확장 "ruff check --statistics" 등)
+        # 나머지 인자 전체가 옵션/경로 인자다 — `check`를 다시 요구하면 안 된다.
+        if "check" in prefix.split():
+            return _allowlist_args_ok(tokens, _RUFF_ALLOWED_LONG_OPTS, _RUFF_FLAG_SHORTS_RE)
         # `ruff check` 서브커맨드만 허용 — `ruff format` 등은 거부
         if not tokens or tokens[0] != "check":
             return False
-        return _denylist_args_ok(tokens[1:], _RUFF_DENIED_LONG_OPTS, ())
+        return _allowlist_args_ok(tokens[1:], _RUFF_ALLOWED_LONG_OPTS, _RUFF_FLAG_SHORTS_RE)
     if tool == "mypy":
-        return _denylist_args_ok(tokens, _MYPY_DENIED_LONG_OPTS, _MYPY_DENIED_SHORT_OPTS)
+        return _allowlist_args_ok(tokens, _MYPY_ALLOWED_LONG_OPTS, _MYPY_FLAG_SHORTS_RE)
     # 미등록 접두사 — 기존 denylist로 보수적 검증
     return _denylist_args_ok(tokens, _GENERIC_DENIED_LONG_OPTS, _GENERIC_DENIED_SHORT_OPTS)
 
 
 def _tool_for_prefix(prefix: str) -> str | None:
-    """접두사의 마지막 토큰으로 도구 종류 추론 (`python -m pytest` → pytest)."""
-    parts = prefix.split()
-    if parts and parts[-1] in ("pytest", "ruff", "mypy"):
-        return parts[-1]
+    """접두사 안의 첫 번째 인식 도구 토큰으로 도구 종류 추론.
+
+    마지막 토큰 기준이면 `mypy --no-incremental` 같은 env 확장 접두사가
+    도구를 미등록(None)으로 오인해, LLM이 제어하는 인자가 mypy/pytest
+    전용 allowlist 대신 incomplete generic denylist로 검증된다
+    (`--install-types`, `--html-report`, `--pyargs` 등 우회)."""
+    for tok in prefix.split():
+        if tok in ("pytest", "ruff", "mypy"):
+            return tok
     return None
 
 
@@ -289,7 +386,7 @@ def _is_allowed_test_command(command: str) -> bool:
     prefix, rest = _match_test_prefix(tokens)
     if prefix is None:
         return False
-    return _validate_tool_args(_tool_for_prefix(prefix), rest)
+    return _validate_tool_args(_tool_for_prefix(prefix), rest, prefix)
 
 
 # read_file 시크릿/자격증명 경로 차단 — repo root 하위라도 읽기를 거부한다.

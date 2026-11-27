@@ -54,6 +54,11 @@ class _PGConn:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._reconnect_lock = threading.Lock()
+        # psycopg Connection 하나를 모든 스레드가 공유한다 — 일반 읽기
+        # execute()도 tx()와 같은 락으로 직렬화해야, tx 도중 다른 스레드의
+        # 문장이 열린 트랜잭션에 끼어들어 미커밋 읽기/abort 전파가 일어나지
+        # 않는다. RLock — tx 보유 중 같은 스레드의 execute 재진입 허용.
+        self._lock = threading.RLock()
         # 중첩 tx()는 psycopg가 savepoint로 처리한다 — 단일 슬롯이면 안쪽
         # __exit__가 바깥 트랜잭션까지 닫은 것으로 오인하므로 스택으로 둔다.
         self._txs: list[Any] = []
@@ -63,6 +68,8 @@ class _PGConn:
         self._c = psycopg.connect(self._dsn, autocommit=True, row_factory=dict_row)
 
     def _reconnect(self) -> None:
+        # 호출자는 반드시 self._lock을 잡고 있어야 한다 — 열린 tx가 있으면
+        # 커넥션 교체가 바깥 트랜잭션을 파괴하므로 __enter__에서 걸러진다.
         with self._reconnect_lock:
             try:
                 self._c.close()
@@ -71,33 +78,52 @@ class _PGConn:
             self._connect()
 
     def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Any:
-        try:
-            return self._c.execute(_pg_translate(sql), params)
-        except psycopg.OperationalError:
-            # 트랜잭션 안에서는 재시도하지 않는다 — 새 autocommit 연결로 같은
-            # 문장을 다시 실행하면 부분 커밋/중복 쓰기가 생긴다. 예외를 올려
-            # tx 블록 전체가 실패하게 하고 호출자가 블록 단위로 재시도한다.
-            if self._txs:
-                raise
-            self._reconnect()
-            return self._c.execute(_pg_translate(sql), params)
+        # 락을 execute 단위로만 잡으면 tx() 블록 도중 다른 스레드의 읽기가
+        # 끼어들 수 있으므로, __enter__가 잡은 락을 __exit__까지 보유하는
+        # 구조와 결합해 커넥션 접근 전체를 직렬화한다.
+        with self._lock:
+            try:
+                return self._c.execute(_pg_translate(sql), params)
+            except psycopg.OperationalError:
+                # 트랜잭션 안에서는 재시도하지 않는다 — 새 autocommit 연결로
+                # 같은 문장을 다시 실행하면 부분 커밋/중복 쓰기가 생긴다.
+                # 예외를 올려 tx 블록 전체가 실패하게 하고 호출자가 블록
+                # 단위로 재시도한다.
+                if self._txs:
+                    raise
+                self._reconnect()
+                return self._c.execute(_pg_translate(sql), params)
 
     def __enter__(self) -> _PGConn:
-        tx = self._c.transaction()
+        self._lock.acquire()
         try:
-            tx.__enter__()
-        except psycopg.OperationalError:
-            self._reconnect()
             tx = self._c.transaction()
-            tx.__enter__()
-        # __enter__가 성공한 트랜잭션만 스택에 올린다 — 실패 시 잔여 상태가
-        # 남아 이후 execute()의 재접속 재시도가 영구 차단되는 것을 막는다.
-        self._txs.append(tx)
+            try:
+                tx.__enter__()
+            except psycopg.OperationalError:
+                # 중첩 tx(바깥 트랜잭션 진행 중)에서는 재접속 금지 — self._c를
+                # 새 커넥션으로 바꾸면 self._txs에 남은 바깥 tx가 죽은 커넥션을
+                # 가리켜 바깥 트랜잭션의 원자성이 깨진다.
+                if self._txs:
+                    raise
+                self._reconnect()
+                tx = self._c.transaction()
+                tx.__enter__()
+            # __enter__가 성공한 트랜잭션만 스택에 올린다 — 실패 시 잔여 상태가
+            # 남아 이후 execute()의 재접속 재시도가 영구 차단되는 것을 막는다.
+            self._txs.append(tx)
+        except BaseException:
+            self._lock.release()
+            raise
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
-        tx = self._txs.pop()
-        return tx.__exit__(exc_type, exc, tb)
+        try:
+            tx = self._txs.pop()
+            return tx.__exit__(exc_type, exc, tb)
+        finally:
+            self._lock.release()
 
     def close(self) -> None:
-        self._c.close()
+        with self._lock:
+            self._c.close()

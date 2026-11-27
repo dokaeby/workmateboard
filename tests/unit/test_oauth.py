@@ -115,16 +115,16 @@ def test_google_callback_existing_user_no_duplicate(clean_oauth_env):
 
 
 def test_google_callback_password_account_link_refused(clean_oauth_env):
-    """Pre-hijacking 방지: 비밀번호 계정에는 Google sub 자동 연결 거부.
+    """Pre-hijacking 방지: 인증된 비밀번호 계정에는 Google sub 자동 연결 거부.
 
     공격자가 피해자 이메일로 비밀번호 가입을 선점해두면 피해자의 Google
-    로그인이 공격자 계정에 연결되어 탈취될 수 있다 — password_hash가 있는
-    계정은 명시적 연결 플로우 전까지 google_account_conflict로 거부."""
+    로그인이 공격자 계정에 연결되어 탈취될 수 있다 — 인증 완료된
+    password_hash 계정은 명시적 연결 플로우 전까지 google_account_conflict로 거부."""
     clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
     clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "sec")
     _mock_google(clean_oauth_env, sub="gsub-evil", email="victim@example.com")
     client, store = _client()
-    store.create_user("victim@example.com", "scrypt$hash", "Victim")
+    store.create_user("victim@example.com", "scrypt$hash", "Victim", email_verified=True)
     client.cookies.set("jobmate_oauth_state", "state")
     r = client.get("/api/v1/auth/google/callback?code=c&state=state", follow_redirects=False)
     assert r.status_code == 302
@@ -133,6 +133,31 @@ def test_google_callback_password_account_link_refused(clean_oauth_env):
     user = store.get_user_by_email("victim@example.com")
     assert user["google_sub"] in ("", None)  # sub 미연결
     # 별도 계정도 생성되지 않음
+    assert len(store.list_users()) == 1
+
+
+def test_google_callback_unverified_account_claimed(clean_oauth_env):
+    """미인증 비밀번호 계정은 Google 소유권 증명으로 클레임 — 사전가입 DoS 방지.
+
+    공격자가 피해자 이메일로 미인증 비밀번호 가입을 심어둬도, 피해자의
+    Google 로그인(email_verified=True)이 오면 공격자 해시를 비우고 Google
+    sub를 연결한다 — 그렇지 않으면 cred[1] 존재만으로 영구 차단된다."""
+    clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
+    clean_oauth_env.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "sec")
+    _mock_google(clean_oauth_env, sub="gsub-victim", email="victim@example.com")
+    client, store = _client()
+    store.create_user("victim@example.com", "scrypt$attacker-hash", "Victim")
+    client.cookies.set("jobmate_oauth_state", "state")
+    r = client.get("/api/v1/auth/google/callback?code=c&state=state", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"].endswith("/")
+    user = store.get_user_by_email("victim@example.com")
+    assert user is not None
+    assert user["google_sub"] == "gsub-victim"
+    assert user["email_verified"] is True
+    # 공격자가 심어둔 비밀번호 해시가 비워졌는지 확인
+    cred = store.get_user_password_hash("victim@example.com")
+    assert cred is not None and cred[1] == ""
     assert len(store.list_users()) == 1
 
 

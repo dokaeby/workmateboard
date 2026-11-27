@@ -318,20 +318,16 @@ def register(app: FastAPI, ctx: Any) -> None:
         cron-job.org 등 외부 스케줄러가 30분마다 POST로 호출.
 
         인증: cron secret Bearer 또는 lead 이상(세션/API 키). 둘 다 없으면 거부.
-        _cron_authorized 단독으로는 secret 미설정+allowed_emails만 있는
-        환경에서 인증이 무력화되므로 lead 검사를 병행한다."""
+        lead 세션만으로도 통과 — CRON_SECRET 미설정+API 키 없는 배포에서
+        UI 로그인 lead가 cron을 호출할 수 있어야 한다."""
         cron_secret = os.environ.get("CRON_SECRET") or os.environ.get("JOBMATE_CRON_SECRET", "")
         secret_ok = bool(cron_secret) and hmac.compare_digest(
             request.headers.get("authorization", "").encode(),
             f"Bearer {cron_secret}".encode(),
         )
-        if not secret_ok:
-            if _lead_user(request) is None:
-                logger.warning("email check rejected: lead role or cron secret required")
-                return err(403, "forbidden", "lead role or cron secret required", request)
-            if not _cron_authorized(request):
-                logger.warning("email check rejected: invalid cron secret")
-                return err(401, "unauthorized", "invalid cron secret", request)
+        if not secret_ok and _lead_user(request) is None:
+            logger.warning("email check rejected: lead role or cron secret required")
+            return err(403, "forbidden", "lead role or cron secret required", request)
         if _email_check_rate_limited():
             return err(429, "rate_limited", "email check min interval not reached", request)
         gmail = adapters.get("gmail")
@@ -392,7 +388,12 @@ def register(app: FastAPI, ctx: Any) -> None:
         )
 
     @app.get("/api/v1/email/summaries")
-    def email_summaries(limit: int = 30) -> dict[str, Any]:
+    def email_summaries(request: Request, limit: int = 30) -> Any:
+        # 복호화된 메일 제목·발신자·요약을 반환 — messages source_text와 같은
+        # 민감도로 lead 이상만 허용한다(member는 403).
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
         cards = store.list_email_summaries("gmail", min(max(limit, 1), 100))
         for c in cards:
             c["url"] = f"https://mail.google.com/mail/u/0/#all/{c['source_id']}"

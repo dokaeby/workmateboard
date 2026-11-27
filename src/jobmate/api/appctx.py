@@ -1000,11 +1000,28 @@ def build_app_context(
             return True
         raw = os.environ.get("JOBMATE_PUBLIC_HOSTS", "")
         allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
-        if not allowed:
-            return True
         host = (request.url.hostname or "").lower()
-        # "example.com:8443" 형태 방어 — hostname은 이미 포트 제외
-        return host in allowed
+        if allowed:
+            # 명시 설정이 있으면 강제 — 설정한 호스트 외 요청은 피싱 링크 위험.
+            # "example.com:8443" 형태 방어 — hostname은 이미 포트 제외
+            return host in allowed
+        # 허용 목록 미설정: Vercel은 엣지가 Host 기반 라우팅을 검증한다 —
+        # 프로젝트에 할당되지 않은 Host는 함수까지 도달하지 않으므로
+        # 커스텀 도메인을 포함해 요청 Host를 신뢰할 수 있다.
+        # (VERCEL_URL/*.vercel.app만 허용하면 커스텀 도메인 배포에서 인증
+        # 메일이 전부 차단돼 가입자가 영구 로그인 불가가 된다.)
+        if os.environ.get("VERCEL"):
+            return True
+        # 미설정 시 기존 계약대로 허용 — 단 비로컬 프로덕션 기동에서는
+        # Host 헤더 인젝션 위험이 있으므로 경고를 남긴다.
+        from ..security import production_mode
+
+        if production_mode():
+            logger.warning(
+                "JOBMATE_PUBLIC_BASE_URL/JOBMATE_PUBLIC_HOSTS 미설정 — "
+                "Host 헤더 인젝션으로 인증 링크가 공격자 도메인을 가리킬 수 있습니다"
+            )
+        return True
 
     def _send_verification(request: Request, email: str) -> bool:
         """인증 토큰 발급 + 메일 발송. 발송 실패해도 예외 없이 bool 반환."""

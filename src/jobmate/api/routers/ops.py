@@ -404,19 +404,21 @@ def register(app: FastAPI, ctx: Any) -> None:
         old_role = _normalize_role(target.get("role"))
         if new_role == old_role:
             return JSONResponse(content={"id": user_id, "role": new_role, "changed": False})
-        # 마지막 admin 강등 방지 — 저장된 role 기준 admin 수가 1명뿐이면 차단
-        if old_role == "admin" and new_role != "admin":
-            admin_count = sum(
-                1 for u in store.list_users() if _normalize_role(u.get("role")) == "admin"
-            )
-            if admin_count <= 1:
-                return err(
-                    409,
-                    "last_admin",
-                    "cannot demote the last admin",
-                    request,
+        # 마지막 admin 강등 방지 — admin 수 확인과 role 변경을 store 락 안에서
+        # 원자적으로 묶어 동시 요청이 둘 다 통과하는 TOCTOU를 막는다.
+        with store.exclusive():
+            if old_role == "admin" and new_role != "admin":
+                admin_count = sum(
+                    1 for u in store.list_users() if _normalize_role(u.get("role")) == "admin"
                 )
-        store.set_user_role(user_id, new_role)
+                if admin_count <= 1:
+                    return err(
+                        409,
+                        "last_admin",
+                        "cannot demote the last admin",
+                        request,
+                    )
+            store.set_user_role(user_id, new_role)
         detail = {
             "email": target.get("email", ""),
             "old_role": old_role,
