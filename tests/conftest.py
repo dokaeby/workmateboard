@@ -40,3 +40,9 @@ for _name in list(os.environ):
         continue  # configure_langsmith가 setdefault로 설정하는 파생 변수
     if _name.startswith(_SECRET_PREFIXES) or _name.endswith(_SECRET_SUFFIXES):
         os.environ[_name] = ""
+
+# Google 토큰 "경로"는 비밀 패턴에 걸리지 않아 .env의 실제 토큰 파일을 그대로 쓴다 —
+# 테스트가 진짜 Gmail/Calendar API를 호출해 실제 메일이 발송되는 것을 막기 위해
+# 존재하지 않는 경로로 고정한다(_token_path_for는 is_file() 실패 시 어댑터 생략).
+for _name in ("JOBMATE_GMAIL_TOKEN_PATH", "JOBMATE_CALENDAR_TOKEN_PATH"):
+    os.environ[_name] = "/nonexistent/jobmate-test-token.json"

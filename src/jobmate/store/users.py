@@ -247,6 +247,79 @@ class UserStoreMixin:
                 (_iso(_now()), user_id),
             )
 
+    # ---- password_reset_tokens (비밀번호 재설정) ----
+    def create_password_reset(self, user_id: str, email: str, ttl_minutes: int = 30) -> str:
+        """재설정 토큰 발급 — 반환값이 원문(메일 링크용), DB에는 SHA-256 해시만 저장.
+        email_verifications와 동일한 패턴: 기존 미사용 토큰 무효화 + 만료 행 정리."""
+        import hashlib
+        import secrets
+
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = _now()
+        self.delete_expired_password_resets(now)
+        with self.tx() as c:
+            c.execute(
+                "UPDATE password_reset_tokens SET used_at=? WHERE email=? AND used_at IS NULL",
+                (_iso(now), email.lower()),
+            )
+            c.execute(
+                "INSERT INTO password_reset_tokens"
+                "(id,user_id,email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16],
+                    user_id,
+                    email.lower(),
+                    token_hash,
+                    _iso(now + timedelta(minutes=ttl_minutes)),
+                    _iso(now),
+                ),
+            )
+        return token
+
+    def latest_password_reset_at(self, email: str) -> datetime | None:
+        """해당 이메일의 가장 최근 재설정 토큰 발급 시각 — 재발송 rate limit용."""
+        r = self._conn.execute(
+            "SELECT created_at FROM password_reset_tokens WHERE email=?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (email.lower(),),
+        ).fetchone()
+        return _dt(r["created_at"]) if r else None
+
+    def consume_password_reset(self, token_hash: str) -> tuple[str, str] | None:
+        """토큰 원자적 consume — 유효(미사용·미만료)하면 used_at 마킹 후
+        (user_id, email) 반환. consume_email_verification과 동일한 직렬화."""
+        now = _now()
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE password_reset_tokens SET used_at=?"
+                " WHERE token_hash=? AND used_at IS NULL AND expires_at>?",
+                (_iso(now), token_hash, _iso(now)),
+            )
+            if int(getattr(cur, "rowcount", 0) or 0) <= 0:
+                return None
+            r = c.execute(
+                "SELECT user_id, email FROM password_reset_tokens WHERE token_hash=?",
+                (token_hash,),
+            ).fetchone()
+            return (str(r["user_id"]), str(r["email"])) if r else None
+
+    def delete_password_reset(self, token_hash: str) -> None:
+        """재설정 토큰 행 삭제 — 메일 발송 실패 시 throttle 창을 소모하지 않기 위해
+        백그라운드 발송 실패 경로에서 호출한다."""
+        with self.tx() as c:
+            c.execute("DELETE FROM password_reset_tokens WHERE token_hash=?", (token_hash,))
+
+    def delete_expired_password_resets(self, now: datetime | None = None) -> int:
+        """만료/사용된 재설정 토큰 행 삭제 — 누적 방지용."""
+        cutoff = _iso(now or _now())
+        with self.tx() as c:
+            cur = c.execute(
+                "DELETE FROM password_reset_tokens WHERE expires_at < ? OR used_at IS NOT NULL",
+                (cutoff,),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0)
+
     # ---- email_summaries (3줄 요약 카드) ----
     def save_email_summary(
         self,

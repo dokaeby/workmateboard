@@ -68,37 +68,38 @@ def _verification_body(verify_url: str) -> tuple[str, str]:
     )
 
 
-def send_verification_email(to: str, verify_url: str, gmail: Any | None = None) -> bool:
-    """이메일 인증 링크 발송.
+def _reset_body(reset_url: str) -> tuple[str, str]:
+    return (
+        "[jobMate] 비밀번호 재설정",
+        "비밀번호 재설정을 요청하셨습니다. 아래 링크에서 새 비밀번호를 설정해 주세요.\n\n"
+        f"{reset_url}\n\n"
+        "링크는 30분 동안 유효합니다.\n"
+        "본인이 요청하지 않았다면 이 메일은 무시하셔도 됩니다 — 비밀번호는 변경되지 않습니다.\n",
+    )
 
-    입력: to=수신 이메일, verify_url=인증 링크 전체 URL,
-          gmail=send_message(to, subject, body) 지원 객체(선택)
-    출력: 발송 성공 True / 미설정·실패 False (예외를 밖으로 던지지 않음 —
-          가입 플로우가 메일 실패로 깨지지 않도록).
 
-    우선순위: JOBMATE_SMTP_HOST 설정 시 SMTP → 아니면 gmail 백엔드
-    (Gmail API gmail.send scope — 별도 SMTP 계정 불필요).
-    """
-    subject, body = _verification_body(verify_url)
-
+def _deliver(to: str, subject: str, body: str, gmail: Any | None, kind: str, link: str) -> bool:
+    """SMTP→Gmail API 폴백 발송 공통부. kind는 로그 라벨, link는 로컬 개발용
+    마스킹 URL(_log_safe_url 적용)."""
     if not smtp_configured():
         if gmail is not None:
             try:
                 gmail.send_message(to, subject, body)
             except Exception as e:
-                logger.warning("gmail verification email send failed: %s", str(e)[:200])
+                logger.warning("gmail %s email send failed: %s", kind, str(e)[:200])
                 return False
-            logger.info("verification email sent via gmail api")
+            logger.info("%s email sent via gmail api", kind)
             return True
         if os.environ.get("VERCEL"):
-            logger.warning("no mail backend configured: verification email cannot be sent")
+            logger.warning("no mail backend configured: %s email cannot be sent", kind)
         else:
-            # 로컬 개발 편의 — 인증 링크를 로그에서 바로 확인할 수 있게 info로 출력.
+            # 로컬 개발 편의 — 링크를 로그에서 바로 확인할 수 있게 info로 출력.
             # 토큰 등 민감 쿼리 값은 마스킹한다(로그에 토큰 원문 금지 원칙).
             logger.info(
-                "mail backend not configured; verification url for %s: %s",
+                "mail backend not configured; %s url for %s: %s",
+                kind,
                 to,
-                _log_safe_url(verify_url),
+                _log_safe_url(link),
             )
         return False
 
@@ -113,13 +114,13 @@ def send_verification_email(to: str, verify_url: str, gmail: Any | None = None) 
     sender = _env("JOBMATE_SMTP_FROM") or user or "jobmate@localhost"
     tls = _env("JOBMATE_SMTP_TLS", "starttls").lower()
 
-    msg = EmailMessage()
-    msg["From"] = sender
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg.set_content(body)
-
     try:
+        msg = EmailMessage()
+        msg["From"] = sender
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.set_content(body)
+
         context = ssl.create_default_context()
         if tls == "ssl":
             with smtplib.SMTP_SSL(host, port, timeout=15, context=context) as smtp:
@@ -135,7 +136,29 @@ def send_verification_email(to: str, verify_url: str, gmail: Any | None = None) 
                 smtp.send_message(msg)
     except Exception as e:
         # SMTP 응답에 서버 정보가 포함될 수 있으므로 길이 제한 후 기록
-        logger.warning("verification email send failed: %s", str(e)[:200])
+        logger.warning("%s email send failed: %s", kind, str(e)[:200])
         return False
-    logger.info("verification email sent")
+    logger.info("%s email sent", kind)
     return True
+
+
+def send_verification_email(to: str, verify_url: str, gmail: Any | None = None) -> bool:
+    """이메일 인증 링크 발송.
+
+    입력: to=수신 이메일, verify_url=인증 링크 전체 URL,
+          gmail=send_message(to, subject, body) 지원 객체(선택)
+    출력: 발송 성공 True / 미설정·실패 False (예외를 밖으로 던지지 않음 —
+          가입 플로우가 메일 실패로 깨지지 않도록).
+
+    우선순위: JOBMATE_SMTP_HOST 설정 시 SMTP → 아니면 gmail 백엔드
+    (Gmail API gmail.send scope — 별도 SMTP 계정 불필요).
+    """
+    subject, body = _verification_body(verify_url)
+    return _deliver(to, subject, body, gmail, "verification", verify_url)
+
+
+def send_password_reset_email(to: str, reset_url: str, gmail: Any | None = None) -> bool:
+    """비밀번호 재설정 링크 발송 — send_verification_email과 동일한
+    SMTP→Gmail API 폴백 구조."""
+    subject, body = _reset_body(reset_url)
+    return _deliver(to, subject, body, gmail, "password-reset", reset_url)

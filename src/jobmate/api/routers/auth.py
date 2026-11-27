@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ...security import (
@@ -53,6 +53,12 @@ def register(app: FastAPI, ctx: Any) -> None:
     _send_verification = ctx._send_verification
     _session_user = ctx._session_user
     _set_session = ctx._set_session
+    _RESET_RESEND_MIN_INTERVAL = ctx._RESET_RESEND_MIN_INTERVAL
+    _reset_page_html = ctx._reset_page_html
+    _reset_record = ctx._reset_record
+    _reset_throttled = ctx._reset_throttled
+    _deliver_password_reset = ctx._deliver_password_reset
+    _issue_password_reset = ctx._issue_password_reset
     _signup_record = ctx._signup_record
     _signup_throttled = ctx._signup_throttled
     err = ctx.err
@@ -232,6 +238,95 @@ def register(app: FastAPI, ctx: Any) -> None:
         resp = HTMLResponse(_VERIFY_OK_HTML)
         _set_session(resp, request, user["id"])
         return resp
+
+    @app.post("/api/v1/auth/password/forgot")
+    def auth_password_forgot(
+        body: dict[str, Any], request: Request, background_tasks: BackgroundTasks
+    ) -> JSONResponse:
+        """비밀번호 재설정 링크 발송 — 계정 열거 방지를 위해 등록 여부와 무관하게
+        항상 {"sent": true}를 반환한다(실제 발송은 비밀번호 계정만).
+
+        재발송 throttle도 동일 응답으로 처리한다 — 429를 반환하면 두 번째 요청의
+        상태 코드 차이로 계정 존재 여부가 노출된다. 토큰 생성(고속 DB)만 동기
+        수행하고 메일 발송(네트워크 I/O)은 백그라운드로 보내 응답 시간을
+        균일하게 유지한다."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
+        ip = request.client.host if request.client else "-"
+        if _reset_throttled(ip):
+            store.audit("", "-", "auth_password_reset_throttled", "", {})
+            return err(
+                429,
+                "reset_too_soon",
+                "요청이 너무 많습니다. 잠시 후 다시 시도하세요",
+                request,
+            )
+        _reset_record(ip)
+        email = str(body.get("email", "")).strip().lower()
+        if not _EMAIL_RE.match(email):
+            return err(400, "invalid_email", "이메일 형식이 올바르지 않습니다", request)
+        row = store.get_user_password_hash(email)
+        if row is not None and row[1]:  # 비밀번호 계정만 — Google-only는 발송 안 함
+            user = store.get_user_by_id(row[0])
+            last = store.latest_password_reset_at(email)
+            if (
+                user is not None
+                and last is not None
+                and (datetime.now(UTC) - last).total_seconds() < _RESET_RESEND_MIN_INTERVAL
+            ):
+                store.audit("", email, "auth_password_reset_throttled", row[0], {})
+            elif user is not None:
+                issued = _issue_password_reset(request, user)
+                if issued is not None:
+                    uemail, reset_url, token_hash = issued
+                    background_tasks.add_task(
+                        _deliver_password_reset, uemail, reset_url, token_hash, row[0]
+                    )
+        return JSONResponse({"sent": True})
+
+    @app.get("/api/v1/auth/password/reset")
+    def auth_password_reset_page(request: Request, token: str = "") -> Any:
+        """재설정 링크 랜딩 — 폼만 표시하고 토큰은 소비하지 않는다(소비는 POST)."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
+        return HTMLResponse(_reset_page_html(token))
+
+    @app.post("/api/v1/auth/password/reset")
+    def auth_password_reset(body: dict[str, Any], request: Request) -> JSONResponse:
+        """토큰 소비 + 비밀번호 교체 + 전체 세션 폐기.
+
+        consume은 UPDATE ... WHERE used_at IS NULL AND expires_at>? 의 원자적
+        rowcount 판정 — 동시 요청이 같은 토큰을 둘 다 유효하다고 보지 않는다.
+        비밀번호 검증은 consume보다 먼저 — 형식 오류가 토큰을 태우지 않게 한다."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
+        token = str(body.get("token", ""))
+        new_password = str(body.get("new_password", ""))
+        if len(new_password) < 8:
+            return err(400, "weak_password", "새 비밀번호는 8자 이상이어야 합니다", request)
+        token_hash = hash_token(token) if token else ""
+        consumed = store.consume_password_reset(token_hash) if token_hash else None
+        if consumed is None:
+            store.audit("", "-", "auth_password_reset_failed", "", {"reason": "invalid_or_expired"})
+            logger.info("password reset failed: invalid_or_expired token")
+            return err(
+                400,
+                "invalid_or_expired_token",
+                "재설정 링크가 만료되었거나 이미 사용되었습니다",
+                request,
+            )
+        user_id, email = consumed
+        store.set_user_password(user_id, hash_password(new_password))
+        revoked = store.revoke_user_sessions(user_id)
+        store.audit(
+            "",
+            email,
+            "auth_password_reset",
+            user_id,
+            {"sessions_revoked": revoked},
+        )
+        logger.info("password reset: user=%s sessions_revoked=%d", user_id, revoked)
+        return JSONResponse({"status": "password_reset"})
 
     @app.post("/api/v1/auth/logout")
     def auth_logout(request: Request) -> Any:

@@ -975,6 +975,25 @@ def build_app_context(
         if len(_signup_attempts) > _RATE_MAX_KEYS:
             _prune_fail_bucket(_signup_attempts, _SIGNUP_WINDOW)
 
+    # password reset 요청도 별도 IP throttle — 메일 발송 폭주/토큰 생성 남용 방지
+    _reset_attempts: dict[str, list[float]] = {}
+    _RESET_WINDOW = 600.0
+    _RESET_MAX_ATTEMPTS = 10
+
+    def _reset_throttled(ip: str) -> bool:
+        now = time.time()
+        attempts = [t for t in _reset_attempts.get(ip, []) if now - t < _RESET_WINDOW]
+        if attempts:
+            _reset_attempts[ip] = attempts
+        else:
+            _reset_attempts.pop(ip, None)
+        return len(attempts) >= _RESET_MAX_ATTEMPTS
+
+    def _reset_record(ip: str) -> None:
+        _reset_attempts.setdefault(ip, []).append(time.time())
+        if len(_reset_attempts) > _RATE_MAX_KEYS:
+            _prune_fail_bucket(_reset_attempts, _RESET_WINDOW)
+
     # ---- 이메일 인증 (비밀번호 가입) ----
     _VERIFY_RESEND_MIN_INTERVAL = 600.0  # 같은 이메일 재발송 10분에 1회
 
@@ -1042,6 +1061,55 @@ def build_app_context(
             logger.warning("verification email setup failed: %s", str(e)[:200])
             return False
 
+    # ---- 비밀번호 재설정 ----
+    _RESET_RESEND_MIN_INTERVAL = 600.0  # 같은 이메일 재발송 10분에 1회
+
+    def _reset_url(request: Request, token: str) -> str:
+        base = (settings.public_base_url or str(request.base_url)).rstrip("/")
+        return f"{base}/api/v1/auth/password/reset?token={token}"
+
+    def _issue_password_reset(
+        request: Request, user: dict[str, Any]
+    ) -> tuple[str, str, str] | None:
+        """재설정 토큰 발급 + 메일 URL 생성 — 요청 경로에서 동기 실행(고속 DB 작업만).
+        실제 메일 발송(네트워크 I/O)은 _deliver_password_reset이 백그라운드로 수행해
+        응답 시간을 균일하게 유지한다(계정 열거 타이밍 오라클 완화).
+        반환: (email, reset_url, token_hash) 또는 실패 시 None."""
+        email = str(user.get("email", ""))
+        if not _public_host_allowed(request):
+            logger.warning("password reset email refused: host not allowed")
+            try:
+                store.audit("", email, "auth_password_reset_send_blocked", "", {})
+            except Exception:
+                logger.debug("reset-send-blocked audit failed", exc_info=True)
+            return None
+        try:
+            token = store.create_password_reset(user["id"], email)
+            return email, _reset_url(request, token), hash_token(token)
+        except Exception as e:
+            logger.warning("password reset setup failed: %s", str(e)[:200])
+            return None
+
+    def _deliver_password_reset(email: str, reset_url: str, token_hash: str, user_id: str) -> bool:
+        """백그라운드 메일 발송 — 실패 시 토큰 행을 삭제해 재시도가
+        resend throttle에 막히지 않게 한다. 예외를 밖으로 던지지 않는다."""
+        try:
+            sent = mailer.send_password_reset_email(email, reset_url, gmail=adapters.get("gmail"))
+        except Exception as e:
+            logger.warning("password reset email send failed: %s", str(e)[:200])
+            sent = False
+        if not sent:
+            try:
+                store.delete_password_reset(token_hash)
+            except Exception:
+                logger.debug("password reset token cleanup failed", exc_info=True)
+        try:
+            store.audit("", email, "auth_password_reset_request", user_id, {"sent": sent})
+        except Exception:
+            logger.debug("password reset audit failed", exc_info=True)
+        logger.info("password reset mail delivered: user=%s sent=%s", user_id, sent)
+        return sent
+
     _VERIFY_OK_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <title>이메일 인증 완료</title></head>
 <body style="font-family:sans-serif;display:flex;align-items:center;
@@ -1062,6 +1130,60 @@ padding:32px;max-width:360px;text-align:center">
 <p style="color:#555;margin:0">링크가 만료되었거나 이미 사용되었습니다.
 로그인 화면에서 인증 메일을 다시 요청하세요.</p>
 </div></body></html>"""
+
+    def _reset_page_html(token: str) -> str:
+        """비밀번호 재설정 폼 — GET 링크에서 토큰을 소비하지 않고 표시만 한다.
+        실제 소비는 POST /api/v1/auth/password/reset에서 원자적으로 일어난다."""
+        import html as _html
+
+        t = _html.escape(token, quote=True)
+        return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>비밀번호 재설정</title></head>
+<body style="font-family:sans-serif;display:flex;align-items:center;
+justify-content:center;min-height:100vh;margin:0;background:#f6f7f9">
+<div style="background:#fff;border:1px solid #e3e6ea;border-radius:12px;
+padding:32px;max-width:360px">
+<h2 style="margin:0 0 16px;text-align:center">비밀번호 재설정</h2>
+<form id="f" style="display:flex;flex-direction:column;gap:12px">
+<input id="p1" type="password" required minlength="8" autocomplete="new-password"
+ placeholder="새 비밀번호 (8자 이상)" style="padding:10px;border:1px solid #ccc;
+border-radius:8px;font-size:14px">
+<input id="p2" type="password" required minlength="8" autocomplete="new-password"
+ placeholder="새 비밀번호 확인" style="padding:10px;border:1px solid #ccc;
+border-radius:8px;font-size:14px">
+<button type="submit" style="padding:10px;border:0;border-radius:8px;
+background:#2563eb;color:#fff;font-size:14px;cursor:pointer">재설정</button>
+</form>
+<p id="msg" style="color:#555;font-size:13px;text-align:center;margin:12px 0 0"></p>
+</div>
+<script>
+const TOKEN = {t!r};
+document.getElementById('f').addEventListener('submit', async (e) => {{
+  e.preventDefault();
+  const p1 = document.getElementById('p1').value;
+  const p2 = document.getElementById('p2').value;
+  const msg = document.getElementById('msg');
+  if (p1 !== p2) {{
+    msg.textContent = '비밀번호가 서로 다릅니다.'; msg.style.color = '#b91c1c'; return;
+  }}
+  msg.textContent = '처리 중…'; msg.style.color = '#555';
+  try {{
+    const r = await fetch('/api/v1/auth/password/reset', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{token: TOKEN, new_password: p1}})
+    }});
+    if (r.ok) {{
+      msg.textContent = '비밀번호가 변경되었습니다. 로그인 화면에서 다시 로그인하세요.';
+      msg.style.color = '#15803d';
+    }} else {{
+      msg.textContent = '재설정에 실패했습니다. 링크가 만료되었을 수 있습니다.';
+      msg.style.color = '#b91c1c';
+    }}
+  }} catch {{
+    msg.textContent = '네트워크 오류가 발생했습니다.'; msg.style.color = '#b91c1c';
+  }}
+}});
+</script></body></html>"""
 
     _dummy_pw_hash: dict[str, str] = {}
 

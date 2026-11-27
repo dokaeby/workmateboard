@@ -54,6 +54,16 @@ class AdminStoreMixin:
             counts["llm_usage"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute("DELETE FROM auth_sessions WHERE expires_at < ?", (now_iso,))
             counts["auth_sessions"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM password_reset_tokens WHERE expires_at < ? OR used_at IS NOT NULL",
+                (now_iso,),
+            )
+            counts["password_reset_tokens"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM email_verifications WHERE expires_at < ? OR used_at IS NOT NULL",
+                (now_iso,),
+            )
+            counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute("DELETE FROM agent_session_events WHERE created_at < ?", (d30,))
             counts["agent_session_events"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute(
@@ -190,6 +200,14 @@ class AdminStoreMixin:
             cur = c.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
             counts["auth_sessions"] = int(getattr(cur, "rowcount", 0) or 0)
             if email:
+                cur = c.execute(
+                    "DELETE FROM password_reset_tokens WHERE user_id=? OR lower(email)=?",
+                    (user_id, email),
+                )
+            else:
+                cur = c.execute("DELETE FROM password_reset_tokens WHERE user_id=?", (user_id,))
+            counts["password_reset_tokens"] = int(getattr(cur, "rowcount", 0) or 0)
+            if email:
                 cur = c.execute("DELETE FROM email_verifications WHERE email=?", (email,))
                 counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
                 c.execute(
@@ -231,6 +249,11 @@ class AdminStoreMixin:
                 " WHERE email=? ORDER BY created_at DESC",
                 (email,),
             ).fetchall()
+            reset_rows = c.execute(
+                "SELECT email,expires_at,used_at,created_at FROM password_reset_tokens"
+                " WHERE email=? ORDER BY created_at DESC",
+                (email,),
+            ).fetchall()
         safe_user = {k: v for k, v in user.items() if k != "password_hash"}
         return {
             "exported_at": _iso(_now()),
@@ -249,6 +272,7 @@ class AdminStoreMixin:
             ],
             "run_comments": [dict(r) for r in comment_rows],
             "email_verifications": [dict(r) for r in verify_rows],
+            "password_reset_tokens": [dict(r) for r in reset_rows],
         }
 
     def list_audit(self, limit: int = 200) -> list[dict[str, Any]]:
