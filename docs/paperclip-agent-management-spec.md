@@ -17,7 +17,7 @@ runner 또는 기존 workflow 실행 경로가 실제 작업을 수행한다.
 LangGraph, 단일 파일 대시보드 HTML/JS, Playwright, pytest, Ruff, mypy.
 
 **Spec:** 이 문서 자체가 승인된 기능 범위와 단계별 실행 프롬프트다. 함께 읽을 필수 문서는
-`docs/harness/05_내부기능_통합.md`, `docs/harness/06_호스팅_필수_로깅.md`,
+`docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A`, `docs/jobMate_v1.0.1/17_운영_보안_가이드_v1.0.1.md 부록 A`,
 `docs/superpowers/specs/2026-11-21-agent-office-design.md`,
 `docs/superpowers/specs/2026-11-22-agent-sessions-design.md`다.
 
@@ -33,7 +33,7 @@ LangGraph, 단일 파일 대시보드 HTML/JS, Playwright, pytest, Ruff, mypy.
 - 외부 이벤트 및 재시도 가능한 쓰기는 idempotency key와 데이터베이스 UNIQUE 제약으로 중복을 막는다.
 - API 키, OAuth 토큰, provider credential, 이메일/사용자 메시지 원문, push endpoint 원문,
 전체 프롬프트·transcript를 로그에 남기지 않는다.
-- 새로운 외부 호출·비동기 실행·재시도·watchdog에는 `docs/harness/06_호스팅_필수_로깅.md` 기준의
+- 새로운 외부 호출·비동기 실행·재시도·watchdog에는 `docs/jobMate_v1.0.1/17_운영_보안_가이드_v1.0.1.md 부록 A` 기준의
 INFO/WARNING/ERROR 로그를 추가한다.
 - 브라우저에는 Paperclip/provider/runner API 키를 전달하지 않는다. 머신 쓰기 API는 세션 쿠키만으로
 허용하지 않는다.
@@ -79,8 +79,8 @@ ruff format --check src/jobmate tests`, `uv run mypy src/jobmate`다.
 작업을 시작하기 전에 다음을 반드시 수행하라.
 
 1. 루트 AGENTS.md와 다음 문서를 끝까지 읽어라.
-   - docs/harness/05_내부기능_통합.md
-   - docs/harness/06_호스팅_필수_로깅.md
+   - docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A
+   - docs/jobMate_v1.0.1/17_운영_보안_가이드_v1.0.1.md 부록 A
    - docs/superpowers/specs/2026-11-21-agent-office-design.md
    - docs/superpowers/specs/2026-11-22-agent-sessions-design.md
 2. git status, 현재 브랜치, 최근 커밋을 확인하라. 사용자 변경을 덮어쓰거나 정리하지 마라.
@@ -378,7 +378,7 @@ UI:
 
 ### H. 문서와 검증
 
-`docs/harness/05_내부기능_통합.md`에 모델, API, 상태 전이, Vercel 제한, 운영 방법을 추가하라.
+`docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A`에 모델, API, 상태 전이, Vercel 제한, 운영 방법을 추가하라.
 `06_호스팅_필수_로깅.md`에 heartbeat/wake/task/run 연동 로그를 추가하라.
 
 검증 순서:

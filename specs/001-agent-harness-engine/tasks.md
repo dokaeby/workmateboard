@@ -92,10 +92,10 @@
 
 ## Phase 6: 문서 + 적대적 리뷰 + 검증
 
-- [ ] T041 docs/harness/01·02 갱신 — 엔진 중심 설계, dev_review+보안 단계, 모델 라우팅, FastAPI 임시/Django 전환, UI 토큰 명시
-- [ ] T042 docs/harness/03_테스트케이스.md — unit/integration/api/security/idempotency/recovery 상세 케이스
-- [ ] T043 docs/harness/05_화면설계_가이드.md — ui-ux-pro-max 토큰·컴포넌트·접근성 기준
-- [ ] T044 적대적 리뷰 수행(gstack 방식: 스페셜리스트 렌즈+레드팀, severity/confidence/evidence) → docs/harness/04_적대적_코드리뷰.md
+- [ ] T041 docs/jobMate_v1.0.1/01·02 갱신 — 엔진 중심 설계, dev_review+보안 단계, 모델 라우팅, FastAPI 임시/Django 전환, UI 토큰 명시
+- [ ] T042 docs/jobMate_v1.0.1/08_단위_test_cases_v1.0.1.md 부록 A — unit/integration/api/security/idempotency/recovery 상세 케이스
+- [ ] T043 docs/jobMate_v1.0.1/18_화면설계서_v1.0.1.md 부록 A — ui-ux-pro-max 토큰·컴포넌트·접근성 기준
+- [ ] T044 적대적 리뷰 수행(gstack 방식: 스페셜리스트 렌즈+레드팀, severity/confidence/evidence) → docs/jobMate_v1.0.1/02_시스템상세설계서_v1.0.1.md 부록 B
 - [ ] T045 리뷰 blocker/major 수정 → 재리뷰(최대 루프)
 - [ ] T046 pytest + ruff + 타입체크 전체 통과 확인, 실패 시 수정
 - [ ] T047 graphify update . (graphify-out 존재 시) + 최종 보고

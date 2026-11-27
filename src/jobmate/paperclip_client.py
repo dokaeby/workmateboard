@@ -12,7 +12,7 @@ agent-management 3차 (paperclip spec E) — Workmateboard는 Paperclip을
   push하는 동기화 루프 1회분. CLI(`jobmate paperclip-bridge`)가 호출한다.
 
 엔드포인트 경로는 spec이 정확한 REST 경로를 정의하지 않아 다음을 가정한다
-(docs/harness/05 §26에 명시):
+(docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A §26에 명시):
   GET /api/companies/{company_id}/agents|tasks|runs|dashboard|cost-summary
 페이지네이션은 `?limit=&cursor=` 파라미터와 응답의 next_cursor/next 계열
 필드를 지원한다. `next`가 절대 URL이면 따라가지 않고 cursor 값만 사용한다

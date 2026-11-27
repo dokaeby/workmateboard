@@ -62,7 +62,7 @@ Spec: `docs/superpowers/specs/2026-11-22-agent-sessions-design.md`
 
 ## T4 — 문서·검증 (본 세션)
 
-- `docs/harness/05_내부기능_통합.md` 엔드포인트/브릿지 사용법 추가.
+- `docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A` 엔드포인트/브릿지 사용법 추가.
 - `.env.example`에 `JOBMATE_URL` 필요시 추가.
 - `uv run pytest` / ruff / mypy / `graphify update .`
 - 커밋은 태스크별, 푸시는 요청 시.

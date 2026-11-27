@@ -463,7 +463,7 @@ def _prevalidate_decision(store: Store, row: dict[str, Any], decision: str) -> N
     완전한 원자성은 아니다 — resume_fn·budget resolve처럼 트랜잭션에
     참여할 수 없는 부수효과는 커밋 후 실행되며 실패 시
     approval_side_effect_error 감사로 보상한다(잔여 비원자성은
-    docs/harness/05에 명시)."""
+    docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A §26에 명시)."""
     if decision != "approve":
         return
     action = str(row.get("action_type") or "")

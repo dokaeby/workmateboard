@@ -1,6 +1,6 @@
 """UI 자동화 테스트 — 실제 uvicorn 서버 + headless Chromium (Playwright).
 
-docs/jobMate_v1.0.0/13·14 의 시나리오 중 현재 구현된 화면 흐름을 커버한다.
+docs/jobMate_v1.0.1/13·14 의 시나리오 중 현재 구현된 화면 흐름을 커버한다.
 LLM/외부 어댑터 없이 빈 DB + fake 어댑터로 결정적으로 동작한다.
 """
 

@@ -14,7 +14,7 @@
 
 - `uv run pytest` 전체 통과, `uv run ruff check src/jobmate tests`, `uv run ruff format --check src/jobmate tests`, `uv run mypy src/jobmate` clean 유지.
 - `tools/executor.py`(ToolExecutor)는 dev_review function stage가 사용 — **삭제 금지**.
-- 비밀값·토큰 로깅 금지 (docs/harness/06).
+- 비밀값·토큰 로깅 금지 (docs/jobMate_v1.0.1/17_운영_보안_가이드_v1.0.1.md 부록 A).
 - stage_runs에는 미시작 stage의 row가 없음 — 뷰에서 pending 처리.
 - `GET /api/v1/runs/{id}`의 stages는 전체 stage_runs(시작순) — 뷰에서 stage_key별 max attempt 선택.
 - 승인/거절은 기존 `POST /api/v1/runs/{id}/approve` (body: `{decision: "approve"|"reject", comment?}`) 재사용 — run.status가 `waiting_approval`일 때만.
@@ -135,11 +135,11 @@
 ### Task 8: 문서·AGENTS.md·최종 검증
 
 **Files:**
-- Modify: `AGENTS.md` (coding_worker/lease_owner 언급 → Agent-Office 구조 반영), `docs/harness/05_내부기능_통합.md`, `docs/harness/06_호스팅_필수_로깅.md` (코딩 워커 로깅 섹션 제거/갱신), `docs/jobMate_v1.0.0/14_UI_자동화_test_procedure_v1.0.0.md` (coding 시나리오 → Agent-Office)
+- Modify: `AGENTS.md` (coding_worker/lease_owner 언급 → Agent-Office 구조 반영), `docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A`, `docs/jobMate_v1.0.1/17_운영_보안_가이드_v1.0.1.md 부록 A` (코딩 워커 로깅 섹션 제거/갱신), `docs/jobMate_v1.0.1/14_UI_자동화_test_procedure_v1.0.1.md` (coding 시나리오 → Agent-Office)
 - Modify: `tests/ui/test_dashboard.py` — 사이드바 테스트의 뷰 목록에서 coding 제거, office 추가
 
 - [ ] **Step 1:** 문서 갱신.
-- [ ] **Step 2:** `grep -rni "coding" src/ tests/ docs/harness/ AGENTS.md .env.example` — 잔여가 historical 문서 언급뿐인지 확인, 코드 참조 0건.
+- [ ] **Step 2:** `grep -rni "coding" src/ tests/ docs/jobMate_v1.0.1/ AGENTS.md .env.example` — 잔여가 historical 문서 언급뿐인지 확인, 코드 참조 0건.
 - [ ] **Step 3:** 전체 검증: `uv run pytest -q`, ruff check/format, mypy.
 - [ ] **Step 4:** `graphify update .`
 - [ ] **Step 5:** Commit `docs: update harness docs and AGENTS for Agent-Office`.

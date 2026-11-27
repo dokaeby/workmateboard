@@ -59,7 +59,7 @@ specs/001-agent-harness-engine/
 ```
 
 설계·API 상세는 기존 문서가 research/contracts 역할을 겸한다:
-`docs/harness/01_하네스_MVP_개발문서.md`, `docs/harness/02_API_명세.md`
+`docs/jobMate_v1.0.1/02_시스템상세설계서_v1.0.1.md 부록 A`, `docs/jobMate_v1.0.1/06_API_설계서_v1.0.1.md 부록 A`
 
 ### Source Code (repository root)
 
@@ -110,4 +110,4 @@ jobMate/
 - Phase B (US1 P1): engine + dev_review 워크플로 + 테스트
 - Phase C (US2 P2): gmail_calendar 워크플로 + 어댑터 + 테스트
 - Phase D (US3 P3): FastAPI + CLI + 상태 페이지
-- Phase E: 적대적 리뷰(사람+gstack 방식) → 수정 → pytest/ruff/mypy 검증 → docs/harness/04 문서화
+- Phase E: 적대적 리뷰(사람+gstack 방식) → 수정 → pytest/ruff/mypy 검증 → docs/jobMate_v1.0.1/04 문서화

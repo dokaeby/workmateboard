@@ -38,7 +38,7 @@ ANA/DEV/TEST/SEC/CR/QA/HUM/ORCH 8개 노드의 입체 관제판으로 시각화�
 
 - 기존 UI 패턴 준수: 단일 index.html, vanilla JS, `api()` 헬퍼, 주기적 폴링.
 - 테스트: `uv run pytest` 전체 통과, ruff/mypy clean.
-- 비밀값 로깅 금지 등 docs/harness/06 준수.
+- 비밀값 로깅 금지 등 docs/jobMate_v1.0.1/17_운영_보안_가이드_v1.0.1.md 부록 A 준수.
 
 ## 접근 방식 (검토한 대안)
 
@@ -100,9 +100,9 @@ ANA/DEV/TEST/SEC/CR/QA/HUM/ORCH 8개 노드의 입체 관제판으로 시각화�
 - `tests/conftest.py`는 이미 정리됨 (해당 없음).
 - `.env.example`: `JOBMATE_CODING_*` 항목 제거.
 - `AGENTS.md`: `coding_worker.py`, coding job `lease_owner` 펜싱 규칙 언급 갱신.
-- 문서: `docs/harness/05_내부기능_통합.md`,
-  `docs/harness/06_호스팅_필수_로깅.md`의 "코딩 워커" 로깅 섹션,
-  `docs/jobMate_v1.0.0/14_UI_자동화_test_procedure_v1.0.0.md`의 coding
+- 문서: `docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A`,
+  `docs/jobMate_v1.0.1/17_운영_보안_가이드_v1.0.1.md 부록 A`의 "코딩 워커" 로깅 섹션,
+  `docs/jobMate_v1.0.1/14_UI_자동화_test_procedure_v1.0.1.md`의 coding
   UI 시나리오 갱신.
 
 ### B. Agent-Office 뷰

@@ -118,7 +118,7 @@ Gemini CLI(antigravity), Devin CLI의 활성 세션을 모두 표시한다.
 
 ### D. 문서
 
-- `docs/harness/05_내부기능_통합.md`에 엔드포인트·브릿지 사용법 추가.
+- `docs/jobMate_v1.0.1/04_기능별상세설계서_v1.0.1.md 부록 A`에 엔드포인트·브릿지 사용법 추가.
 - `AGENTS.md` 검증 명령 그대로. `.env.example`에 `JOBMATE_URL` 등 필요시 추가.
 
 ## 검증
