@@ -230,7 +230,13 @@ class Bridge:
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self.url = url.rstrip("/")
+        # push URL은 Bearer 자격증명이 실리므로 paperclip bridge와 동일한
+        # egress 정책을 적용한다 — http는 loopback만, 공인은 https 필수,
+        # userinfo 금지, SSRF 가드 통과 호스트만 허용(R2-3). 반환값은
+        # 정규화된 URL(스킴 보정·userinfo 없음)이라 그대로 로깅해도 안전하다.
+        from .paperclip_client import validate_jobmate_url
+
+        self.url = validate_jobmate_url(url)
         self.api_key = api_key
         self._scanners = scanners or {
             "claude": scan_claude,
@@ -320,7 +326,19 @@ class Bridge:
         client = client if client is not None else self._client
         close = False
         if client is None:
-            client = httpx.Client(timeout=HTTP_TIMEOUT)
+            from .webutil import _pinned_ip_for, _PinnedTransport
+
+            transport = None
+            pinned = _pinned_ip_for(self.url)
+            if pinned is not None:
+                # 공인 호스트 — 검증 시 해석한 IP로 connect 고정해 DNS
+                # 리바인딩으로 Bearer가 새 호스트에 새는 것을 막는다(R2-3).
+                transport = _PinnedTransport(pinned)
+            client = httpx.Client(
+                timeout=HTTP_TIMEOUT,
+                transport=transport,
+                follow_redirects=False,
+            )
             close = True
         try:
             headers = {}

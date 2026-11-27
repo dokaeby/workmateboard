@@ -878,7 +878,7 @@ CREATE TABLE IF NOT EXISTS external_agents (
   status TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(provider, external_id)
+  UNIQUE(provider, company_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_external_agents_company ON external_agents(provider, company_id);
 
@@ -886,30 +886,36 @@ CREATE TABLE IF NOT EXISTS external_tasks (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
   external_id TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
   assignee_external_id TEXT,
   status TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(provider, external_id)
+  UNIQUE(provider, company_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_external_tasks_assignee
   ON external_tasks(provider, assignee_external_id);
+-- idx_external_tasks_company는 company_id 컬럼이 있는 DB에서만 만들 수
+-- 있으므로 SCHEMA가 아니라 _ensure_external_company_indexes()가 생성한다
+-- (구 스키마 DB에서 executescript가 깨지는 것 방지).
 
 CREATE TABLE IF NOT EXISTS external_runs (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
   external_id TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
   task_external_id TEXT,
   agent_external_id TEXT,
   status TEXT NOT NULL DEFAULT '',
   token_cost_summary TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(provider, external_id)
+  UNIQUE(provider, company_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_external_runs_task
   ON external_runs(provider, task_external_id);
+-- idx_external_runs_company도 위와 동일 이유로 Python 측에서 생성.
 
 -- provider+company별 동기화 커서 — 부분 실패 시 커서를 전진시키지 않는다.
 CREATE TABLE IF NOT EXISTS external_sync_cursors (
@@ -1704,7 +1710,7 @@ CREATE TABLE IF NOT EXISTS external_agents (
   status TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(provider, external_id)
+  UNIQUE(provider, company_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_external_agents_company ON external_agents(provider, company_id);
 
@@ -1712,30 +1718,36 @@ CREATE TABLE IF NOT EXISTS external_tasks (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
   external_id TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
   assignee_external_id TEXT,
   status TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(provider, external_id)
+  UNIQUE(provider, company_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_external_tasks_assignee
   ON external_tasks(provider, assignee_external_id);
+-- idx_external_tasks_company는 company_id 컬럼이 있는 DB에서만 만들 수
+-- 있으므로 SCHEMA가 아니라 _ensure_external_company_indexes()가 생성한다
+-- (구 스키마 DB에서 executescript가 깨지는 것 방지).
 
 CREATE TABLE IF NOT EXISTS external_runs (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
   external_id TEXT NOT NULL,
+  company_id TEXT NOT NULL DEFAULT '',
   task_external_id TEXT,
   agent_external_id TEXT,
   status TEXT NOT NULL DEFAULT '',
   token_cost_summary TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(provider, external_id)
+  UNIQUE(provider, company_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_external_runs_task
   ON external_runs(provider, task_external_id);
+-- idx_external_runs_company도 위와 동일 이유로 Python 측에서 생성.
 
 CREATE TABLE IF NOT EXISTS external_sync_cursors (
   id TEXT PRIMARY KEY,
@@ -1879,6 +1891,8 @@ class Store(
         self._migrate_cost_ledger_columns()
         self._migrate_recovery_actions_index()
         self._migrate_phase3_columns()
+        self._migrate_external_company_columns()
+        self._ensure_external_company_indexes()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
 
@@ -2178,6 +2192,231 @@ class Store(
                 )
         except Exception as e:
             logger.warning("phase3 status/updated_at migration failed: %s", e)
+
+    # external_* 테이블의 신구 스키마 판별·재작성용 스펙 —
+    # (provider, company_id, external_id) UNIQUE가 없으면 구 스키마.
+    # 값: (company_id 이외 컬럼 목록, company_id 백필 SQL 식).
+    _EXTERNAL_COMPANY_SPECS = {
+        "external_agents": (
+            ",payload_summary,status",
+            "COALESCE(t.company_id,'')",
+        ),
+        "external_tasks": (
+            ",assignee_external_id,status,title",
+            "COALESCE((SELECT a.company_id FROM external_agents a"
+            " WHERE a.provider=t.provider AND a.external_id=t.assignee_external_id),'')",
+        ),
+        "external_runs": (
+            ",task_external_id,agent_external_id,status,token_cost_summary",
+            "COALESCE((SELECT a.company_id FROM external_agents a"
+            " WHERE a.provider=t.provider AND a.external_id=t.agent_external_id),'')",
+        ),
+    }
+    _EXTERNAL_COMPANY_TABLES = tuple(_EXTERNAL_COMPANY_SPECS)
+
+    def _sqlite_table_unique_cols(self, table: str) -> list[list[str]]:
+        """SQLite 테이블의 UNIQUE 인덱스 컬럼 목록 — index_list/index_info."""
+        out: list[list[str]] = []
+        try:
+            for ix in self._conn.execute(f"PRAGMA index_list({table})").fetchall():
+                if not ix["unique"]:
+                    continue
+                cols = [
+                    r["name"]
+                    for r in self._conn.execute(f"PRAGMA index_info({ix['name']})").fetchall()
+                ]
+                out.append(cols)
+        except Exception as e:
+            logger.warning("%s index_list failed: %s", table, e)
+        return out
+
+    def _external_needs_company_migration(self, table: str) -> bool:
+        """(provider,company_id,external_id) UNIQUE가 없으면 True — 구 스키마."""
+        want = {"provider", "company_id", "external_id"}
+        if self._pg:
+            try:
+                # 제약별 컬럼 집합 — (provider,company_id,external_id)를
+                # 정확히 커버하는 UNIQUE 제약이 있으면 최신 스키마다.
+                rows = self._conn.execute(
+                    "SELECT tc.constraint_name,"
+                    " array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS cols"
+                    " FROM information_schema.table_constraints tc"
+                    " JOIN information_schema.key_column_usage kcu"
+                    " ON kcu.constraint_name = tc.constraint_name"
+                    " AND kcu.table_schema = tc.table_schema"
+                    " AND kcu.table_name = tc.table_name"
+                    " WHERE tc.table_name=? AND tc.constraint_type='UNIQUE'"
+                    " AND tc.table_schema = current_schema()"
+                    " GROUP BY tc.constraint_name",
+                    (table,),
+                ).fetchall()
+            except Exception as e:
+                logger.warning("%s pg constraint check failed: %s", table, e)
+                return False
+            return not any(want == set(r["cols"] or []) for r in rows)
+        try:
+            cols = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+        except Exception as e:
+            logger.warning("%s table_info failed: %s", table, e)
+            return False
+        if "company_id" not in cols:
+            return True
+        return not any(set(c) == want for c in self._sqlite_table_unique_cols(table))
+
+    def _migrate_external_company_columns(self) -> None:
+        """external_tasks/external_runs에 company_id 추가 + UNIQUE를
+        (provider, company_id, external_id)로 변경 (Codex M5).
+
+        구 스키마는 UNIQUE(provider, external_id)라 회사 간 external_id가
+        충돌한다. SQLite는 UNIQUE 제약을 ALTER로 못 바꾸므로 테 일본을
+        재작성하고, PG는 제약 drop/add로 처리한다. company_id 백필은
+        assignee/agent external_id → external_agents.company_id 조인
+        (best-effort, 매칭 없으면 '')."""
+        self._external_company_schema_broken = False
+        for table in self._EXTERNAL_COMPANY_TABLES:
+            try:
+                if not self._external_needs_company_migration(table):
+                    continue
+            except Exception as e:
+                # 판별 실패 시 마이그레이션이 스킵돼 ingest의 3컬럼
+                # ON CONFLICT가 runtime-error로 깨진다 — 조용히 넘기지 않는다.
+                self._external_company_schema_broken = True
+                logger.critical(
+                    "%s company migration check failed — external_* 쓰기가 "
+                    "깨진 상태로 계속됩니다: %s",
+                    table,
+                    e,
+                )
+                continue
+            if self._pg:
+                self._migrate_external_company_pg(table)
+            else:
+                self._migrate_external_company_sqlite(table)
+
+    def _ensure_external_company_indexes(self) -> None:
+        """external_tasks/runs의 company_id 인덱스 — SCHEMA 문자열이 아니라
+        여기서 만든다. 구 스키마 DB는 company_id 컬럼이 없어 executescript
+        시점에 인덱스 생성이 실패하므로, 마이그레이션 이후에 생성해야 한다."""
+        for table in ("external_tasks", "external_runs"):
+            try:
+                with self.tx() as c:
+                    c.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_{table}_company"
+                        f" ON {table}(provider, company_id)"
+                    )
+            except Exception as e:
+                logger.warning("%s company index failed: %s", table, e)
+
+    def _migrate_external_company_pg(self, table: str) -> None:
+        """PostgreSQL — 컬럼 추가 + 구 유니크 제약 교체."""
+        company_expr = self._EXTERNAL_COMPANY_SPECS[table][1]
+        try:
+            with self.tx() as c:
+                c.execute(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS company_id"
+                    " TEXT NOT NULL DEFAULT ''"
+                )
+                if table != "external_agents":
+                    # company_id 백필 — agent 조인으로 유도(agents는 이미 보유).
+                    c.execute(
+                        f"UPDATE {table} t SET company_id = ({company_expr})"  # noqa: S608 - table/expr는 내부 상수
+                        " WHERE t.company_id='' OR t.company_id IS NULL"
+                    )
+                # 구 UNIQUE(provider, external_id) 제약 제거 — information_schema에서
+                # 컬럼 집합이 정확히 {provider, external_id}인 UNIQUE 제약을 찾아
+                # 이름으로 drop한다(자동 생성명이 아니어도 동작).
+                legacy = c.execute(
+                    "SELECT tc.constraint_name,"
+                    " array_agg(kcu.column_name) AS cols"
+                    " FROM information_schema.table_constraints tc"
+                    " JOIN information_schema.key_column_usage kcu"
+                    " ON kcu.constraint_name = tc.constraint_name"
+                    " AND kcu.table_schema = tc.table_schema"
+                    " AND kcu.table_name = tc.table_name"
+                    " WHERE tc.table_name=? AND tc.constraint_type='UNIQUE'"
+                    " AND tc.table_schema = current_schema()"
+                    " GROUP BY tc.constraint_name",
+                    (table,),
+                ).fetchall()
+                for r in legacy:
+                    if {"provider", "external_id"} == set(r["cols"] or []):
+                        c.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{r["constraint_name"]}"')
+                c.execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT"
+                    f" {table}_provider_company_external_key"
+                    " UNIQUE(provider, company_id, external_id)"
+                )
+                c.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_company"
+                    f" ON {table}(provider, company_id)"
+                )
+            logger.info("%s company_id migration applied (pg)", table)
+        except Exception as e:
+            self._external_company_schema_broken = True
+            logger.critical(
+                "%s company_id migration failed — external_* 쓰기가 깨진 "
+                "상태로 계속됩니다(재기동 시 재시도): %s",
+                table,
+                e,
+            )
+
+    def _migrate_external_company_sqlite(self, table: str) -> None:
+        """SQLite — 테이블 재작성으로 UNIQUE(provider,company_id,external_id)
+        + company_id 컬럼을 얻는다(제약 ALTER 불가)."""
+        extra_cols, company_expr = self._EXTERNAL_COMPANY_SPECS[table]
+        new_table = f"{table}__new"
+        try:
+            with self.tx() as c:
+                c.execute("DROP TABLE IF EXISTS " + new_table)
+                c.execute(
+                    f"CREATE TABLE {new_table} ("
+                    "id TEXT PRIMARY KEY, provider TEXT NOT NULL,"
+                    " external_id TEXT NOT NULL,"
+                    " company_id TEXT NOT NULL DEFAULT '',"
+                    + extra_cols
+                    + ", created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+                    " UNIQUE(provider, company_id, external_id))"
+                )
+                c.execute(
+                    f"INSERT INTO {new_table}"  # noqa: S608 - table/expr는 내부 상수
+                    "(id,provider,external_id,company_id" + extra_cols + ",created_at,updated_at)"
+                    f" SELECT t.id,t.provider,t.external_id, {company_expr},"
+                    + ",".join(f"t.{col.strip()}" for col in extra_cols.split(",") if col.strip())
+                    + ",t.created_at,t.updated_at FROM "
+                    + table
+                    + " t"
+                )
+                c.execute(f"DROP TABLE {table}")
+                c.execute(f"ALTER TABLE {new_table} RENAME TO {table}")
+                # 보조 인덱스 복원 — SCHEMA 정의와 동일하게 재생성한다.
+                for idx in {
+                    "external_agents": [
+                        "CREATE INDEX IF NOT EXISTS idx_external_agents_company"
+                        " ON external_agents(provider, company_id)"
+                    ],
+                    "external_tasks": [
+                        "CREATE INDEX IF NOT EXISTS idx_external_tasks_assignee"
+                        " ON external_tasks(provider, assignee_external_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_external_tasks_company"
+                        " ON external_tasks(provider, company_id)",
+                    ],
+                    "external_runs": [
+                        "CREATE INDEX IF NOT EXISTS idx_external_runs_task"
+                        " ON external_runs(provider, task_external_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_external_runs_company"
+                        " ON external_runs(provider, company_id)",
+                    ],
+                }[table]:
+                    c.execute(idx)
+            logger.info("%s company_id migration applied (sqlite)", table)
+        except Exception as e:
+            self._external_company_schema_broken = True
+            logger.critical(
+                "%s company_id migration failed — external_* 쓰기가 깨진 "
+                "상태로 계속됩니다(재기동 시 재시도): %s",
+                table,
+                e,
+            )
 
     def _migrate_deferred_wakeup_scopes(self) -> None:
         """goal_id 도입으로 바뀐 scope_key 형식에 맞춰 deferred wakeup 재계산.

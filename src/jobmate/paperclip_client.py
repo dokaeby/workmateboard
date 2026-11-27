@@ -85,34 +85,54 @@ def _is_loopback_host(host: str) -> bool:
     return ip.is_loopback
 
 
-def validate_paperclip_url(url: str) -> str:
-    """paperclip base URL 검증 — 정규화된 base URL을 반환한다.
+def _validate_url_policy(url: str, *, what: str) -> str:
+    """공용 URL 정책 — bearer/API 키가 실리는 엔드포인트용.
 
-    허용: http/https + (loopback 호스트 또는 webutil SSRF 가드 통과 공인
-    호스트). 그 외(scheme 위반, 사설 비루프백 IP, 차단 호스트)는
-    PaperclipConfigError. 비밀값은 URL에 넣지 않는 것이 원칙이지만
-    userinfo가 있어도 에러 메시지에 원문을 넣지 않는다."""
+    - scheme은 http/https만.
+    - **http는 loopback 전용** — 평문 채널로 공인 호스트에 자격증명을
+      보내는 것을 금지한다(https 아니면 loopback만).
+    - userinfo(내장 credential) 금지 — URL에 비밀이 박히는 것을 차단.
+    - 비-loopback 호스트는 webutil SSRF 가드(is_safe_fetch_url) 통과 필수.
+    위반 시 PaperclipConfigError(에러 메시지에 URL 원문/자격증명 미포함)."""
     raw = (url or "").strip()
     if not raw:
-        raise PaperclipConfigError("paperclip url is empty")
+        raise PaperclipConfigError(f"{what} url is empty")
     if "://" not in raw:
         raw = f"https://{raw}"
     try:
         parsed = urlparse(raw)
     except ValueError as e:
-        raise PaperclipConfigError("paperclip url is invalid") from e
+        raise PaperclipConfigError(f"{what} url is invalid") from e
     if parsed.scheme not in ("http", "https"):
-        raise PaperclipConfigError("paperclip url scheme must be http or https")
+        raise PaperclipConfigError(f"{what} url scheme must be http or https")
     host = (parsed.hostname or "").strip().lower()
     if not host:
-        raise PaperclipConfigError("paperclip url has no host")
+        raise PaperclipConfigError(f"{what} url has no host")
     if parsed.username or parsed.password:
-        raise PaperclipConfigError("paperclip url must not contain credentials")
-    if _is_loopback_host(host):
-        return raw.rstrip("/")
-    if not is_safe_fetch_url(raw):
-        raise PaperclipConfigError("paperclip url host is not allowed")
+        raise PaperclipConfigError(f"{what} url must not contain credentials")
+    loopback = _is_loopback_host(host)
+    if parsed.scheme == "http" and not loopback:
+        raise PaperclipConfigError(f"{what} url must use https for non-loopback hosts")
+    if not loopback and not is_safe_fetch_url(raw):
+        raise PaperclipConfigError(f"{what} url host is not allowed")
     return raw.rstrip("/")
+
+
+def validate_paperclip_url(url: str) -> str:
+    """paperclip base URL 검증 — 정규화된 base URL을 반환한다.
+
+    허용: https + (loopback 호스트 또는 webutil SSRF 가드 통과 공인
+    호스트), 또는 http + loopback만. Bearer 토큰이 실리므로 공인 호스트의
+    http는 거부한다(spec의 "HTTPS/localhost URL 정책")."""
+    return _validate_url_policy(url, what="paperclip")
+
+
+def validate_jobmate_url(url: str) -> str:
+    """bridge → jobMate snapshot 엔드포인트 base URL 검증.
+
+    X-API-Key가 실리므로 paperclip과 동일 정책 — https 공인 호스트 또는
+    http/https loopback만 허용한다."""
+    return _validate_url_policy(url, what="jobmate")
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +483,9 @@ class PaperclipBridge:
         self._company_id = (getattr(orchestrator, "company_id", "") or company_id or "").strip()[
             :200
         ]
-        self._jobmate_url = (jobmate_url or "").strip().rstrip("/")
+        # jobmate_url도 검증한다 — X-API-Key가 실리는 push 대상이므로
+        # paperclip과 동일 정책(https 공인 또는 loopback http/https).
+        self._jobmate_url = validate_jobmate_url(jobmate_url)
         self._api_key = (api_key or "").strip()
         self._client = client
         self._owns_client = client is None
@@ -474,7 +496,18 @@ class PaperclipBridge:
 
     def _http(self) -> httpx.Client:
         if self._client is None:
-            self._client = httpx.Client(timeout=self._timeout, follow_redirects=False)
+            transport = None
+            pinned = _pinned_ip_for(self._jobmate_url)
+            if pinned is not None:
+                # 공인 호스트 — 검증에 사용한 IP로 connect 고정(DNS 리바인딩
+                # 차단). X-API-Key가 실리는 push 대상이므로 PaperclipClient와
+                # 동일한 pinning이 필요하다(R2-3). loopback은 pinning 불필요.
+                transport = _PinnedTransport(pinned)
+            self._client = httpx.Client(
+                timeout=self._timeout,
+                transport=transport,
+                follow_redirects=False,
+            )
         return self._client
 
     def close(self) -> None:

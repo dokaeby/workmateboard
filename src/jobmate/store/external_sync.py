@@ -170,6 +170,52 @@ def _loads_dict(s: Any) -> dict[str, Any]:
         return {}
 
 
+def _parse_ts(s: Any) -> datetime | None:
+    """ISO-8601 타임스탬프 비교용 파싱 — date-only도 허용, naive는 UTC 간주."""
+    try:
+        dt = datetime.fromisoformat(str(s or "").strip().replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _cursor_value_ok(v: Any) -> bool:
+    """ingest 커서 값 검증 — 저장 커서는 entity별 watermark로도 쓰이므로
+    ISO-8601 파싱 가능한 타임스탬프만 허용한다. malformed 값("zzz" 등)을
+    저장하면 이후 모든 정상 타임스탬프가 문자열 비교에서 밀려 watermark가
+    영구 정지한다(R2-4)."""
+    s = str(v or "").strip()
+    return bool(s) and _parse_ts(s) is not None
+
+
+def _cursor_newer(old: Any, new: Any) -> bool:
+    """커서 단조 전진 판정 — parse-aware 우선순위 비교.
+
+    - new가 비어 있으면 False. new가 파싱 가능하고 old가 비어 있거나
+      파싱 불가면 True — 깨진/비어 있는 기존 값을 정상 타임스탬프로
+      복구한다(R2-4: "zzz" 같은 malformed 저장값이 이후 정상 커서를
+      영구 차단하던 문제).
+    - new가 파싱 불가하고 old가 파싱 가능하면 False — 정상 watermark를
+      깨진 값으로 회귀시키지 않는다.
+    - 둘 다 파싱 가능하면 시각 비교, 둘 다 불가하면 문자열 비교로 수렴
+      (opaque 커서 호환 — store 직접 호출 경로용). ingest 경로는
+      _cursor_value_ok가 먼저 걸러 이 분기에 도달하지 않는다."""
+    old_s = str(old or "").strip()
+    new_s = str(new or "").strip()
+    if not new_s:
+        return False
+    odt, ndt = _parse_ts(old_s), _parse_ts(new_s)
+    if ndt is not None:
+        if odt is None:
+            return True
+        return ndt > odt
+    if odt is not None:
+        return False
+    return not old_s or new_s > old_s
+
+
 class ExternalSyncStoreMixin:
     """external_* projection Store 메서드 — snapshot ingest/커서/status."""
 
@@ -196,7 +242,7 @@ class ExternalSyncStoreMixin:
                 "INSERT INTO external_agents(id,provider,external_id,company_id,"
                 "payload_summary,status,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(provider,external_id) DO UPDATE SET"
+                " ON CONFLICT(provider,company_id,external_id) DO UPDATE SET"
                 " company_id=excluded.company_id,"
                 " payload_summary=excluded.payload_summary,"
                 " status=excluded.status,"
@@ -213,8 +259,8 @@ class ExternalSyncStoreMixin:
                 ),
             )
             row = c.execute(
-                "SELECT * FROM external_agents WHERE provider=? AND external_id=?",
-                (prov, ext),
+                "SELECT * FROM external_agents WHERE provider=? AND company_id=? AND external_id=?",
+                (prov, comp, ext),
             ).fetchone()
         return dict(row) if row is not None else {}
 
@@ -229,8 +275,7 @@ class ExternalSyncStoreMixin:
         title: str = "",
     ) -> dict[str, Any]:
         prov = _clean(provider, _PROVIDER_MAX) or "paperclip"
-        # external_tasks에는 company_id 컬럼이 없다(UNIQUE(provider,
-        # external_id) 전역) — company 귀속은 assignee agent 조인으로 한다.
+        comp = _clean(company_id, _COMPANY_MAX)
         ext = _clean(external_id, _EXTERNAL_ID_MAX)
         if not ext:
             raise ValueError("external_id is required")
@@ -238,10 +283,10 @@ class ExternalSyncStoreMixin:
         ts = _iso(now)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO external_tasks(id,provider,external_id,"
+                "INSERT INTO external_tasks(id,provider,external_id,company_id,"
                 "assignee_external_id,status,title,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(provider,external_id) DO UPDATE SET"
+                " VALUES(?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(provider,company_id,external_id) DO UPDATE SET"
                 " assignee_external_id=excluded.assignee_external_id,"
                 " status=excluded.status,"
                 " title=excluded.title,"
@@ -250,6 +295,7 @@ class ExternalSyncStoreMixin:
                     uuid.uuid4().hex[:12],
                     prov,
                     ext,
+                    comp,
                     _clean(assignee_external_id, _EXTERNAL_ID_MAX) or None,
                     _clean(status, _STATUS_MAX),
                     _clean(title, _TITLE_MAX),
@@ -258,8 +304,8 @@ class ExternalSyncStoreMixin:
                 ),
             )
             row = c.execute(
-                "SELECT * FROM external_tasks WHERE provider=? AND external_id=?",
-                (prov, ext),
+                "SELECT * FROM external_tasks WHERE provider=? AND company_id=? AND external_id=?",
+                (prov, comp, ext),
             ).fetchone()
         return dict(row) if row is not None else {}
 
@@ -275,8 +321,7 @@ class ExternalSyncStoreMixin:
         token_cost_summary: Any = None,
     ) -> dict[str, Any]:
         prov = _clean(provider, _PROVIDER_MAX) or "paperclip"
-        # external_runs에도 company_id 컬럼이 없다 — company 귀속은
-        # agent_external_id → external_agents 조인으로 한다.
+        comp = _clean(company_id, _COMPANY_MAX)
         ext = _clean(external_id, _EXTERNAL_ID_MAX)
         if not ext:
             raise ValueError("external_id is required")
@@ -284,11 +329,11 @@ class ExternalSyncStoreMixin:
         ts = _iso(now)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO external_runs(id,provider,external_id,"
+                "INSERT INTO external_runs(id,provider,external_id,company_id,"
                 "task_external_id,agent_external_id,status,token_cost_summary,"
                 "created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(provider,external_id) DO UPDATE SET"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(provider,company_id,external_id) DO UPDATE SET"
                 " task_external_id=excluded.task_external_id,"
                 " agent_external_id=excluded.agent_external_id,"
                 " status=excluded.status,"
@@ -298,6 +343,7 @@ class ExternalSyncStoreMixin:
                     uuid.uuid4().hex[:12],
                     prov,
                     ext,
+                    comp,
                     _clean(task_external_id, _EXTERNAL_ID_MAX) or None,
                     _clean(agent_external_id, _EXTERNAL_ID_MAX) or None,
                     _clean(status, _STATUS_MAX),
@@ -307,8 +353,8 @@ class ExternalSyncStoreMixin:
                 ),
             )
             row = c.execute(
-                "SELECT * FROM external_runs WHERE provider=? AND external_id=?",
-                (prov, ext),
+                "SELECT * FROM external_runs WHERE provider=? AND company_id=? AND external_id=?",
+                (prov, comp, ext),
             ).fetchone()
         return dict(row) if row is not None else {}
 
@@ -353,6 +399,12 @@ class ExternalSyncStoreMixin:
         SnapshotConflictError. upsert·커서 갱신·멱등키 기록이 한 tx라
         중간 실패 시 아무것도 반영되지 않는다(커서 오전진 방지)."""
         self._ensure_snapshot_keys_table()
+        if getattr(self, "_external_company_schema_broken", False):
+            # company_id 마이그레이션 실패 상태 — 3컬럼 ON CONFLICT가
+            # sqlite OperationalError로 깨지기 전에 원인을 명시한다.
+            raise RuntimeError(
+                "external_* schema migration failed — store 재기동으로 마이그레이션을 재시도하세요"
+            )
         prov = _clean(provider, _PROVIDER_MAX) or "paperclip"
         comp = _clean(company_id, _COMPANY_MAX)
         key = _clean(idempotency_key, 200)
@@ -378,17 +430,31 @@ class ExternalSyncStoreMixin:
             now = _now()
             ts = _iso(now)
             counts = {"agents": 0, "tasks": 0, "runs": 0}
+            # M4 — stale snapshot 방어: entity별 저장 커서를 watermark로 써서
+            # 그보다 오래된 행(item.updated_at < 저장 cursor)은 upsert하지
+            # 않는다. 커서 자체도 단조 전진만 허용(회귀 거부).
+            cur_row = c.execute(
+                "SELECT cursor FROM external_sync_cursors WHERE provider=? AND company_id=?",
+                (prov, comp),
+            ).fetchone()
+            stored_cursors = _loads_dict(cur_row["cursor"]) if cur_row is not None else {}
+
+            def _stale(entity: str, item: dict[str, Any]) -> bool:
+                wm = _parse_ts(stored_cursors.get(entity))
+                it = _parse_ts(item.get("updated_at"))
+                return wm is not None and it is not None and it < wm
+
             for item in agents:
                 if not isinstance(item, dict):
                     continue
                 ext = _clean(item.get("external_id"), _EXTERNAL_ID_MAX)
-                if not ext:
+                if not ext or _stale("agents", item):
                     continue
                 c.execute(
                     "INSERT INTO external_agents(id,provider,external_id,company_id,"
                     "payload_summary,status,created_at,updated_at)"
                     " VALUES(?,?,?,?,?,?,?,?)"
-                    " ON CONFLICT(provider,external_id) DO UPDATE SET"
+                    " ON CONFLICT(provider,company_id,external_id) DO UPDATE SET"
                     " company_id=excluded.company_id,"
                     " payload_summary=excluded.payload_summary,"
                     " status=excluded.status,"
@@ -409,13 +475,13 @@ class ExternalSyncStoreMixin:
                 if not isinstance(item, dict):
                     continue
                 ext = _clean(item.get("external_id"), _EXTERNAL_ID_MAX)
-                if not ext:
+                if not ext or _stale("tasks", item):
                     continue
                 c.execute(
-                    "INSERT INTO external_tasks(id,provider,external_id,"
+                    "INSERT INTO external_tasks(id,provider,external_id,company_id,"
                     "assignee_external_id,status,title,created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?)"
-                    " ON CONFLICT(provider,external_id) DO UPDATE SET"
+                    " VALUES(?,?,?,?,?,?,?,?,?)"
+                    " ON CONFLICT(provider,company_id,external_id) DO UPDATE SET"
                     " assignee_external_id=excluded.assignee_external_id,"
                     " status=excluded.status,"
                     " title=excluded.title,"
@@ -424,6 +490,7 @@ class ExternalSyncStoreMixin:
                         uuid.uuid4().hex[:12],
                         prov,
                         ext,
+                        comp,
                         _clean(item.get("assignee_external_id"), _EXTERNAL_ID_MAX) or None,
                         _clean(item.get("status"), _STATUS_MAX),
                         _clean(item.get("title"), _TITLE_MAX),
@@ -436,14 +503,14 @@ class ExternalSyncStoreMixin:
                 if not isinstance(item, dict):
                     continue
                 ext = _clean(item.get("external_id"), _EXTERNAL_ID_MAX)
-                if not ext:
+                if not ext or _stale("runs", item):
                     continue
                 c.execute(
-                    "INSERT INTO external_runs(id,provider,external_id,"
+                    "INSERT INTO external_runs(id,provider,external_id,company_id,"
                     "task_external_id,agent_external_id,status,token_cost_summary,"
                     "created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)"
-                    " ON CONFLICT(provider,external_id) DO UPDATE SET"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?)"
+                    " ON CONFLICT(provider,company_id,external_id) DO UPDATE SET"
                     " task_external_id=excluded.task_external_id,"
                     " agent_external_id=excluded.agent_external_id,"
                     " status=excluded.status,"
@@ -453,6 +520,7 @@ class ExternalSyncStoreMixin:
                         uuid.uuid4().hex[:12],
                         prov,
                         ext,
+                        comp,
                         _clean(item.get("task_external_id"), _EXTERNAL_ID_MAX) or None,
                         _clean(item.get("agent_external_id"), _EXTERNAL_ID_MAX) or None,
                         _clean(item.get("status"), _STATUS_MAX),
@@ -462,16 +530,15 @@ class ExternalSyncStoreMixin:
                     ),
                 )
                 counts["runs"] += 1
-            # 커서 갱신 — 기존 entity별 cursor JSON에 병합, 성공 시에만 전진.
-            cur_row = c.execute(
-                "SELECT cursor FROM external_sync_cursors WHERE provider=? AND company_id=?",
-                (prov, comp),
-            ).fetchone()
-            cur_map = _loads_dict(cur_row["cursor"]) if cur_row is not None else {}
+            # 커서 갱신 — 기존 entity별 cursor JSON에 병합하되 단조 전진만
+            # 허용한다(더 오래된 snapshot이 커서를 되돌리지 못하게).
+            # 값은 ISO-8601 파싱 가능해야 한다 — malformed 커서는 watermark
+            # 비교를 오염시키므로 저장하지 않는다(R2-4).
+            cur_map = dict(stored_cursors)
             if isinstance(cursors, dict):
                 for ek in _CURSOR_ENTITIES:
                     v = cursors.get(ek)
-                    if v is not None:
+                    if v is not None and _cursor_value_ok(v) and _cursor_newer(cur_map.get(ek), v):
                         cur_map[ek] = _clean(v, _CURSOR_VALUE_MAX)
             c.execute(
                 "INSERT INTO external_sync_cursors(id,provider,company_id,cursor,"
@@ -578,9 +645,8 @@ class ExternalSyncStoreMixin:
                 + " ORDER BY company_id, provider",
                 (prov,) if prov else (),
             ).fetchall()
-            # external_tasks/runs에는 company_id 컬럼이 없다 — company 귀속은
-            # assignee/agent external_id → external_agents.company_id 조인으로
-            # 유도한다. 매칭 agent가 없으면 company_id=''로 집계한다.
+            # external_tasks/runs는 company_id 컬럼을 직접 가진다
+            # (M5 — 이전에는 assignee/agent 조인으로 유도했다).
             agent_rows = c.execute(
                 "SELECT provider, company_id, COUNT(*) AS n FROM external_agents"  # noqa: S608 - 고정 절만, 값은 바인딩
                 + (" WHERE provider=?" if prov else "")
@@ -588,21 +654,15 @@ class ExternalSyncStoreMixin:
                 (prov,) if prov else (),
             ).fetchall()
             task_rows = c.execute(
-                "SELECT t.provider, COALESCE(a.company_id,'') AS company_id,"  # noqa: S608 - 고정 절만, 값은 바인딩
-                " COUNT(*) AS n FROM external_tasks t"
-                " LEFT JOIN external_agents a"
-                " ON a.provider=t.provider AND a.external_id=t.assignee_external_id"
-                + (" WHERE t.provider=?" if prov else "")
-                + " GROUP BY t.provider, COALESCE(a.company_id,'')",
+                "SELECT provider, company_id, COUNT(*) AS n FROM external_tasks"  # noqa: S608 - 고정 절만, 값은 바인딩
+                + (" WHERE provider=?" if prov else "")
+                + " GROUP BY provider, company_id",
                 (prov,) if prov else (),
             ).fetchall()
             run_rows = c.execute(
-                "SELECT r.provider, COALESCE(a.company_id,'') AS company_id,"  # noqa: S608 - 고정 절만, 값은 바인딩
-                " COUNT(*) AS n FROM external_runs r"
-                " LEFT JOIN external_agents a"
-                " ON a.provider=r.provider AND a.external_id=r.agent_external_id"
-                + (" WHERE r.provider=?" if prov else "")
-                + " GROUP BY r.provider, COALESCE(a.company_id,'')",
+                "SELECT provider, company_id, COUNT(*) AS n FROM external_runs"  # noqa: S608 - 고정 절만, 값은 바인딩
+                + (" WHERE provider=?" if prov else "")
+                + " GROUP BY provider, company_id",
                 (prov,) if prov else (),
             ).fetchall()
         counts: dict[tuple[str, str], dict[str, int]] = {}

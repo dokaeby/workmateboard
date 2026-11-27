@@ -213,6 +213,57 @@ class RoutineStoreMixin:
             )
         return cur.rowcount > 0
 
+    def claim_routine_fire_with_run(
+        self,
+        routine_id: str,
+        expected_next_run_at: str,
+        last_run_at: str,
+        next_run_at: str | None,
+        *,
+        scheduled_for: str,
+        idempotency_key: str,
+        status: str = "pending",
+    ) -> tuple[str, dict[str, Any] | None]:
+        """claim + pending routine_run 생성을 단일 tx로 — (action, run) 반환.
+
+        action: 'claimed'(새 run 생성) / 'claim_lost'(CAS 실패) /
+        'duplicate'(동일 idempotency_key의 run이 이미 존재 — claim은
+        커밋돼 스케줄은 전진하고 기존 run을 반환한다).
+
+        두 단계를 한 tx로 묶어 claim 후 크래시로 발생분이 유실되거나
+        routine_run 없이 task만 생기는 경로를 없앤다. routine_runs INSERT는
+        INSERT OR IGNORE(PG는 ON CONFLICT DO NOTHING으로 번역)라 중복 키여도
+        tx가 abort되지 않는다."""
+        st = (status or RoutineRunStatus.PENDING.value).strip().lower()[:20]
+        if st not in _RUN_STATUSES:
+            st = RoutineRunStatus.PENDING.value
+        now = _iso(_now())
+        rrid = uuid.uuid4().hex[:12]
+        key = (idempotency_key or "").strip()[:200]
+        if not key:
+            return "claim_lost", None
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE routines SET last_run_at=?, next_run_at=?, updated_at=?"
+                " WHERE id=? AND enabled=1 AND next_run_at=?",
+                (last_run_at, next_run_at, now, routine_id, expected_next_run_at),
+            )
+            if cur.rowcount == 0:
+                return "claim_lost", None
+            ins = c.execute(
+                "INSERT OR IGNORE INTO routine_runs(id,routine_id,scheduled_for,"
+                "status,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+                (rrid, routine_id, scheduled_for.strip()[:64], st, key, now),
+            )
+            if ins.rowcount == 0:
+                # 동일 idempotency_key — 기존 run을 같은 tx에서 읽는다.
+                row = c.execute(
+                    "SELECT * FROM routine_runs WHERE idempotency_key=?", (key,)
+                ).fetchone()
+                return "duplicate", self._routine_run_json(row) if row else None
+            row = c.execute("SELECT * FROM routine_runs WHERE id=?", (rrid,)).fetchone()
+            return "claimed", self._routine_run_json(row) if row else {"id": rrid}
+
     # ---- routine_runs ----
     def create_routine_run(
         self,
@@ -293,6 +344,22 @@ class RoutineStoreMixin:
                 (*fields.values(), run_id),
             )
         return self.get_routine_run(run_id)
+
+    def fail_stale_pending_routine_runs(self, older_than: str) -> int:
+        """pending 상태로 오래 남은 routine_runs를 failed로 마감한다.
+
+        claim_routine_fire_with_run은 pending run을 먼저 만들고 task
+        생성·마감은 이후에 한다 — 그 사이 프로세스 크래시나 마감 단계
+        실패가 나면 run이 영구 pending으로 남아 routine 이력이 '진행 중'으로
+        보인다(R2-5). watchdog(_process_due_routines)가 호출해 회수한다."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE routine_runs SET status='failed',"
+                " error_code='interrupted', finished_at=?"
+                " WHERE status='pending' AND created_at < ?",
+                (_iso(_now()), older_than),
+            )
+        return int(cur.rowcount or 0)
 
     def routine_inflight_count(self, routine_id: str) -> int:
         """max_concurrent 판정 — 이 routine이 만든 task 중 비종결 상태 개수.

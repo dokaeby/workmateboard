@@ -534,6 +534,22 @@ def patch_task(
             task_id=str(task["id"]),
             actor=actor,
         )
+        # project_id가 함께 바뀌면 대상 project 스코프에서도 재검증한다 —
+        # task_id만 넘기면 현재 task의 project가 정본이라 이동 '후'의
+        # project deny를 우회할 수 있다(R2-1). task 스코프 규칙은 위 호출이
+        # 이미 커버하므로 여기서는 project_id만 명시한다. task_id를 함께
+        # 넘기면 _resolve_scope_ids가 현재 project와의 충돌로 422를 내므로
+        # 넘기지 않는다 — global+target-project 규칙은 이 호출이 커버한다.
+        if "project_id" in fields:
+            target_pid = str(fields.get("project_id") or "").strip()
+            if target_pid and target_pid != str(task.get("project_id") or ""):
+                perm_svc.require_permission(
+                    store,
+                    str(new_assignee),
+                    AgentCapability.TASK_ASSIGN.value,
+                    project_id=target_pid,
+                    actor=actor,
+                )
     if "parent_id" in fields and fields["parent_id"]:
         parent = _resolve_task_uuid(store, str(fields["parent_id"]))
         if parent is None:
@@ -648,6 +664,18 @@ def checkout_task(
             task_id=str(task["id"]),
             actor=actor,
         )
+        # M1 회귀 — checkout은 assignee 없는 task를 checkout agent에게
+        # 자동 배정한다(아래 fields). task:update만 검사하면 task:assign
+        # deny를 우회해 자기 배정이 가능하므로, 자동 배정이 발생하는 경우
+        # task:assign도 함께 요구한다.
+        if not task.get("assignee_agent_id"):
+            perm_svc.require_permission(
+                store,
+                agent_id,
+                AgentCapability.TASK_ASSIGN.value,
+                task_id=str(task["id"]),
+                actor=actor,
+            )
     if task["status"] in _TASK_TERMINAL:
         raise ManagementError(409, "conflict", f"task is {task['status']}")
     # 명시 배정이 다른 agent에게 있으면 checkout 불가 — checkout이

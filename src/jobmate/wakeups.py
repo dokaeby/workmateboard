@@ -520,7 +520,9 @@ def on_run_finished(
         # defer 이후 agent permission(run:execute)이 회수됐으면 promote하지
         # 않는다 — 생성 시점(POST /runs, wake_agent)과 동일한 서버 재검증을
         # promote 경로에도 적용한다(spec 3차 D TOCTOU). task 컨텍스트는
-        # input.meta.task_id에서 해석한다.
+        # input.meta.task_id에서, project 컨텍스트는 input.project에서
+        # 해석한다 — project 태그를 무시하면 defer~promote 사이 추가된
+        # project-scoped deny를 우회한다(R2-2).
         if w_agent_id:
             from .services.agent_management import ManagementError
 
@@ -528,11 +530,21 @@ def on_run_finished(
             _w_meta = input_data.get("meta")
             if isinstance(_w_meta, dict):
                 _w_meta_task = str(_w_meta.get("task_id") or "")
+            # input.project는 이름 문자열일 수 있으므로 permission scope_id
+            # (canonical project uuid)로 해석한다 — POST /runs와 동일 규칙.
+            # 해석 실패 시 ''를 넘겨 task_id 유도 project가 대신 쓰이게 한다.
+            _w_project_id = ""
+            _w_project = str(input_data.get("project") or "").strip()
+            if _w_project:
+                _w_proj = store.get_project(_w_project) or store.find_project_by_name(_w_project)
+                if _w_proj is not None:
+                    _w_project_id = str(_w_proj.get("id") or "")
             try:
                 perm_svc.require_permission(
                     store,
                     w_agent_id,
                     AgentCapability.RUN_EXECUTE.value,
+                    project_id=_w_project_id,
                     task_id=_w_meta_task,
                     actor="wakeup-promote",
                 )

@@ -474,6 +474,21 @@ def set_routine_enabled(
 
 # ---------- 발사 ----------
 
+# pending routine_run이 이 시간을 넘기면 watchdog이 failed로 회수한다 —
+# claim~task 생성/마감 사이의 크래시·마감 실패 잔여를 정리한다(R2-5).
+PENDING_RUN_TTL_SECONDS = 3600
+
+
+def sweep_stale_pending_runs(store: Store, *, now: datetime | None = None) -> int:
+    """오래된 pending routine_runs를 failed('interrupted')로 마감.
+
+    _process_due_routines이 발사 루프 전에 호출하는 저비용 회수 경로 —
+    정상 경로에서는 pending이 수 초 내에 created/failed로 전이되므로
+    1시간 TTL로 충분하다."""
+    now = now or _now()
+    cutoff = (now - timedelta(seconds=PENDING_RUN_TTL_SECONDS)).isoformat()
+    return store.fail_stale_pending_routine_runs(cutoff)
+
 
 def _task_fields_from_template(routine: dict[str, Any]) -> dict[str, Any]:
     tmpl = routine.get("task_template") or {}
@@ -523,18 +538,26 @@ def fire_due_routine(
     new_next = first_run_after(routine, now, anchor=anchor)
     last_run = now.isoformat()
     next_run = new_next.isoformat() if new_next else None
-    if not store.claim_routine_fire(rid, expected_next, last_run, next_run):
-        return {"action": "claim_lost", "routine_id": rid}
-
+    # claim(next_run_at CAS) + pending routine_run 생성을 단일 tx로 —
+    # claim과 run 생성 사이 크래시로 발생분이 유실되거나 task만 남는
+    # 고아 경로를 없앤다(M3). 동일 idempotency_key는 'duplicate'로 수렴.
     idem_key = f"{rid}:{_iso(sched_for)}"
-    rr, created = store.create_routine_run(
-        routine_id=rid,
+    claim_action, rr = store.claim_routine_fire_with_run(
+        rid,
+        expected_next,
+        last_run,
+        next_run,
         scheduled_for=_iso(sched_for) or "",
         idempotency_key=idem_key,
     )
-    if not created or rr is None:
+    if claim_action == "claim_lost":
+        return {"action": "claim_lost", "routine_id": rid}
+    if claim_action == "duplicate":
         # 동일 scheduled_for가 이미 기록됨 — 중복 발사 차단(두 번째 방어선).
+        # claim은 커밋돼 스케줄은 정상 전진했다.
         return {"action": "duplicate", "routine_id": rid, "routine_run": rr}
+    if rr is None:
+        return {"action": "claim_lost", "routine_id": rid, "reason": "no run row"}
 
     maxc = int(routine.get("max_concurrent") or 1)
     if maxc >= 1 and store.routine_inflight_count(rid) >= maxc:
@@ -629,64 +652,120 @@ def fire_due_routine(
         return {"action": "failed", "reason": err_code, "routine_run": rr}
 
     task_id = str(task["id"])
+    # task 생성 이후 단계(task_id 연결 → wake → created 마감 + audit)를
+    # 하나의 보호 블록으로 묶는다 — mark/audit 실패나 크래시가 나도
+    # routine_run이 pending으로 영구 방치되지 않게 failed로 best-effort
+    # 마감하고 task_id는 보존한다(R2-5). task_id 연결은 wake보다 먼저다 —
+    # wake 실패·크래시 후에도 routine_inflight_count가 task를 추적한다.
+    try:
+        store.mark_routine_run(
+            str(rr["id"]),
+            status=RoutineRunStatus.PENDING.value,
+            task_id=task_id,
+            finished=False,
+        )
 
-    # assignee가 있으면 기존 wake 경로 재사용 — 예산 admission은
-    # wakeups.admit_run 내부에서 수행된다. idempotency_key는 routine_run id
-    # 기반이라 동일 run의 재시도/중복 tick이 run을 중복 생성하지 않는다.
-    wake_error = ""
-    aid = str(routine.get("assignee_agent_id") or "")
-    if aid:
-        try:
-            mgmt.wake_agent(
-                store,
-                aid,
-                task_id=task_id,
-                idempotency_key=f"routine:{rr['id']}",
-                actor=actor,
-                schedule=schedule_run,
-            )
-        except Exception as e:
-            # task는 생성됐으므로 run 상태는 created 유지 — wake 실패는
-            # error_code에만 기록한다(재시도는 사람/다음 회차 담당).
-            wake_error = f"wake:{getattr(e, 'code', type(e).__name__)}"
-            logger.warning(
-                "routine wake failed id=%s task=%s agent=%s err=%s",
-                rid,
-                task_id,
-                aid,
-                str(e)[:200],
-            )
+        # assignee가 있으면 기존 wake 경로 재사용 — 예산 admission은
+        # wakeups.admit_run 내부에서 수행된다. idempotency_key는 routine_run
+        # id 기반이라 동일 run의 재시도/중복 tick이 run을 중복 생성하지 않는다.
+        wake_error = ""
+        aid = str(routine.get("assignee_agent_id") or "")
+        if aid:
+            try:
+                mgmt.wake_agent(
+                    store,
+                    aid,
+                    task_id=task_id,
+                    idempotency_key=f"routine:{rr['id']}",
+                    actor=actor,
+                    schedule=schedule_run,
+                )
+            except Exception as e:
+                # task는 생성됐으므로 run 상태는 created 유지 — wake 실패는
+                # error_code에만 기록한다(재시도는 사람/다음 회차 담당).
+                wake_error = f"wake:{getattr(e, 'code', type(e).__name__)}"
+                logger.warning(
+                    "routine wake failed id=%s task=%s agent=%s err=%s",
+                    rid,
+                    task_id,
+                    aid,
+                    str(e)[:200],
+                )
 
-    store.mark_routine_run(
-        str(rr["id"]),
-        status=RoutineRunStatus.CREATED.value,
-        task_id=task_id,
-        error_code=wake_error,
-    )
-    store.audit(
-        "",
-        actor,
-        "routine_fired",
-        rid,
-        {
+        store.mark_routine_run(
+            str(rr["id"]),
+            status=RoutineRunStatus.CREATED.value,
+            task_id=task_id,
+            error_code=wake_error,
+        )
+        store.audit(
+            "",
+            actor,
+            "routine_fired",
+            rid,
+            {
+                "scheduled_for": _iso(sched_for),
+                "task_id": task_id,
+                "routine_run_id": str(rr["id"]),
+                "wake_error": wake_error,
+            },
+        )
+        logger.info(
+            "routine fired id=%s scheduled_for=%s task=%s run=%s",
+            rid,
+            _iso(sched_for),
+            task_id,
+            str(rr["id"]),
+        )
+        return {
+            "action": "claimed",
+            "routine_id": rid,
             "scheduled_for": _iso(sched_for),
             "task_id": task_id,
-            "routine_run_id": str(rr["id"]),
+            "routine_run": rr,
             "wake_error": wake_error,
-        },
-    )
-    logger.info(
-        "routine fired id=%s scheduled_for=%s task=%s run=%s",
-        rid,
-        _iso(sched_for),
-        task_id,
-        str(rr["id"]),
-    )
-    return {
-        "action": "claimed",
-        "routine_id": rid,
-        "scheduled_for": _iso(sched_for),
-        "task_id": task_id,
-        "routine_run": rr,
-        "wake_error": wake_error,
-    }
+        }
+    except Exception as e:
+        # task는 이미 생성됐다 — 마감 단계 실패를 routine_run failed로
+        # best-effort 기록한다(task_id 보존 → inflight 추적 유지).
+        # 이 마감마저 실패하면 sweep_stale_pending_runs가 1시간 후 회수.
+        err_code = f"finalize:{type(e).__name__}"
+        try:
+            store.mark_routine_run(
+                str(rr["id"]),
+                status=RoutineRunStatus.FAILED.value,
+                task_id=task_id,
+                error_code=err_code[:200],
+            )
+        except Exception:
+            logger.warning(
+                "routine_run failed-mark also failed id=%s", str(rr["id"]), exc_info=True
+            )
+        try:
+            store.audit(
+                "",
+                actor,
+                "routine_failed",
+                rid,
+                {
+                    "scheduled_for": _iso(sched_for),
+                    "task_id": task_id,
+                    "error_code": err_code[:200],
+                },
+            )
+        except Exception:
+            logger.warning("routine_failed audit failed id=%s", rid, exc_info=True)
+        logger.warning(
+            "routine finalize failed id=%s scheduled_for=%s task=%s err=%s",
+            rid,
+            _iso(sched_for),
+            task_id,
+            str(e)[:200],
+        )
+        return {
+            "action": "failed",
+            "reason": err_code,
+            "routine_id": rid,
+            "task_id": task_id,
+            "routine_run": rr,
+        }

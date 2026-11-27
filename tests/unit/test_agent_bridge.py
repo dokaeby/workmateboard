@@ -804,7 +804,7 @@ def _bridge_with(states: list[ab.SessionState], **kw) -> tuple[ab.Bridge, list[h
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     bridge = ab.Bridge(
-        "http://testserver",
+        "http://127.0.0.1:8000",
         api_key="k",
         scanners={"fake": _FakeScanner(states)},
         roots={"fake": Path("/data")},
@@ -861,6 +861,24 @@ def test_bridge_ended_on_disappear() -> None:
     assert c["ended"] == 0 and len(requests) == 2
 
 
+def test_bridge_rejects_unvalidated_url():
+    """R2-3 회귀 — Bridge 생성자가 push URL의 egress 정책을 검증한다.
+    Bearer가 실리므로 공인 호스트 http·userinfo 포함 URL은 거부."""
+    from jobmate.paperclip_client import PaperclipConfigError
+
+    with pytest.raises(PaperclipConfigError):
+        ab.Bridge("http://8.8.8.8", scanners={}, roots={})
+    with pytest.raises(PaperclipConfigError):
+        ab.Bridge("https://user:pass@8.8.8.8", scanners={}, roots={})
+    with pytest.raises(PaperclipConfigError):
+        ab.Bridge("ftp://127.0.0.1", scanners={}, roots={})
+    # loopback http/https는 허용 — self.url은 정규화된 값이다.
+    b = ab.Bridge("http://127.0.0.1:8000", scanners={}, roots={})
+    assert b.url == "http://127.0.0.1:8000"
+    b2 = ab.Bridge("localhost:9000", scanners={}, roots={})
+    assert b2.url == "https://localhost:9000"
+
+
 def test_scan_all_isolates_scanner_failure() -> None:
     def bad(root: Path, now: float) -> list[ab.SessionState]:
         raise RuntimeError("boom")
@@ -893,7 +911,7 @@ def test_bridge_ended_push_failure_retries() -> None:
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     bridge = ab.Bridge(
-        "http://testserver",
+        "http://127.0.0.1:8000",
         scanners={"fake": _FakeScanner([st])},
         roots={"fake": Path("/data")},
         client=client,

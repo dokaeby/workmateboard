@@ -318,6 +318,14 @@ def _process_due_routines(
             ).start()
 
     fired = skipped = failed = 0
+    # R2-5 — claim 후 크래시/마감 실패로 pending에 남은 routine_run 회수.
+    # 저비용 UPDATE 1건 — 매 due-routine 처리 주기마다 실행한다.
+    try:
+        swept = routines_svc.sweep_stale_pending_runs(store)
+        if swept:
+            worker_logger.info("swept %d stale pending routine_runs", swept)
+    except Exception as e:
+        worker_logger.warning("stale routine_run sweep failed: %s", str(e)[:200])
     for routine in store.due_routines(limit=batch):
         rid = str(routine.get("id") or "")
         try:

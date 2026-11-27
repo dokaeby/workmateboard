@@ -28,7 +28,7 @@ from ..schemas import (
     ProjectPatchRequest,
     RunPatchRequest,
 )
-from ..support import _session_view
+from ..support import _session_view, sanitize_project_audit_fields
 
 logger = logging.getLogger("jobmate.api")
 
@@ -344,7 +344,14 @@ def register(app: FastAPI, ctx: Any) -> None:
         proj = store.update_project(project_id, **fields)
         if proj is None:
             return err(404, "not_found", "project not found or name conflict", request)
-        _audit_api(request, "project_update", project_id, fields)
+        # workspace_path 등 응답 필터 대상 필드는 audit detail에도 원문 금지 —
+        # /api/v1/audit은 머신 키(admin)도 읽어 _project_out 필터를 우회한다.
+        _audit_api(
+            request,
+            "project_update",
+            project_id,
+            sanitize_project_audit_fields(fields),
+        )
         logger.info("project updated id=%s fields=%s", project_id, sorted(fields))
         return JSONResponse(content=_project_out(proj, request))
 

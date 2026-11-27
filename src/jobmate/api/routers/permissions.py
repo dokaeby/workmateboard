@@ -5,8 +5,11 @@ GET/PUT /api/v1/management/agents/{id}/permissions + effective 판정 조회.
 services/permissions.py가 담당하고, 서버는 모든 agent-actor 실행 경로에서
 require_permission으로 재검증한다 — UI 버튼 숨김은 편의 기능일 뿐이다.
 
-인증: PUT은 lead+(_lead_gate). GET은 member+ — /api/* 미들웨어가 인증을
-강제하므로 추가 게이트 없이 읽기만 허용한다(goals/routines 읽기와 동일).
+인증: PUT은 '명시적' lead+(_explicit_lead_user) — 머신 API 키는
+_lead_user에서는 admin이지만 agent runner가 자기/타인 permission을
+지우는 self-escalation 경로가 되므로 명시적 세션 lead/admin 또는
+인증 비활성 로컬 모드만 허용한다. GET list/effective는 member+ —
+/api/* 미들웨어가 인증을 강제하므로 추가 게이트 없이 읽기만 허용한다.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ logger = logging.getLogger("jobmate.api")
 def register(app: FastAPI, ctx: Any) -> None:
     store = ctx.store
     err = ctx.err
-    _lead_gate = ctx._lead_gate
+    _explicit_lead_user = ctx._explicit_lead_user
     _audit_api = ctx._audit_api
     _actor_label = ctx._actor_label
 
@@ -44,11 +47,15 @@ def register(app: FastAPI, ctx: Any) -> None:
     def put_agent_permissions(
         agent_id: str, body: AgentPermissionsPutRequest, request: Request
     ) -> JSONResponse:
-        """permission 규칙 전체 교체(lead+) — body.permissions 배열이
-        새 집합의 전부다. 검증 실패는 422, agent 미존재는 404."""
-        gate = _lead_gate(request)
-        if gate is not None:
-            return gate
+        """permission 규칙 전체 교체(명시적 lead+) — body.permissions 배열이
+        새 집합의 전부다. 검증 실패는 422, agent 미존재는 404.
+
+        머신 API 키는 _lead_user상 admin이지만 여기서는 거부한다 —
+        agent runner가 API 키로 자기 permission deny 규칙을 지우는
+        self-escalation을 막기 위해 _explicit_lead_user(세션 lead/admin
+        또는 인증 비활성 로컬 모드)만 허용한다."""
+        if _explicit_lead_user(request) is None:
+            return err(403, "forbidden", "explicit lead session required", request)
         try:
             rules = perm_svc.validate_permission_rules(
                 store,

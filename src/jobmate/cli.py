@@ -211,18 +211,27 @@ def main(argv: list[str] | None = None) -> int:
 
 def _agent_bridge(args: argparse.Namespace) -> int:
     from .agent_bridge import Bridge
+    from .paperclip_client import PaperclipError
 
     # get_settings()의 load_dotenv() 이후 호출되므로 .env의 JOBMATE_URL도 반영된다.
     url = args.url or os.environ.get("JOBMATE_URL") or "http://127.0.0.1:8000"
     api_key = os.environ.get(args.api_key_env, "")
     if not api_key:
         logger.warning("agent-bridge: env %s not set — push will likely fail", args.api_key_env)
-    bridge = Bridge(url, api_key or None)
+    try:
+        # Bridge 생성자가 URL egress 정책을 검증한다(Bearer 유출 방지) —
+        # 잘못된 URL은 traceback 대신 clean 종료.
+        bridge = Bridge(url, api_key or None)
+    except PaperclipError as e:
+        logger.error("agent-bridge config rejected: %s", type(e).__name__)
+        print(f"agent-bridge: {e}", file=sys.stderr)
+        return 2
     if args.once:
         counts = bridge.push()
         logger.info("agent-bridge once: %s", counts)
         return 0
-    logger.info("agent-bridge start url=%s interval=%ss", url, args.interval)
+    # self.url은 검증·정규화된 값(userinfo 없음) — 원문 url은 로깅하지 않는다.
+    logger.info("agent-bridge start url=%s interval=%ss", bridge.url, args.interval)
     try:
         while True:
             counts = bridge.push()
@@ -277,12 +286,18 @@ def _paperclip_bridge(args: argparse.Namespace) -> int:
         logger.error("paperclip-bridge config rejected: %s", type(e).__name__)
         print(f"paperclip-bridge: {e}", file=sys.stderr)
         return 2
-    bridge = PaperclipBridge(
-        orch,
-        jobmate_url=jobmate_url,
-        api_key=jm_key or None,
-        company_id=company_id,
-    )
+    try:
+        bridge = PaperclipBridge(
+            orch,
+            jobmate_url=jobmate_url,
+            api_key=jm_key or None,
+            company_id=company_id,
+        )
+    except PaperclipError as e:
+        # jobmate_url 검증 실패 등 — PaperclipClient와 동일하게 clean 종료.
+        logger.error("paperclip-bridge config rejected: %s", type(e).__name__)
+        print(f"paperclip-bridge: {e}", file=sys.stderr)
+        return 2
     interval = max(float(args.interval), _PAPERCLIP_MIN_INTERVAL)
     if args.once:
         try:

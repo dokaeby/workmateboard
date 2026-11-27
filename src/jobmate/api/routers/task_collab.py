@@ -34,6 +34,7 @@ from ..schemas import (
     TaskArtifactCreateRequest,
     TaskCommentCreateRequest,
 )
+from ..support import sanitize_project_audit_fields
 
 logger = logging.getLogger("jobmate.api")
 
@@ -392,7 +393,14 @@ def register(app: FastAPI, ctx: Any) -> None:
         proj = store.update_project(project_id, **fields)
         if proj is None:
             return err(404, "not_found", "project not found or name conflict", request)
-        _audit_api(request, "project_update", project_id, fields)
+        # sessions.py patch_project와 동일 — workspace_path 원문은 audit에
+        # 남기지 않는다(/api/v1/audit이 응답 필터를 우회하기 때문).
+        _audit_api(
+            request,
+            "project_update",
+            project_id,
+            sanitize_project_audit_fields(fields),
+        )
         return JSONResponse(content=_alias_project_out(proj, request))
 
     @app.delete("/api/v1/management/projects/{project_id}")

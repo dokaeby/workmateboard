@@ -378,6 +378,22 @@ def _workflow_needs_lead(key: str) -> bool:
     return False
 
 
+# ---------- audit detail 비밀/내부경로 마스킹 ----------
+
+# API 응답에서는 _project_out/_alias_project_out이 비-명시 lead에게 숨기는
+# 프로젝트 필드 — audit detail에도 원문을 남기지 않는다(/api/v1/audit은
+# admin=머신 키까지 읽을 수 있어 응답 필터를 우회한다).
+_AUDIT_REDACTED_PROJECT_FIELDS = frozenset({"workspace_path"})
+
+
+def sanitize_project_audit_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """project create/patch audit detail용 — 민감 필드 값을 '<redacted>'로
+    치환한 사본을 반환한다(키 존재 여부는 유지해 변경 필드 목록은 남긴다)."""
+    return {
+        k: ("<redacted>" if k in _AUDIT_REDACTED_PROJECT_FIELDS else v) for k, v in fields.items()
+    }
+
+
 # ---------- connector config 비밀값 암호화 ----------
 _SECRET_FIELD_RE = re.compile(
     r"(?i)(token|secret|password|api[_-]?key|private[_-]?key|credential|authorization)"

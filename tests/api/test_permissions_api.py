@@ -61,6 +61,13 @@ def _sessions(client: TestClient, store: Store) -> tuple[TestClient, TestClient]
     return member, lead
 
 
+def _lead(client: TestClient, store: Store) -> TestClient:
+    """PUT /permissions는 _explicit_lead_user(세션 lead/admin)만 허용 —
+    머신 API 키는 admin이 아니므로 PUT에는 lead 세션 클라이언트가 필요하다."""
+    _member, lead = _sessions(client, store)
+    return lead
+
+
 def _put_rules(client: TestClient, agent_id: str, rules: list[dict], headers=None) -> object:
     return client.put(
         f"/api/v1/management/agents/{agent_id}/permissions",
@@ -92,7 +99,9 @@ def test_get_permissions_requires_auth(monkeypatch):
     assert r.status_code == 401
 
 
-def test_put_permissions_lead_and_machine_ok_member_denied(monkeypatch):
+def test_put_permissions_lead_only_machine_denied(monkeypatch):
+    """H1 회귀 — 머신 API 키는 _lead_user상 admin이지만 PUT은 명시적
+    lead 세션만 허용한다(agent runner self-escalation 차단)."""
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
     client, store = _client()
     agent = _mk_agent(client, headers=_machine(), name="dev")
@@ -101,35 +110,40 @@ def test_put_permissions_lead_and_machine_ok_member_denied(monkeypatch):
     # member → 403
     r = _put_rules(member, agent["id"], rules)
     assert r.status_code == 403
+    # 머신 API 키 → 403 (H1: 예전에는 _lead_gate가 admin 취급해 200이었다)
+    r3 = _put_rules(client, agent["id"], rules, headers=_machine())
+    assert r3.status_code == 403
+    # 규칙이 실제로 쓰이지 않았는지 확인
+    assert (
+        client.get(
+            f"/api/v1/management/agents/{agent['id']}/permissions", headers=_machine()
+        ).json()["permissions"]
+        == []
+    )
     # lead 세션 → 200
     r2 = _put_rules(lead, agent["id"], rules)
     assert r2.status_code == 200, r2.text
     assert r2.json()["permissions"][0]["capability"] == "task:read"
-    # 머신 API 키 → 200 (lead 상당)
-    r3 = _put_rules(client, agent["id"], rules, headers=_machine())
-    assert r3.status_code == 200
 
 
 def test_put_permissions_replace_semantics(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     agent = _mk_agent(client, headers=_machine(), name="dev")
-    h = _machine()
+    lead = _lead(client, store)
     _put_rules(
-        client,
+        lead,
         agent["id"],
         [
             {"capability": "task:read", "effect": "allow"},
             {"capability": "agent:wake", "effect": "deny"},
         ],
-        headers=h,
     )
     # 두 번째 PUT은 전체 교체 — task:read는 사라진다.
     r = _put_rules(
-        client,
+        lead,
         agent["id"],
         [{"capability": "run:execute", "effect": "deny"}],
-        headers=h,
     )
     assert r.status_code == 200
     caps = {p["capability"] for p in r.json()["permissions"]}
@@ -152,41 +166,45 @@ def test_put_permissions_replace_semantics(monkeypatch):
 )
 def test_put_permissions_validation_errors(monkeypatch, rule):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     agent = _mk_agent(client, headers=_machine(), name="dev")
-    r = _put_rules(client, agent["id"], [rule], headers=_machine())
+    lead = _lead(client, store)
+    r = _put_rules(lead, agent["id"], [rule])
     assert r.status_code == 422, (rule, r.text)
 
 
 def test_put_permissions_duplicate_rejected(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     agent = _mk_agent(client, headers=_machine(), name="dev")
+    lead = _lead(client, store)
     rule = {"capability": "task:read", "effect": "allow", "scope_type": "global"}
-    r = _put_rules(client, agent["id"], [rule, dict(rule)], headers=_machine())
+    r = _put_rules(lead, agent["id"], [rule, dict(rule)])
     assert r.status_code == 422
 
 
 def test_put_permissions_agent_not_found(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
-    r = _put_rules(client, "no-such-agent", [], headers=_machine())
+    client, store = _client()
+    lead = _lead(client, store)
+    r = _put_rules(lead, "no-such-agent", [])
     assert r.status_code == 404
 
 
 def test_put_permissions_scoped_ids_validated_and_normalized(monkeypatch):
     """project/task scope_id는 실존해야 하고 canonical id로 저장된다."""
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     agent = _mk_agent(client, headers=_machine(), name="dev")
     h = _machine()
+    lead = _lead(client, store)
     # project 생성 — goals/projects 라우트 사용
     pr = client.post("/api/v1/projects", json={"name": "proj-x"}, headers=h)
     assert pr.status_code in (200, 201), pr.text
     pid = pr.json()["id"]
     task = _mk_task(client, headers=h, project_id=pid)
     r = _put_rules(
-        client,
+        lead,
         agent["id"],
         [
             {"capability": "task:read", "effect": "deny", "scope_type": "project", "scope_id": pid},
@@ -197,7 +215,6 @@ def test_put_permissions_scoped_ids_validated_and_normalized(monkeypatch):
                 "scope_id": task["identifier"],  # identifier도 canonical uuid로 정규화
             },
         ],
-        headers=h,
     )
     assert r.status_code == 200, r.text
     saved = {p["capability"]: p for p in r.json()["permissions"]}
@@ -209,9 +226,10 @@ def test_put_permissions_scoped_ids_validated_and_normalized(monkeypatch):
 
 def test_effective_defaults_and_deny(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     agent = _mk_agent(client, headers=_machine(), name="dev")
     h = _machine()
+    lead = _lead(client, store)
     base = f"/api/v1/management/agents/{agent['id']}/permissions/effective"
     # 규칙 없음 — 일반 capability는 allow, 위험 capability는 deny
     assert (
@@ -221,7 +239,7 @@ def test_effective_defaults_and_deny(monkeypatch):
     r = client.get(base, params={"capability": "external:send"}, headers=h)
     assert r.json()["decision"] == "deny"
     # deny 규칙 설정 후
-    _put_rules(client, agent["id"], [{"capability": "task:read", "effect": "deny"}], headers=h)
+    _put_rules(lead, agent["id"], [{"capability": "task:read", "effect": "deny"}])
     assert (
         client.get(base, params={"capability": "task:read"}, headers=h).json()["decision"] == "deny"
     )
@@ -231,14 +249,14 @@ def test_effective_defaults_and_deny(monkeypatch):
 
 def test_effective_needs_approval(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     agent = _mk_agent(client, headers=_machine(), name="dev")
     h = _machine()
+    lead = _lead(client, store)
     _put_rules(
-        client,
+        lead,
         agent["id"],
         [{"capability": "deploy:execute", "effect": "allow"}],
-        headers=h,
     )
     base = f"/api/v1/management/agents/{agent['id']}/permissions/effective"
     body = client.get(base, params={"capability": "deploy:execute"}, headers=h).json()
@@ -251,10 +269,11 @@ def test_effective_needs_approval(monkeypatch):
 
 def test_wake_denied_returns_403(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     h = _machine()
     agent = _mk_agent(client, headers=h, name="w1", kind="external", adapter_type="custom")
-    _put_rules(client, agent["id"], [{"capability": "agent:wake", "effect": "deny"}], headers=h)
+    lead = _lead(client, store)
+    _put_rules(lead, agent["id"], [{"capability": "agent:wake", "effect": "deny"}])
     r = client.post(
         f"/api/v1/management/agents/{agent['id']}/wake",
         json={"idempotency_key": "wk-1"},
@@ -266,10 +285,11 @@ def test_wake_denied_returns_403(monkeypatch):
 
 def test_run_create_denied_by_run_execute(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     h = _machine()
     agent = _mk_agent(client, headers=h, name="r1")
-    _put_rules(client, agent["id"], [{"capability": "run:execute", "effect": "deny"}], headers=h)
+    lead = _lead(client, store)
+    _put_rules(lead, agent["id"], [{"capability": "run:execute", "effect": "deny"}])
     r = client.post(
         "/api/v1/runs",
         json={"workflow": "dev_review", "task": "do it", "agent_id": agent["id"]},
@@ -284,11 +304,12 @@ def test_run_create_denied_by_run_execute(monkeypatch):
 
 def test_task_assign_denied_returns_403(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     h = _machine()
     agent = _mk_agent(client, headers=h, name="t1")
     task = _mk_task(client, headers=h)
-    _put_rules(client, agent["id"], [{"capability": "task:assign", "effect": "deny"}], headers=h)
+    lead = _lead(client, store)
+    _put_rules(lead, agent["id"], [{"capability": "task:assign", "effect": "deny"}])
     r = client.post(
         f"/api/v1/management/tasks/{task['id']}/assign",
         json={"agent_id": agent["id"]},
@@ -300,12 +321,13 @@ def test_task_assign_denied_returns_403(monkeypatch):
 
 def test_checkout_denied_returns_403(monkeypatch):
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
-    client, _store = _client()
+    client, store = _client()
     h = _machine()
     agent = _mk_agent(client, headers=h, name="c1", kind="external", adapter_type="custom")
     task = _mk_task(client, headers=h)
+    lead = _lead(client, store)
     _put_rules(
-        client,
+        lead,
         agent["id"],
         [
             {
@@ -315,7 +337,6 @@ def test_checkout_denied_returns_403(monkeypatch):
                 "scope_id": task["id"],
             }
         ],
-        headers=h,
     )
     r = client.post(
         f"/api/v1/management/tasks/{task['id']}/checkout",
@@ -324,6 +345,59 @@ def test_checkout_denied_returns_403(monkeypatch):
     )
     assert r.status_code == 403
     assert r.json()["error"]["code"] == "permission_denied"
+
+
+def test_run_create_conflicting_task_project_422(monkeypatch):
+    """H2 회귀 — metadata.task_id의 task가 속한 project와 다른 project를
+    함께 보내면 422 (project deny 우회 차단)."""
+    monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
+    client, store = _client()
+    h = _machine()
+    lead = _lead(client, store)
+    agent = _mk_agent(client, headers=h, name="h2")
+    pa = client.post("/api/v1/projects", json={"name": "proj-a"}, headers=h).json()
+    client.post("/api/v1/projects", json={"name": "proj-b"}, headers=h)
+    task = _mk_task(client, headers=h, project_id=pa["id"])
+    # project A에 run:execute deny — task의 진짜 project가 평가돼야 한다.
+    _put_rules(
+        lead,
+        agent["id"],
+        [
+            {
+                "capability": "run:execute",
+                "effect": "deny",
+                "scope_type": "project",
+                "scope_id": pa["id"],
+            }
+        ],
+    )
+    # 충돌 입력: task는 A 소속인데 project=B → 422 (B 컨텍스트로 deny 우회 불가)
+    r = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow": "dev_review",
+            "task": "do it",
+            "agent_id": agent["id"],
+            "project": "proj-b",
+            "metadata": {"task_id": task["id"]},
+        },
+        headers=h,
+    )
+    assert r.status_code == 422, r.text
+    # 일치 입력: project=A(또는 생략) + task_id → A의 deny가 매칭돼 403.
+    r2 = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow": "dev_review",
+            "task": "do it",
+            "agent_id": agent["id"],
+            "project": "proj-a",
+            "metadata": {"task_id": task["id"]},
+        },
+        headers=h,
+    )
+    assert r2.status_code == 403
+    assert r2.json()["error"]["code"] == "permission_denied"
 
 
 def test_allowed_paths_unaffected(monkeypatch):

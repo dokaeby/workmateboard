@@ -299,6 +299,38 @@ def test_management_projects_workspace_path_gated(monkeypatch: pytest.MonkeyPatc
     assert "workspace_path" not in got.json()["items"][0]
 
 
+def test_project_update_audit_redacts_workspace_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M2 회귀 — PATCH audit detail에 workspace_path 원문이 남으면
+    /api/v1/audit(머신 키 읽기 가능)이 _project_out 필터를 우회한다."""
+    monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
+    client, store = _client()
+    headers = {"X-API-Key": API_KEY}
+    p = client.post(
+        "/api/v1/management/projects",
+        json={"name": "P", "workspace_path": "/secret/ws"},
+        headers=headers,
+    ).json()
+    r = client.patch(
+        f"/api/v1/management/projects/{p['id']}",
+        json={"workspace_path": "/etc/jobmate/private", "status": "active"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    audits = [
+        a
+        for a in store.list_audit(500)
+        if a.get("action") == "project_update" and a.get("target") == p["id"]
+    ]
+    assert audits, "project_update audit event missing"
+    detail = audits[0].get("detail") or {}
+    assert "/etc/jobmate/private" not in str(detail)
+    assert detail.get("workspace_path") == "<redacted>"
+    # 다른 필드는 그대로 기록된다
+    assert detail.get("status") == "active"
+
+
 def test_task_project_goal_refs() -> None:
     """task 생성/patch의 project_id·goal_id — 존재 검증 + effective goal."""
     client, store = _client()

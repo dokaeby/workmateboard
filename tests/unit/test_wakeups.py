@@ -266,6 +266,57 @@ def test_promote_blocked_by_budget():
     assert len(s.list_runs()) == 1  # promote된 run 없음
 
 
+def test_promote_blocked_by_project_permission_deny():
+    """R2-2 회귀 — deferred promote가 run input의 project 컨텍스트도
+    재검증한다. defer 이후 project-scoped run:execute deny가 추가되면
+    task 없는 run도 promote되지 않는다."""
+    s = _store()
+    agent = s.create_agent(
+        "dev",
+        "claude",
+        kind="workflow",
+        adapter_config={"workflow": "dev_review"},
+    )
+    proj = s.create_project("proj-p")
+    assert agent is not None and proj is not None
+    inp = {"task": "dup", "project": proj["id"]}
+    r1 = admit_run(
+        s,
+        workflow_key="dev_review",
+        input_data=inp,
+        source="api",
+        version="1",
+        agent_id=agent["id"],
+    )
+    d = admit_run(
+        s,
+        workflow_key="dev_review",
+        input_data=inp,
+        source="api",
+        version="1",
+        agent_id=agent["id"],
+        force_new=True,
+    )
+    assert d["action"] == "deferred"
+    # defer 이후 project P에 run:execute deny 추가 — promote 시 재검증돼야 한다.
+    s.replace_agent_permissions(
+        agent["id"],
+        [
+            {
+                "capability": "run:execute",
+                "effect": "deny",
+                "scope_type": "project",
+                "scope_id": proj["id"],
+            }
+        ],
+    )
+    s.update_run(r1["run_id"], status=RunStatus.COMPLETED)
+    created = on_run_finished(s, r1["run_id"])
+    assert created == []
+    assert s.get_wakeup(d["wakeup_id"])["status"] == "failed"
+    assert len(s.list_runs()) == 1  # promote된 run 없음
+
+
 def test_single_flight_only_one_deferred_promoted():
     s = _store()
     r1 = _admit(s, "dup")

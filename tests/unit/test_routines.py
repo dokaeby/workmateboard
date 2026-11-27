@@ -383,6 +383,145 @@ def test_fire_failure_marks_failed():
     assert "task" in runs[0]["error_code"]
 
 
+def test_claim_with_run_atomic_single_tx():
+    """M3 회귀 — claim(next_run_at CAS)과 pending routine_run 생성이 한 tx.
+    claim 성공 즉시 routine_runs 행이 존재해야 한다(사이 크래시 유실 없음)."""
+    store = _store()
+    r = _routine(store)
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    store.update_routine(r["id"], next_run_at=past)
+    nxt = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    key = f"{r['id']}:sched1"
+    action, rr = store.claim_routine_fire_with_run(
+        r["id"],
+        past,
+        datetime.now(UTC).isoformat(),
+        nxt,
+        scheduled_for="2025-01-01T00:00:00+00:00",
+        idempotency_key=key,
+    )
+    assert action == "claimed"
+    assert rr is not None and rr["status"] == "pending"
+    # routine_run 행이 이미 존재 — claim과 같은 tx로 생성됐다.
+    assert store.get_routine_run_by_key(key) is not None
+    # expected_next 불일치 → claim_lost (run도 생성되지 않음)
+    action2, rr2 = store.claim_routine_fire_with_run(
+        r["id"],
+        past,
+        datetime.now(UTC).isoformat(),
+        nxt,
+        scheduled_for="2025-01-01T01:00:00+00:00",
+        idempotency_key=f"{r['id']}:sched2",
+    )
+    assert action2 == "claim_lost" and rr2 is None
+    assert store.get_routine_run_by_key(f"{r['id']}:sched2") is None
+
+
+def test_claim_with_run_duplicate_key_converges():
+    """M3 — 동일 idempotency_key는 'duplicate'로 수렴하고 claim은 커밋돼
+    스케줄은 전진한다(무한 재시도 루프 없음)."""
+    store = _store()
+    r = _routine(store)
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    store.update_routine(r["id"], next_run_at=past)
+    key = f"{r['id']}:dup"
+    a1, rr1 = store.claim_routine_fire_with_run(
+        r["id"],
+        past,
+        datetime.now(UTC).isoformat(),
+        (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+        scheduled_for="s1",
+        idempotency_key=key,
+    )
+    assert a1 == "claimed"
+    # 스케줄을 다시 과거로 되돌리고 같은 idempotency_key로 재시도.
+    past2 = (datetime.now(UTC) - timedelta(minutes=4)).isoformat()
+    store.update_routine(r["id"], next_run_at=past2)
+    a2, rr2 = store.claim_routine_fire_with_run(
+        r["id"],
+        past2,
+        datetime.now(UTC).isoformat(),
+        (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
+        scheduled_for="s1",
+        idempotency_key=key,
+    )
+    assert a2 == "duplicate"
+    assert rr2 is not None and rr2["id"] == rr1["id"]
+    # routine_runs는 여전히 1건 — 중복 run이 생기지 않는다.
+    assert len(store.list_routine_runs(r["id"])) == 1
+
+
+def test_fire_task_linked_before_wake_failure():
+    """M3 — task 생성 직후 routine_run에 task_id가 연결된다. wake가 실패해도
+    run은 task를 추적하고 inflight 집계에 포함된다."""
+    store = _store()
+    agent = _mk_agent(store)
+    r = _routine(store, assignee_agent_id=agent["id"], schedule={"minutes": 30})
+    past = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+    store.update_routine(r["id"], next_run_at=past)
+    res = svc.fire_due_routine(store, store.get_routine(r["id"]), schedule_run=lambda a, b: None)
+    assert res["action"] == "claimed"
+    rr = store.list_routine_runs(r["id"])[0]
+    assert rr["task_id"] == res["task_id"]
+    assert rr["status"] == "created"
+    assert store.routine_inflight_count(r["id"]) == 1
+
+
+def test_finalize_failure_marks_run_failed_task_preserved(monkeypatch):
+    """R2-5 회귀 — task 생성 후 마감 단계(mark/audit) 실패 시 routine_run은
+    failed로 마감되고 task_id는 보존된다(pending 영구 방치 없음)."""
+    store = _store()
+    r = _routine(store, schedule={"minutes": 30})
+    past = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+    store.update_routine(r["id"], next_run_at=past)
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    # routine_fired audit이 실패하는 상황 시뮬레이션 — try 블록 안에서 터진다.
+    monkeypatch.setattr(store, "audit", _boom)
+    res = svc.fire_due_routine(store, store.get_routine(r["id"]))
+    assert res["action"] == "failed"
+    assert res["task_id"]
+    rr = store.list_routine_runs(r["id"])[0]
+    assert rr["status"] == "failed"
+    assert rr["task_id"] == res["task_id"]  # task_id 보존 → inflight 추적 유지
+    assert "finalize" in (rr["error_code"] or "")
+    # task는 실제로 생성돼 있고 inflight로 집계된다.
+    assert store.get_task(res["task_id"]) is not None
+    assert store.routine_inflight_count(r["id"]) == 1
+
+
+def test_sweep_stale_pending_runs():
+    """R2-5 회귀 — TTL(1h)을 넘긴 pending routine_run만 failed로 회수하고
+    최근 pending은 건드리지 않는다."""
+    store = _store()
+    r = _routine(store)
+    rr_old, _ = store.create_routine_run(
+        routine_id=r["id"],
+        scheduled_for="s-old",
+        idempotency_key="k-old",
+        status="pending",
+    )
+    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    with store.tx() as c:
+        c.execute("UPDATE routine_runs SET created_at=? WHERE id=?", (old, rr_old["id"]))
+    rr_new, _ = store.create_routine_run(
+        routine_id=r["id"],
+        scheduled_for="s-new",
+        idempotency_key="k-new",
+        status="pending",
+    )
+    n = svc.sweep_stale_pending_runs(store)
+    assert n == 1
+    old_row = store.get_routine_run(rr_old["id"])
+    assert old_row["status"] == "failed" and old_row["error_code"] == "interrupted"
+    assert old_row["finished_at"]
+    assert store.get_routine_run(rr_new["id"])["status"] == "pending"
+    # 두 번째 sweep은 회수할 것이 없다(멱등).
+    assert svc.sweep_stale_pending_runs(store) == 0
+
+
 def test_project_tag_propagates_to_task():
     """routine.project_id → 생성 task의 project_id/goal_id 태그."""
     store = _store()

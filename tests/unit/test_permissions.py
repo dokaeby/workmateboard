@@ -309,3 +309,110 @@ def test_patch_task_assignee_change_denied():
     # 기존 assignee(agent)에게는 deny가 없으므로 정상 배정 가능
     out = mgmt.patch_task(store, task["id"], {"assignee_agent_id": agent["id"]})
     assert out["assignee_agent_id"] == agent["id"]
+
+
+# ---------- Codex adversarial review 회귀 (H2/M1) ----------
+
+
+def test_require_permission_conflicting_project_422():
+    """H2 — task가 속한 project와 다른 project_id를 함께 넘기면 422.
+    task의 project가 정본이며 충돌을 조용히 무시하지 않는다."""
+    store = _store()
+    agent = _agent(store)
+    pa = store.create_project("pa")
+    pb = store.create_project("pb")
+    assert pa is not None and pb is not None
+    task = _task(store, project_id=pa["id"])
+    with pytest.raises(mgmt.ManagementError) as ei:
+        perm_svc.require_permission(
+            store,
+            agent["id"],
+            "task:read",
+            task_id=task["id"],
+            project_id=pb["id"],
+        )
+    assert ei.value.status_code == 422
+    assert ei.value.code == "validation"
+
+
+def test_task_project_wins_for_deny_matching():
+    """H2 — evaluate는 충돌 시 task의 project를 정본으로 쓴다:
+    project A deny가 task(A 소속)+project B 입력에서도 매칭된다."""
+    store = _store()
+    agent = _agent(store)
+    pa = store.create_project("pa")
+    pb = store.create_project("pb")
+    assert pa is not None and pb is not None
+    task = _task(store, project_id=pa["id"])
+    store.replace_agent_permissions(
+        agent["id"], [_rule("run:execute", "deny", "project", pa["id"])]
+    )
+    d = perm_svc.evaluate_permission(
+        store,
+        agent["id"],
+        "run:execute",
+        task_id=task["id"],
+        project_id=pb["id"],
+    )
+    assert d["decision"] == "deny"
+    assert d["project_id"] == pa["id"]
+    assert d["conflict_project_id"] == pb["id"]
+
+
+def test_checkout_self_assign_requires_task_assign():
+    """M1 — checkout은 assignee 없는 task를 checkout agent에게 자동 배정한다.
+    task:update allow + task:assign deny이면 자동 배정 경로가 403이어야 한다."""
+    store = _store()
+    agent = _agent(store, name="m1")
+    task = _task(store)  # assignee 없음
+    store.replace_agent_permissions(agent["id"], [_rule("task:assign", "deny")])
+    with pytest.raises(mgmt.ManagementError) as ei:
+        mgmt.checkout_task(store, task["id"], agent["id"])
+    assert ei.value.status_code == 403
+    assert ei.value.code == "permission_denied"
+    # 이미 자기에게 배정된 task는 자동 배정이 없으므로 task:assign 불요.
+    task2 = _task(store, assignee_agent_id=agent["id"])
+    out = mgmt.checkout_task(store, task2["id"], agent["id"])
+    assert out["checkout_agent_id"] == agent["id"]
+    # 명시적 lead checkout(human_actor)은 permission 검사 면제.
+    task3 = _task(store)
+    out3 = mgmt.checkout_task(store, task3["id"], agent["id"], human_actor=True)
+    assert out3["checkout_agent_id"] == agent["id"]
+
+
+def test_patch_task_move_project_rechecks_assignee_target():
+    """R2-1 회귀 — project_id+assignee_agent_id 동시 변경 시 assignee의
+    task:assign을 '대상' project 스코프에서도 재검증한다. 현재 project
+    기준 판정만으로는 이동 후 deny를 우회할 수 있다."""
+    store = _store()
+    agent = _agent(store, name="mover")
+    pa = store.create_project("pa")
+    pb = store.create_project("pb")
+    assert pa is not None and pb is not None
+    task = _task(store, project_id=pa["id"])
+    # mover는 project B에서만 task:assign deny — A에서는 규칙 없음(allow).
+    store.replace_agent_permissions(
+        agent["id"], [_rule("task:assign", "deny", "project", pb["id"])]
+    )
+    # {project_id:B, assignee:mover} — A 컨텍스트로는 allow지만 B deny에 걸려야 한다.
+    with pytest.raises(mgmt.ManagementError) as ei:
+        mgmt.patch_task(
+            store,
+            task["id"],
+            {"project_id": pb["id"], "assignee_agent_id": agent["id"]},
+        )
+    assert ei.value.status_code == 403
+    assert ei.value.code == "permission_denied"
+    # task는 변경되지 않았다(project/assignee 모두 원래대로).
+    cur = store.get_task(task["id"])
+    assert cur["project_id"] == pa["id"]
+    assert not cur.get("assignee_agent_id")
+    # project A 유지 + assignee만 변경 → A에 deny가 없으므로 통과.
+    out = mgmt.patch_task(
+        store, task["id"], {"project_id": pa["id"], "assignee_agent_id": agent["id"]}
+    )
+    assert out["assignee_agent_id"] == agent["id"]
+    # project만 변경(assignee 없음) → assignee 재검증 대상이 아니다.
+    task2 = _task(store, project_id=pa["id"])
+    out2 = mgmt.patch_task(store, task2["id"], {"project_id": pb["id"]})
+    assert out2["project_id"] == pb["id"]

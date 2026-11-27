@@ -69,12 +69,16 @@ def _resolve_scope_ids(
     scope_id: str = "",
     task_id: str = "",
     project_id: str = "",
-) -> tuple[str, str]:
-    """판정 컨텍스트의 (task_id, project_id) 정규화.
+) -> tuple[str, str, str]:
+    """판정 컨텍스트의 (task_id, project_id, conflict_project_id) 정규화.
 
     - 명시 scope_type/scope_id는 호출자가 지정한 컨텍스트로 취급한다.
-    - task_id가 주어지면 해당 task의 project_id를 scope 해석에 포함한다
-      (task 스코프 규칙 + 그 task가 속한 project/global 규칙이 매칭된다).
+    - task_id가 주어지면 해당 task의 project_id가 project 스코프의
+      **정본**이다 — 호출자가 project_id를 함께 넘겨도 task가 속한
+      project로 덮어쓴다(다른 project 컨텍스트를 끼워 넣어 project deny를
+      우회하는 것을 막는다). 덮어쓴 값이 호출자 입력과 다르면
+      conflict_project_id에 원래 pid를 담아 반환한다 — require_permission이
+      422로 거부하고 evaluate_permission은 무시한다.
     - id/identifier 모두 store.get_task가 해석한다."""
     st = (scope_type or "").strip().lower()
     sid = (scope_id or "").strip()
@@ -84,15 +88,19 @@ def _resolve_scope_ids(
         tid = sid
     elif st == PermissionScopeType.PROJECT.value and sid and not pid:
         pid = sid
+    conflict_pid = ""
     if tid:
         task = store.get_task(tid)
         if task is not None:
             # identifier('WMB-1') 입력도 canonical uuid로 정규화 — 저장된
             # scope_id와 판정 컨텍스트의 task_id가 항상 같은 형태여야 한다.
             tid = str(task.get("id") or tid)
-            if not pid:
-                pid = str(task.get("project_id") or "").strip()
-    return tid, pid
+            task_pid = str(task.get("project_id") or "").strip()
+            if task_pid:
+                if pid and pid != task_pid:
+                    conflict_pid = pid
+                pid = task_pid
+    return tid, pid, conflict_pid
 
 
 def _matching_rules(
@@ -134,7 +142,7 @@ def matching_permission_rules(
     project_id: str = "",
 ) -> list[dict[str, Any]]:
     """(agent, capability)에 매칭되는 규칙 — scope 좁은 순 정렬."""
-    tid, pid = _resolve_scope_ids(
+    tid, pid, _conflict = _resolve_scope_ids(
         store,
         scope_type=scope_type,
         scope_id=scope_id,
@@ -163,7 +171,7 @@ def evaluate_permission(
       나머지는 allow(기본 허용 — permissions는 opt-in 제한 계층)."""
     cap = (capability or "").strip().lower()
     aid = (agent_id or "").strip()
-    tid, pid = _resolve_scope_ids(
+    tid, pid, conflict_pid = _resolve_scope_ids(
         store,
         scope_type=scope_type,
         scope_id=scope_id,
@@ -181,6 +189,8 @@ def evaluate_permission(
         "scope_id": "",
         "approval_action": CAPABILITY_APPROVAL_ACTION.get(cap, ""),
     }
+    if conflict_pid:
+        base["conflict_project_id"] = conflict_pid
     deny_rules = [r for r in rules if str(r.get("effect")) == PermissionEffect.DENY.value]
     if deny_rules:
         # deny 우선 — 기여한 가장 좁은 scope를 기록한다.
@@ -240,6 +250,23 @@ def require_permission(
     - allow → 판정 dict 반환(호출자는 무시 가능)."""
     from .agent_management import ManagementError  # 지연 import — 순환 방지
 
+    # task 컨텍스트가 있으면 task.project_id가 project 스코프의 정본이다.
+    # 호출자가 다른 project_id를 함께 넘기면(두 스코프가 충돌) 조용히
+    # 한쪽을 무시하지 않고 422로 거부한다 — project deny 우회 방지.
+    _tid, _pid, conflict_pid = _resolve_scope_ids(
+        store,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        task_id=task_id,
+        project_id=project_id,
+    )
+    if conflict_pid:
+        raise ManagementError(
+            422,
+            "validation",
+            "project_id conflicts with task's project "
+            f"(task belongs to {_pid or 'no project'}, got {conflict_pid})",
+        )
     decision = evaluate_permission(
         store,
         agent_id,
