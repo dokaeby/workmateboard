@@ -63,7 +63,7 @@ class AgentSessionStoreMixin:
                 "doing,ask,ended_summary,artifacts,machine,tokens_in,tokens_out,"
                 "last_event_at,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(tool,session_key) DO UPDATE SET"
+                " ON CONFLICT (tool,session_key) DO UPDATE SET"
                 " project=COALESCE(excluded.project, agent_sessions.project),"
                 " title=COALESCE(excluded.title, agent_sessions.title),"
                 " status=excluded.status,"

@@ -203,7 +203,7 @@ class CommsStoreMixin:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO automation_state(key,value) VALUES('gmail_calendar',?)"
-                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                " ON CONFLICT (key) DO UPDATE SET value=excluded.value",
                 (json.dumps(data),),
             )
 
@@ -218,7 +218,7 @@ class CommsStoreMixin:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO automation_state(key,value) VALUES(?,?)"
-                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                " ON CONFLICT (key) DO UPDATE SET value=excluded.value",
                 (key, json.dumps(data)),
             )
 
@@ -361,7 +361,7 @@ class CommsStoreMixin:
                 "location,attendees_json,summary,status,confidence,reason,"
                 "source_refs,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(id) DO UPDATE SET status=excluded.status,"
+                " ON CONFLICT (id) DO UPDATE SET status=excluded.status,"
                 " calendar_event_id=excluded.calendar_event_id,"
                 " version=version+1, updated_at=excluded.updated_at",
                 (

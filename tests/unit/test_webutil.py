@@ -253,3 +253,48 @@ def test_normalize_items_blocks_unsafe_url(bad):
 def test_normalize_items_keeps_safe_url(good):
     out = webutil.normalize_items([{"title": "t", "url": good}])
     assert out[0]["url"] == good
+
+
+# --- validate_outbound_url / pinned_transport_for (자격증명 URL 정책) ---
+
+
+def test_validate_outbound_url_rejects_public_http():
+    with pytest.raises(webutil.FetchError, match="https_required"):
+        webutil.validate_outbound_url("http://8.8.8.8/hook", what="t")
+
+
+def test_validate_outbound_url_allows_loopback_http():
+    assert webutil.validate_outbound_url("http://127.0.0.1:8010/x", what="t") == (
+        "http://127.0.0.1:8010/x"
+    )
+    assert webutil.validate_outbound_url("http://localhost:9000", what="t").startswith(
+        "http://localhost"
+    )
+
+
+def test_validate_outbound_url_rejects_userinfo_and_scheme():
+    with pytest.raises(webutil.FetchError, match="credentials"):
+        webutil.validate_outbound_url("https://user:pw@8.8.8.8/", what="t")
+    with pytest.raises(webutil.FetchError, match="scheme"):
+        webutil.validate_outbound_url("ftp://8.8.8.8/", what="t")
+    with pytest.raises(webutil.FetchError, match="empty"):
+        webutil.validate_outbound_url("", what="t")
+
+
+def test_validate_outbound_url_allows_public_https_ip():
+    # IP 리터럴 공인은 DNS 없이 검증 가능
+    assert webutil.validate_outbound_url("https://8.8.8.8/x", what="t") == "https://8.8.8.8/x"
+
+
+def test_pinned_transport_for_public_vs_loopback():
+    pub = webutil.pinned_transport_for("https://8.8.8.8/x")
+    assert pub is not None
+    assert webutil.pinned_transport_for("http://127.0.0.1:8010/x") is None
+
+
+def test_messenger_rejects_unvalidated_webhook():
+    from jobmate import messenger
+
+    # 공인 http webhook은 거부 — 네트워크 호출 없이 False
+    assert messenger.send_slack("http://8.8.8.8/services/HOOK", "hi") is False
+    assert messenger.send_slack("https://user:pw@8.8.8.8/hook", "hi") is False

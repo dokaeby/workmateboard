@@ -154,7 +154,7 @@ class RadarStoreMixin:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO push_subscriptions(endpoint,keys_json,created_at)"
-                " VALUES(?,?,?) ON CONFLICT(endpoint) DO UPDATE SET"
+                " VALUES(?,?,?) ON CONFLICT (endpoint) DO UPDATE SET"
                 " keys_json=excluded.keys_json",
                 (endpoint, encrypt_str(json.dumps(keys)), _iso(_now())),
             )

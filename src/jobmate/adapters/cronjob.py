@@ -10,12 +10,32 @@ from typing import Any
 
 import httpx
 
+from jobmate.webutil import FetchError, pinned_transport_for, validate_outbound_url
+
 DEFAULT_BASE_URL = "https://api.cron-job.org"
 _WILDCARD = [-1]
 
 
 class CronJobOrgError(Exception):
     pass
+
+
+def _validated_base_url(base_url: str) -> str:
+    """Bearer api_key가 실리는 base_url 검증 — http는 loopback만,
+    공인 호스트는 https+SSRF 가드 통과 필수."""
+    try:
+        return validate_outbound_url(base_url, what="cronjob_base_url")
+    except FetchError as e:
+        raise CronJobOrgError(f"invalid base_url: {e}") from e
+
+
+def _make_client(base_url: str) -> httpx.Client:
+    """내부 client 생성 — 공인 호스트는 검증 IP로 connect 고정(DNS 리바인딩 차단)."""
+    url = _validated_base_url(base_url)
+    transport = pinned_transport_for(url)
+    if transport is not None:
+        return httpx.Client(base_url=url.rstrip("/"), transport=transport, timeout=15)
+    return httpx.Client(base_url=url.rstrip("/"), timeout=15)
 
 
 def make_schedule(
@@ -73,7 +93,7 @@ class CronJobOrgClient:
             raise CronJobOrgError("job_id required")
         self._job_id = job_id
         self._headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        self._client = client or httpx.Client(base_url=base_url.rstrip("/"), timeout=15)
+        self._client = client or _make_client(base_url)
 
     @classmethod
     def for_settings(cls, settings: Any) -> CronJobOrgClient | None:
@@ -141,7 +161,7 @@ def create_job(
     if headers or body:
         job["extendedData"] = {"headers": headers or {}, "body": body}
     hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    c = client or httpx.Client(base_url=base_url.rstrip("/"), timeout=15)
+    c = client or _make_client(base_url)
     try:
         r = c.put("/jobs", headers=hdrs, json={"job": job})
     finally:

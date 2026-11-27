@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 
+from jobmate.webutil import FetchError, pinned_transport_for, validate_outbound_url
+
 logger = logging.getLogger("jobmate.messenger")
 
 HELP_TEXT = (
@@ -67,12 +69,27 @@ def parse_command(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _post_json(url: str, payload: dict[str, Any]) -> httpx.Response:
+    """JSON POST — 공인 호스트는 검증된 IP로 connect를 고정해 DNS 리바인딩을
+    차단한다. URL은 호출 전 validate_outbound_url을 통과해야 한다."""
+    transport = pinned_transport_for(url)
+    if transport is not None:
+        with httpx.Client(transport=transport, timeout=10) as client:
+            return client.post(url, json=payload)
+    return httpx.post(url, json=payload, timeout=10)
+
+
 def send_slack(webhook_url: str, text: str) -> bool:
     """Slack incoming webhook으로 텍스트 발송. 실패 시 False + 경고 로그."""
     if not webhook_url:
         return False
     try:
-        resp = httpx.post(webhook_url, json={"text": text}, timeout=10)
+        url = validate_outbound_url(webhook_url, what="slack_webhook")
+    except FetchError:
+        logger.warning("messenger slack webhook url rejected")
+        return False
+    try:
+        resp = _post_json(url, {"text": text})
         resp.raise_for_status()
         logger.info("messenger slack sent")
         return True
@@ -87,11 +104,14 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
     if not bot_token or not chat_id:
         return False
     try:
-        resp = httpx.post(
-            f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            json={"chat_id": chat_id, "text": text[:4000]},
-            timeout=10,
+        url = validate_outbound_url(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage", what="telegram_api"
         )
+    except FetchError:
+        logger.warning("messenger telegram url rejected")
+        return False
+    try:
+        resp = _post_json(url, {"chat_id": chat_id, "text": text[:4000]})
         resp.raise_for_status()
         logger.info("messenger telegram sent")
         return True

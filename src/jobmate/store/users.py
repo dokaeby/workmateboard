@@ -265,7 +265,7 @@ class UserStoreMixin:
                 "INSERT INTO email_summaries(source_provider,source_id,"
                 "subject,sender,summary,message_at,checked_at)"
                 " VALUES(?,?,?,?,?,?,?)"
-                " ON CONFLICT(source_provider,source_id) DO UPDATE SET"
+                " ON CONFLICT (source_provider,source_id) DO UPDATE SET"
                 " subject=excluded.subject, sender=excluded.sender,"
                 " summary=excluded.summary, message_at=excluded.message_at,"
                 " checked_at=excluded.checked_at",

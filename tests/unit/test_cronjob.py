@@ -109,3 +109,24 @@ def test_create_job_error():
         create_job("k", title="t", url="https://x", schedule=interval_schedule(60), client=client)
     with pytest.raises(CronJobOrgError):
         create_job("", title="t", url="https://x", schedule=interval_schedule(60), client=client)
+
+
+def test_cronjob_client_rejects_public_http_base_url():
+    from jobmate.adapters.cronjob import create_job
+
+    # client 미주입 시 base_url 검증 — 공인 http는 Bearer 유출 경로라 거부
+    with pytest.raises(CronJobOrgError, match="base_url"):
+        CronJobOrgClient("k", "1", base_url="http://8.8.8.8")
+    with pytest.raises(CronJobOrgError, match="base_url"):
+        create_job(
+            "k",
+            title="t",
+            url="https://x",
+            schedule=interval_schedule(60),
+            base_url="http://8.8.8.8",
+        )
+
+
+def test_cronjob_client_allows_loopback_http():
+    c = CronJobOrgClient("k", "1", base_url="http://127.0.0.1:9")
+    assert c is not None

@@ -142,6 +142,64 @@ def is_safe_fetch_url(url: str) -> bool:
     return _ip_is_public(ip)
 
 
+def is_loopback_hostname(host: str) -> bool:
+    """loopback 호스트 판정 — localhost 계열 또는 loopback IP 리터럴."""
+    h = (host or "").strip().lower().rstrip(".")
+    if not h:
+        return False
+    if h == "localhost" or h.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return ip.is_loopback
+
+
+def validate_outbound_url(url: str, *, what: str = "url") -> str:
+    """자격증명이 실리는 아웃바운드 URL 정책 — 정규화된 URL을 반환한다.
+
+    - scheme은 http/https만, userinfo(내장 credential) 금지.
+    - **http는 loopback 전용** — 평문 채널로 공인 호스트에 자격증명을
+      보내는 것을 금지한다.
+    - 비-loopback 호스트는 is_safe_fetch_url(SSRF 가드) 통과 필수.
+    위반 시 FetchError(에러 메시지에 URL 원문/자격증명 미포함)."""
+    raw = (url or "").strip()
+    if not raw:
+        raise FetchError(f"{what}_empty")
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    try:
+        parsed = urlparse(raw)
+    except ValueError as e:
+        raise FetchError(f"{what}_invalid") from e
+    if parsed.scheme not in ("http", "https"):
+        raise FetchError(f"{what}_scheme")
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise FetchError(f"{what}_no_host")
+    if parsed.username or parsed.password:
+        raise FetchError(f"{what}_credentials")
+    loopback = is_loopback_hostname(host)
+    if parsed.scheme == "http" and not loopback:
+        raise FetchError(f"{what}_https_required")
+    if not loopback and not is_safe_fetch_url(raw):
+        raise FetchError(f"{what}_not_allowed")
+    return raw.rstrip("/")
+
+
+def pinned_transport_for(url: str) -> httpx.HTTPTransport | None:
+    """공인 호스트 URL용 DNS-pinned transport를 반환한다.
+
+    loopback·검증 불가 호스트는 None — 호출자가 일반 transport를 쓰면
+    된다(루프백은 리바인딩 대상이 아니고, 검증 불가 호스트는
+    validate_outbound_url이 이미 거부했어야 한다)."""
+    pinned = _pinned_ip_for(url)
+    if pinned is None:
+        return None
+    return _PinnedTransport(pinned)
+
+
 def assert_safe_fetch_url(url: str) -> None:
     """SSRF 가드 — 안전하지 않으면 FetchError."""
     if not is_safe_fetch_url(url):
