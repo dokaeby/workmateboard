@@ -306,7 +306,7 @@ def test_health_detail_reports_db_backed_last_tick():
 # ---------- 7. 계정 삭제 + 본인 export ----------
 
 
-def _signup(client: TestClient, email: str, password: str = "password123") -> None:  # noqa: S107
+def _signup(client: TestClient, email: str, password: str = "Str0ng#Passw0rd!") -> None:  # noqa: S107
     r = client.post(
         "/api/v1/auth/signup",
         json={
@@ -329,7 +329,7 @@ def test_delete_account_requires_password_and_blocks_last_admin():
     assert r.status_code == 401
 
     # 올바른 비밀번호 → 삭제 성공, 세션도 무효화
-    r = client.request("DELETE", "/api/v1/auth/account", json={"password": "password123"})
+    r = client.request("DELETE", "/api/v1/auth/account", json={"password": "Str0ng#Passw0rd!"})
     assert r.status_code == 200
     assert store.get_user_by_email("member@example.com") is None
     assert store.get_user_by_email("admin@example.com") is not None
@@ -338,7 +338,7 @@ def test_delete_account_requires_password_and_blocks_last_admin():
     # 남은 admin(첫 사용자)의 세션은 별도로 로그인해 last_admin 확인
     client2, _, _ = _client()
     _signup(client2, "only@example.com")
-    r = client2.request("DELETE", "/api/v1/auth/account", json={"password": "password123"})
+    r = client2.request("DELETE", "/api/v1/auth/account", json={"password": "Str0ng#Passw0rd!"})
     assert r.status_code == 409
     assert r.json()["error"]["code"] == "last_admin"
 
@@ -368,7 +368,7 @@ def test_signup_terms_required_in_auth_mode(monkeypatch):
     # agree_terms 누락 → 422 terms_required
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": "terms@example.com", "password": "password123"},
+        json={"email": "terms@example.com", "password": "Str0ng#Passw0rd!"},
         headers=headers,
     )
     assert r.status_code == 422
@@ -378,7 +378,7 @@ def test_signup_terms_required_in_auth_mode(monkeypatch):
         "/api/v1/auth/signup",
         json={
             "email": "terms@example.com",
-            "password": "password123",
+            "password": "Str0ng#Passw0rd!",
             "agree_terms": True,
         },
         headers=headers,
@@ -390,7 +390,7 @@ def test_signup_terms_exempt_in_local_dev_mode():
     client, _, _ = _client()
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": "dev@example.com", "password": "password123"},
+        json={"email": "dev@example.com", "password": "Str0ng#Passw0rd!"},
     )
     assert r.status_code == 201
 

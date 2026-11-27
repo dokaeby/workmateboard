@@ -215,6 +215,8 @@ class AdminStoreMixin:
             for table in ("mfa_tickets", "mfa_backup_codes", "mfa_secrets"):
                 cur = c.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))  # noqa: S608
                 counts[table] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute("DELETE FROM api_keys WHERE owner_user_id=?", (user_id,))
+            counts["api_keys"] = int(getattr(cur, "rowcount", 0) or 0)
             if email:
                 cur = c.execute("DELETE FROM email_verifications WHERE email=?", (email,))
                 counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
@@ -262,6 +264,12 @@ class AdminStoreMixin:
                 " WHERE email=? ORDER BY created_at DESC",
                 (email,),
             ).fetchall()
+            key_rows = c.execute(
+                "SELECT id,name,key_prefix,scopes_json,expires_at,revoked_at,"
+                "last_used_at,created_at FROM api_keys WHERE owner_user_id=?"
+                " ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
         safe_user = {k: v for k, v in user.items() if k != "password_hash"}
         return {
             "exported_at": _iso(_now()),
@@ -281,6 +289,8 @@ class AdminStoreMixin:
             "run_comments": [dict(r) for r in comment_rows],
             "email_verifications": [dict(r) for r in verify_rows],
             "password_reset_tokens": [dict(r) for r in reset_rows],
+            # key_hash는 절대 포함하지 않는다 — 메타데이터만
+            "api_keys": [dict(r) for r in key_rows],
         }
 
     def list_audit(self, limit: int = 200) -> list[dict[str, Any]]:

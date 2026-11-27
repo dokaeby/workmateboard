@@ -40,7 +40,7 @@ def sent_resets(monkeypatch):
     return mails
 
 
-_PW = "password123"
+_PW = "Str0ng#Passw0rd!"
 _NEW_PW = "newpassword456"
 
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -98,25 +99,199 @@ class UserStoreMixin:
         exp = now + timedelta(days=ttl_days)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO auth_sessions(id,user_id,created_at,expires_at) VALUES(?,?,?,?)",
-                (token_hash, user_id, _iso(now), _iso(exp)),
+                "INSERT INTO auth_sessions(id,user_id,created_at,expires_at,last_seen_at)"
+                " VALUES(?,?,?,?,?)",
+                (token_hash, user_id, _iso(now), _iso(exp), _iso(now)),
             )
 
-    def get_session_user(self, token_hash: str) -> dict[str, Any] | None:
-        """유효 세션의 사용자 반환. 만료/폐기 세션은 None."""
+    # last_seen_at 갱신 최소 간격 — 요청마다 쓰지 않도록 5분 스로틀
+    _SESSION_TOUCH_INTERVAL_SEC = 300
+
+    def get_session_user(self, token_hash: str, idle_days: int = 0) -> dict[str, Any] | None:
+        """유효 세션의 사용자 반환. 만료/폐기/유휴만료 세션은 None.
+
+        idle_days>0이면 마지막 활동(last_seen_at, 미기록 시 세션 생성 시각) 기준
+        유휴 시간을 검사한다. 통과한 세션은 5분 이상 지난 경우에만 last_seen_at을
+        갱신해 요청당 쓰기를 제한한다."""
         r = self._conn.execute(
             "SELECT u.id, u.email, u.display_name, u.google_sub, u.role, u.created_at,"
-            " s.expires_at"
+            " s.expires_at, s.created_at AS sess_created_at, s.last_seen_at"
             " FROM auth_sessions s JOIN users u ON u.id = s.user_id"
             " WHERE s.id=? AND s.revoked_at IS NULL",
             (token_hash,),
         ).fetchone()
         if not r:
             return None
+        now = _now()
         exp = _dt(r["expires_at"])
-        if exp is None or exp <= _now():
+        if exp is None or exp <= now:
             return None
+        if idle_days > 0:
+            last = _dt(r["last_seen_at"]) or _dt(r["sess_created_at"])
+            if last is not None and last + timedelta(days=idle_days) <= now:
+                return None
+            prev = _dt(r["last_seen_at"])
+            if prev is None or (now - prev).total_seconds() >= self._SESSION_TOUCH_INTERVAL_SEC:
+                with self.tx() as c:
+                    c.execute(
+                        "UPDATE auth_sessions SET last_seen_at=? WHERE id=?",
+                        (_iso(now), token_hash),
+                    )
         return self._user_json(r)
+
+    def enforce_session_limit(self, user_id: str, max_sessions: int) -> int:
+        """동시 세션 상한 — 유효 세션이 max_sessions를 넘으면 가장 오래된
+        것부터 폐기한다. max_sessions<=0이면 무제한(0 반환)."""
+        if max_sessions <= 0:
+            return 0
+        now_iso = _iso(_now())
+        with self.tx() as c:
+            rows = c.execute(
+                "SELECT id FROM auth_sessions WHERE user_id=? AND revoked_at IS NULL"
+                " AND expires_at>? ORDER BY created_at ASC",
+                (user_id, now_iso),
+            ).fetchall()
+            excess = [r["id"] for r in rows[: max(0, len(rows) - max_sessions)]]
+            for sid in excess:
+                c.execute(
+                    "UPDATE auth_sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                    (now_iso, sid),
+                )
+            return len(excess)
+
+    def record_login_meta(self, user_id: str, ip: str, fingerprint: str) -> dict[str, str] | None:
+        """로그인 메타 기록 — 이전값을 반환해 신규 기기 판정에 사용한다.
+        반환: {"ip","fingerprint","at"} (이전 기록, 없으면 빈 문자열들)."""
+        r = self._conn.execute(
+            "SELECT last_login_ip, last_login_fingerprint, last_login_at FROM users WHERE id=?",
+            (user_id,),
+        ).fetchone()
+        prev = (
+            {
+                "ip": r["last_login_ip"] or "",
+                "fingerprint": r["last_login_fingerprint"] or "",
+                "at": r["last_login_at"] or "",
+            }
+            if r
+            else {"ip": "", "fingerprint": "", "at": ""}
+        )
+        with self.tx() as c:
+            c.execute(
+                "UPDATE users SET last_login_ip=?, last_login_fingerprint=?,"
+                " last_login_at=?, updated_at=? WHERE id=?",
+                (ip, fingerprint, _iso(_now()), _iso(_now()), user_id),
+            )
+        return prev
+
+    # ---- 스코프드 API 키 (api_keys) — spec 002 US4 ----
+    _API_KEY_TOUCH_INTERVAL_SEC = 60
+
+    @staticmethod
+    def _api_key_json(r: Any) -> dict[str, Any]:
+        """api_keys 행 → 메타데이터 dict. key_hash는 절대 포함하지 않는다."""
+        try:
+            scopes = json.loads(r["scopes_json"] or "[]")
+        except (TypeError, ValueError):
+            scopes = []
+        return {
+            "id": r["id"],
+            "name": r["name"],
+            "owner_user_id": r["owner_user_id"],
+            "key_prefix": r["key_prefix"],
+            "scopes": scopes if isinstance(scopes, list) else [],
+            "expires_at": r["expires_at"],
+            "revoked_at": r["revoked_at"],
+            "last_used_at": r["last_used_at"],
+            "created_at": r["created_at"],
+        }
+
+    def create_api_key(
+        self,
+        owner_user_id: str,
+        name: str,
+        key_hash: str,
+        key_prefix: str,
+        scopes: list[str],
+        expires_at: str | None = None,
+    ) -> str:
+        """API 키 행 생성 — 원문은 저장하지 않고 해시만. 반환: 키 id."""
+        kid = uuid.uuid4().hex[:16]
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO api_keys(id,name,owner_user_id,key_hash,key_prefix,"
+                "scopes_json,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    kid,
+                    name,
+                    owner_user_id,
+                    key_hash,
+                    key_prefix,
+                    json.dumps(scopes),
+                    expires_at,
+                    _iso(_now()),
+                ),
+            )
+        return kid
+
+    def list_api_keys(self, owner_user_id: str | None = None) -> list[dict[str, Any]]:
+        """키 메타데이터 목록 — owner_user_id 지정 시 본인 키만, None이면 전체.
+        key_hash는 어떤 경로로도 반환하지 않는다."""
+        if owner_user_id is None:
+            rows = self._conn.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM api_keys WHERE owner_user_id=? ORDER BY created_at DESC",
+                (owner_user_id,),
+            ).fetchall()
+        return [self._api_key_json(r) for r in rows]
+
+    def get_api_key_by_hash(self, key_hash: str) -> dict[str, Any] | None:
+        """키 해시 → 행 dict(scopes는 파싱된 list). key_hash 포함."""
+        r = self._conn.execute("SELECT * FROM api_keys WHERE key_hash=?", (key_hash,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        try:
+            scopes = json.loads(d.get("scopes_json") or "[]")
+        except (TypeError, ValueError):
+            scopes = []
+        d["scopes"] = scopes if isinstance(scopes, list) else []
+        return d
+
+    def api_key_is_valid(self, row: dict[str, Any]) -> bool:
+        """폐기·만료 여부 판정 — get_api_key_by_hash 결과에 적용."""
+        if row.get("revoked_at"):
+            return False
+        exp = _dt(row.get("expires_at"))
+        return exp is None or exp > _now()
+
+    def revoke_api_key(self, key_id: str, owner_user_id: str | None = None) -> bool:
+        """키 폐기 — owner_user_id 지정 시 소유자 일치할 때만.
+        반환: 실제 폐기됐으면 True."""
+        now = _iso(_now())
+        with self.tx() as c:
+            if owner_user_id is None:
+                cur = c.execute(
+                    "UPDATE api_keys SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                    (now, key_id),
+                )
+            else:
+                cur = c.execute(
+                    "UPDATE api_keys SET revoked_at=?"
+                    " WHERE id=? AND owner_user_id=? AND revoked_at IS NULL",
+                    (now, key_id, owner_user_id),
+                )
+            return int(getattr(cur, "rowcount", 0) or 0) > 0
+
+    def touch_api_key(self, key_id: str) -> None:
+        """last_used_at 갱신 — 60초 스로틀로 요청당 쓰기를 제한한다."""
+        now = _now()
+        r = self._conn.execute("SELECT last_used_at FROM api_keys WHERE id=?", (key_id,)).fetchone()
+        prev = _dt(r["last_used_at"]) if r else None
+        if prev is not None and (now - prev).total_seconds() < self._API_KEY_TOUCH_INTERVAL_SEC:
+            return
+        with self.tx() as c:
+            c.execute("UPDATE api_keys SET last_used_at=? WHERE id=?", (_iso(now), key_id))
 
     def revoke_session(self, token_hash: str) -> None:
         with self.tx() as c:
@@ -303,6 +478,17 @@ class UserStoreMixin:
                 (token_hash,),
             ).fetchone()
             return (str(r["user_id"]), str(r["email"])) if r else None
+
+    def peek_password_reset(self, token_hash: str) -> tuple[str, str] | None:
+        """토큰의 (user_id, email)을 소비하지 않고 조회 — 비밀번호 정책의
+        이메일 포함 검사가 consume 전에 계정 이메일을 알아야 할 때 사용.
+        유효성의 최종 판정은 consume_password_reset이 원자적으로 수행한다."""
+        r = self._conn.execute(
+            "SELECT user_id, email FROM password_reset_tokens"
+            " WHERE token_hash=? AND used_at IS NULL AND expires_at>?",
+            (token_hash, _iso(_now())),
+        ).fetchone()
+        return (str(r["user_id"]), str(r["email"])) if r else None
 
     def delete_password_reset(self, token_hash: str) -> None:
         """재설정 토큰 행 삭제 — 메일 발송 실패 시 throttle 창을 소모하지 않기 위해

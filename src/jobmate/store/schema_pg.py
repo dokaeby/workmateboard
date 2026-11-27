@@ -205,6 +205,9 @@ CREATE TABLE IF NOT EXISTS users (
   google_sub TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL DEFAULT 'user',
   email_verified INTEGER NOT NULL DEFAULT 1,
+  last_login_ip TEXT NOT NULL DEFAULT '',
+  last_login_fingerprint TEXT NOT NULL DEFAULT '',
+  last_login_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -214,6 +217,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   user_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
+  last_seen_at TEXT,
   revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
@@ -269,6 +273,22 @@ CREATE TABLE IF NOT EXISTS mfa_tickets (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mfa_tickets_hash ON mfa_tickets(ticket_hash);
+
+-- 스코프드 API 키 — 원문 금지, SHA-256 해시 + 앞 8자 prefix만 저장
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL DEFAULT '',
+  key_hash TEXT NOT NULL,
+  key_prefix TEXT NOT NULL DEFAULT '',
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  expires_at TEXT,
+  revoked_at TEXT,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,

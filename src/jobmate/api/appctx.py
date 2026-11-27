@@ -9,6 +9,7 @@ register(app, ctx)가 바인딩하는 ctx.* 속성의 원천이다. 모든 헬�
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -20,7 +21,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, Request
@@ -199,7 +200,7 @@ def build_app_context(
         token = request.cookies.get(SESSION_COOKIE, "")
         if not token:
             return None
-        user = store.get_session_user(hash_token(token))
+        user = store.get_session_user(hash_token(token), idle_days=_session_idle_days())
         return user if user and email_allowed(user["email"]) else None
 
     def _normalize_role(role: Any) -> str:
@@ -258,6 +259,9 @@ def build_app_context(
             return None
         if api_key() and authorized(request):
             return {"id": "api-key", "email": "", "role": "admin"}
+        ka = _db_api_key(request)
+        if ka and ("*" in ka["scopes"] or "admin" in ka["scopes"]):
+            return {"id": f"apikey:{ka['id']}", "email": "", "role": "admin"}
         if _local_open_mode(request):
             return {"id": "local", "email": "", "role": "admin"}
         return None
@@ -275,6 +279,9 @@ def build_app_context(
             return None
         if api_key() and authorized(request):
             return {"id": "api-key", "email": "", "role": "admin"}
+        ka = _db_api_key(request)
+        if ka and ("*" in ka["scopes"] or "admin" in ka["scopes"]):
+            return {"id": f"apikey:{ka['id']}", "email": "", "role": "admin"}
         if _local_open_mode(request):
             return {"id": "local", "email": "", "role": "admin"}
         return None
@@ -914,9 +921,153 @@ def build_app_context(
         proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
         return proto == "https"
 
+    def _session_idle_days() -> int:
+        """세션 유휴 만료 일수 — JOBMATE_SESSION_IDLE_DAYS(기본 7, 0=비활성)."""
+        try:
+            return max(0, int(os.environ.get("JOBMATE_SESSION_IDLE_DAYS", "7")))
+        except ValueError:
+            return 7
+
+    def _max_sessions() -> int:
+        """사용자당 동시 세션 상한 — JOBMATE_MAX_SESSIONS(기본 10, <=0=무제한)."""
+        try:
+            return int(os.environ.get("JOBMATE_MAX_SESSIONS", "10"))
+        except ValueError:
+            return 10
+
+    # ---- 스코프드 API 키 (spec 002 US4) ----
+    # 발급 allowlist — "*"/"admin"/"api_keys:manage" + 리소스별 read/write.
+    # /api/v1/auth/*(미들웨어 면제)·cron·webhooks·health는 스코프 대상이 아니다.
+    _API_KEY_SEGMENTS = (
+        "agent",
+        "agents",
+        "approvals",
+        "archive",
+        "ask",
+        "audit",
+        "automation",
+        "badge",
+        "budget",
+        "budgets",
+        "cards",
+        "connectors",
+        "developer",
+        "email",
+        "evals",
+        "event",
+        "events",
+        "export",
+        "gmail",
+        "goals",
+        "inbox",
+        "insights",
+        "listeners",
+        "llm",
+        "management",
+        "messages",
+        "notification",
+        "notifications",
+        "perf",
+        "playbooks",
+        "projects",
+        "push",
+        "radar",
+        "reports",
+        "risks",
+        "runs",
+        "schedules",
+        "settings",
+        "share",
+        "stream",
+        "team",
+        "triggers",
+        "usage",
+        "users",
+        "wakeups",
+        "workflows",
+        # 하이픈 경로 세그먼트는 - → _ 정규화 후 스코프로 매핑한다
+        # (agent-sessions → agent_sessions:read 등)
+        "agent_sessions",
+        "budget_incidents",
+        "event_links",
+        "gmail_calendar",
+        "llm_monitor",
+        "notification_jobs",
+    )
+    _API_KEY_SCOPES = frozenset(
+        {"*", "admin", "api_keys:manage"}
+        | {f"{s}:{m}" for s in _API_KEY_SEGMENTS for m in ("read", "write")}
+    )
+
+    def _provided_api_key(request: Request) -> str:
+        """Authorization: Bearer 또는 X-API-Key 헤더의 원문 키."""
+        auth = request.headers.get("authorization", "")
+        provided = request.headers.get("x-api-key", "")
+        if auth.lower().startswith("bearer "):
+            provided = auth[7:].strip() or provided
+        return provided
+
+    def _db_api_key(request: Request) -> dict[str, Any] | None:
+        """DB 등록 스코프드 API 키 해석 — request.state에 캐시해 요청당 1회 조회.
+        유효(미폐기·미만료) 키만 반환하고 last_used_at을 스로틀 갱신한다.
+        반환: {id,name,owner_user_id,scopes:set,key_prefix} 또는 None."""
+        cached = getattr(request.state, "api_key_auth", "__unset__")
+        if cached != "__unset__":
+            return cast("dict[str, Any] | None", cached)
+        result = None
+        provided = _provided_api_key(request)
+        if provided:
+            from ..security import hash_token
+
+            row = store.get_api_key_by_hash(hash_token(provided))
+            if row is not None and store.api_key_is_valid(row):
+                store.touch_api_key(row["id"])
+                result = {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "owner_user_id": row["owner_user_id"],
+                    "scopes": set(row.get("scopes") or []),
+                    "key_prefix": row["key_prefix"],
+                }
+        request.state.api_key_auth = result
+        return result
+
+    def _api_scope_allows(request: Request) -> bool:
+        """DB 스코프드 키의 경로·메서드 인가 — deny-by-default.
+        request.state.api_key_auth가 없으면(env 키·세션·로컬) 항상 True.
+        필요 스코프는 /api/v1/{resource}:{read|write} — GET/HEAD는 read."""
+        ka = getattr(request.state, "api_key_auth", None)
+        if not ka:
+            return True
+        scopes = ka["scopes"]
+        if "*" in scopes or "admin" in scopes:
+            return True
+        # 첫 세그먼트 전체를 잡는다 — [a-z_]+만 잡으면 agent-sessions가
+        # agent로 잘려 의도와 다른 스코프가 적용된다. 하이픈은 _로 정규화.
+        m = re.match(r"^/api/v1/([a-zA-Z0-9_-]+)", request.url.path)
+        if not m:
+            return False
+        seg = m.group(1).replace("-", "_")
+        verb = "read" if request.method in ("GET", "HEAD", "OPTIONS") else "write"
+        return f"{seg}:{verb}" in scopes
+
     def _set_session(response: Any, request: Request, user_id: str) -> None:
         token = new_session_token()
         store.create_session(user_id, hash_token(token), SESSION_TTL_DAYS)
+        evicted = store.enforce_session_limit(user_id, _max_sessions())
+        if evicted:
+            u = store.get_user_by_id(user_id)
+            try:
+                store.audit(
+                    "",
+                    str((u or {}).get("email") or "-"),
+                    "auth_session_evicted",
+                    user_id,
+                    {"evicted": evicted},
+                )
+            except Exception:
+                logger.debug("session-evicted audit failed", exc_info=True)
+            logger.info("session limit evicted=%d user=%s", evicted, user_id)
         response.set_cookie(
             SESSION_COOKIE,
             token,
@@ -926,6 +1077,57 @@ def build_app_context(
             secure=_cookie_secure(request),
             path="/",
         )
+
+    def _notify_new_device(
+        request: Request,
+        user: dict[str, Any],
+        background_tasks: BackgroundTasks | None = None,
+    ) -> None:
+        """로그인 성공 시 신규 기기 판정 — 첫 로그인 또는 User-Agent 지문 변경 시
+        auth_login_new_device 감사 + 알림 메일(spec 002 FR-018).
+        지문은 sha256(UA) 앞 16자 — 원문 UA는 메일 요약(80자)에만 사용."""
+        ip = request.client.host if request.client else "-"
+        ua = (request.headers.get("user-agent") or "")[:200]
+        fp = hashlib.sha256(ua.encode()).hexdigest()[:16] if ua else ""
+        try:
+            prev = store.record_login_meta(user["id"], ip, fp) or {}
+        except Exception:
+            logger.debug("record_login_meta failed", exc_info=True)
+            return
+        first = not prev.get("at")
+        ua_changed = bool(fp) and bool(prev.get("fingerprint")) and prev["fingerprint"] != fp
+        # spec 002 FR-018 — 새 IP도 알림 대상(기기 지문만으로는 세션 재사용
+        # 공격을 못 잡는다). IP 변경은 잦을 수 있으나 보안 메일 1통 비용은 낮다.
+        ip_changed = bool(prev.get("ip")) and prev["ip"] != ip
+        if not (first or ua_changed or ip_changed):
+            return
+        email = str(user.get("email") or "")
+        try:
+            store.audit(
+                "",
+                email or "-",
+                "auth_login_new_device",
+                user["id"],
+                {"ip": ip, "fingerprint": fp},
+            )
+        except Exception:
+            logger.debug("new-device audit failed", exc_info=True)
+        logger.info("new device login: user=%s ip=%s", user["id"], ip)
+        if not email:
+            return
+        when = datetime.now(UTC).isoformat(timespec="seconds")
+        gmail = adapters.get("gmail")
+        ua_summary = ua[:80]
+        if background_tasks is not None:
+            # 메일 발송(네트워크 I/O)은 응답 이후로 — 로그인 지연 방지
+            background_tasks.add_task(
+                mailer.send_login_alert_email, email, ip, ua_summary, when, gmail
+            )
+        else:
+            try:
+                mailer.send_login_alert_email(email, ip, ua_summary, when, gmail)
+            except Exception:
+                logger.debug("login alert email failed", exc_info=True)
 
     def _login_key(request: Request, email: str) -> str:
         ip = request.client.host if request.client else "-"

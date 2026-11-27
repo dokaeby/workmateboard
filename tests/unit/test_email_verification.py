@@ -42,7 +42,7 @@ def sent_mails(monkeypatch):
     return mails
 
 
-_PW = "password123"
+_PW = "Str0ng#Passw0rd!"
 
 
 def _signup(client, email="v@b.com", password=_PW):

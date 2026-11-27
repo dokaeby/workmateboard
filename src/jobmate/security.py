@@ -343,6 +343,198 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
+# ---------- 비밀번호 정책 ----------
+
+# 상위 유출/추측 비밀번호 정적 목록 — spec 002 FR-015.
+# rockyou 상위 + 서비스 기본값 + 키보드 워크를 포함한 소규모 denylist.
+_WEAK_PASSWORDS = frozenset(
+    {
+        "password",
+        "password1",
+        "password12",
+        "password123",
+        "passw0rd",
+        "123456",
+        "1234567",
+        "12345678",
+        "123456789",
+        "1234567890",
+        "12345678a",
+        "123qwe",
+        "123qweasd",
+        "1234qwer",
+        "1q2w3e",
+        "1q2w3e4r",
+        "1qaz2wsx",
+        "qazwsx",
+        "qazwsxedc",
+        "qwer1234",
+        "qwerasdf",
+        "qwerty",
+        "qwerty123",
+        "qwertyuiop",
+        "asdfgh",
+        "asdfghjkl",
+        "zxcvbnm",
+        "zxcvbn",
+        "zxcvbnm123",
+        "abcd1234",
+        "abc123",
+        "admin",
+        "admin123",
+        "admin1234",
+        "administrator",
+        "root",
+        "toor",
+        "letmein",
+        "letmein123",
+        "welcome",
+        "welcome1",
+        "welcome123",
+        "login",
+        "login123",
+        "master",
+        "master123",
+        "superman",
+        "iloveyou",
+        "iloveyou1",
+        "iloveyou123",
+        "monkey",
+        "monkey123",
+        "dragon",
+        "dragon123",
+        "football",
+        "football1",
+        "baseball",
+        "soccer",
+        "hockey",
+        "basketball",
+        "starwars",
+        "starwars1",
+        "shadow",
+        "sunshine",
+        "princess",
+        "charlie",
+        "michael",
+        "jennifer",
+        "michelle",
+        "jessica",
+        "jordan",
+        "hunter",
+        "buster",
+        "soccer1",
+        "batman",
+        "trustno1",
+        "whatever",
+        "freedom",
+        "hello123",
+        "test1234",
+        "test12345",
+        "changeme",
+        "default",
+        "secret",
+        "secret123",
+        "pass1234",
+        "pass12345",
+        "p@ssw0rd",
+        "p@ssword",
+        "pa55word",
+        "passw0rd123",
+        "q1w2e3r4",
+        "q1w2e3",
+        "1qazxsw2",
+        "zaq12wsx",
+        "qwe12345",
+        "asdf1234",
+        "poiuytre",
+        "lkjhgfds",
+        "mnbvcxz",
+        "111111",
+        "000000",
+        "121212",
+        "654321",
+        "666666",
+        "987654321",
+        "87654321",
+        "112233",
+        "102030",
+        "11223344",
+        "jobmate",
+        "jobmate123",
+        "workmate",
+        "workmate123",
+    }
+)
+
+_SEQUENTIAL_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def password_min_len() -> int:
+    """최소 비밀번호 길이 — JOBMATE_PASSWORD_MIN_LEN(기본 8)."""
+    try:
+        return max(4, int(os.environ.get("JOBMATE_PASSWORD_MIN_LEN", "8")))
+    except ValueError:
+        return 8
+
+
+def validate_password(password: str, email: str = "") -> str | None:
+    """비밀번호 정책 검사 — 거부 시 사유 코드, 통과 시 None.
+
+    사유 코드: too_short | common_password | contains_email |
+    numeric_only | repeated_chars | sequential_chars.
+    signup·password/reset·password change 3개 경로가 공통 호출한다."""
+    if len(password) < password_min_len():
+        return "too_short"
+    if password.lower() in _WEAK_PASSWORDS:
+        return "common_password"
+    em = (email or "").strip().lower()
+    if em:
+        local = em.split("@", 1)[0]
+        pw = password.lower()
+        # 로컬파트(3자 이상) 또는 전체 이메일 포함 금지 — "홍길동123" 류 추측 방지
+        if (len(local) >= 3 and local in pw) or em in pw:
+            return "contains_email"
+    if password.isdigit():
+        return "numeric_only"
+    if len(set(password)) == 1:
+        return "repeated_chars"
+    low = password.lower()
+    if low in _SEQUENTIAL_CHARS or low in _SEQUENTIAL_CHARS[::-1]:
+        return "sequential_chars"
+    return None
+
+
+def password_pwned(password: str) -> bool:
+    """Have I Been Pwned k-anonymity 유출 검사 — JOBMATE_PWNED_CHECK=1일 때만 동작.
+
+    SHA-1 앞 5자리(프리픽스)만 api.pwnedpasswords.com에 전송 — 비밀번호 원문과
+    전체 해시는 전송·로그하지 않는다. 네트워크 실패/타임아웃(5s) 시
+    JOBMATE_PWNED_FAIL_MODE(open|closed, 기본 open)로 처리:
+    open=경고 로그 후 통과(False), closed=거부(True)."""
+    if os.environ.get("JOBMATE_PWNED_CHECK", "").strip().lower() not in ("1", "true", "yes"):
+        return False
+    try:
+        import httpx
+
+        sha1 = hashlib.sha1(password.encode()).hexdigest().upper()  # noqa: S324 — HIBP k-anonymity 규약상 SHA-1 필수
+        prefix, suffix = sha1[:5], sha1[5:]
+        resp = httpx.get(
+            f"https://api.pwnedpasswords.com/range/{prefix}",
+            headers={"Add-Padding": "true"},
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        for line in resp.text.splitlines():
+            h, _, _count = line.partition(":")
+            if h.strip() == suffix:
+                return True
+        return False
+    except Exception as e:
+        logger.warning("pwned password check failed: %s", type(e).__name__)
+        fail_closed = os.environ.get("JOBMATE_PWNED_FAIL_MODE", "open").strip().lower() == "closed"
+        return fail_closed
+
+
 def new_session_token() -> str:
     """세션 토큰 — URL-safe 랜덤 256bit."""
     import secrets
@@ -353,6 +545,15 @@ def new_session_token() -> str:
 def hash_token(token: str) -> str:
     """세션 토큰의 저장용 SHA-256 — DB 유출 시 토큰 원문 복구 불가."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def new_api_key() -> tuple[str, str, str]:
+    """스코프드 API 키 발급 — (원문, prefix, 해시) 반환.
+
+    원문은 발급 응답에 1회만 포함하고 DB에는 SHA-256 해시와 앞 8자
+    prefix만 저장한다(spec 002 FR-020)."""
+    raw = "jm_" + secrets.token_urlsafe(32)
+    return raw, raw[:8], hash_token(raw)
 
 
 def allowed_emails() -> set[str]:

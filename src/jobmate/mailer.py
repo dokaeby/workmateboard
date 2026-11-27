@@ -162,3 +162,25 @@ def send_password_reset_email(to: str, reset_url: str, gmail: Any | None = None)
     SMTP→Gmail API 폴백 구조."""
     subject, body = _reset_body(reset_url)
     return _deliver(to, subject, body, gmail, "password-reset", reset_url)
+
+
+def send_login_alert_email(
+    to: str,
+    ip: str,
+    ua_summary: str,
+    when: str,
+    gmail: Any | None = None,
+) -> bool:
+    """신규 기기/새 IP 로그인 알림 — spec 002 FR-018.
+
+    입력: to=수신 이메일, ip=접속 IP, ua_summary=User-Agent 요약(80자 이내),
+          when=로그인 시각 문자열. 세션 토큰·비밀번호는 포함하지 않는다."""
+    subject = "[jobMate] 새 기기에서 로그인되었습니다"
+    body = (
+        "jobMate 계정에 새 기기에서 로그인이 있었습니다.\n\n"
+        f"- 시각: {when}\n"
+        f"- IP: {ip}\n"
+        f"- 브라우저: {ua_summary or '(unknown)'}\n\n"
+        "본인이 아니라면 즉시 비밀번호를 변경하고 관리자에게 문의하세요."
+    )
+    return _deliver(to, subject, body, gmail, "login-alert", "")

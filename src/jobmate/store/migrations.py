@@ -71,6 +71,17 @@ class MigrationStoreMixin:
         강요하지 않는다. 신규 비밀번호 가입만 create_user가 명시적으로 0을 넣는다."""
         self._ensure_columns("users", {"role": "TEXT NOT NULL DEFAULT 'user'"})
         self._ensure_columns("users", {"email_verified": "INTEGER NOT NULL DEFAULT 1"})
+        # 로그인 보안 정책(spec 002 US3) — 신규 기기 알림용 마지막 로그인 메타
+        self._ensure_columns(
+            "users",
+            {
+                "last_login_ip": "TEXT NOT NULL DEFAULT ''",
+                "last_login_fingerprint": "TEXT NOT NULL DEFAULT ''",
+                "last_login_at": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        # 세션 유휴 만료(spec 002 FR-017) — 마지막 활동 시각
+        self._ensure_columns("auth_sessions", {"last_seen_at": "TEXT"})
 
     def _migrate_run_columns(self) -> None:
         """기존 DB의 runs에 created_by/project/agent_id 컬럼 보강."""

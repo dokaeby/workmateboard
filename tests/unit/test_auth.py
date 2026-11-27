@@ -32,7 +32,7 @@ def test_signup_me_logout():
     client, _ = _client()
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": "User@Example.com", "password": "password123", "display_name": "U"},
+        json={"email": "User@Example.com", "password": "Str0ng#Passw0rd!", "display_name": "U"},
     )
     assert r.status_code == 201
     assert r.json()["user"]["email"] == "user@example.com"
@@ -56,14 +56,17 @@ def test_login_and_wrong_password():
     client, _ = _client()
     client.post(
         "/api/v1/auth/signup",
-        json={"email": "a@b.com", "password": "password123"},
+        json={"email": "a@b.com", "password": "Str0ng#Passw0rd!"},
     )
     client.post("/api/v1/auth/logout")
 
     bad = client.post("/api/v1/auth/login", json={"email": "a@b.com", "password": "wrong-pass"})
     assert bad.status_code == 401
 
-    good = client.post("/api/v1/auth/login", json={"email": "a@b.com", "password": "password123"})
+    good = client.post(
+        "/api/v1/auth/login",
+        json={"email": "a@b.com", "password": "Str0ng#Passw0rd!"},
+    )
     assert good.status_code == 200
     assert good.json()["user"]["email"] == "a@b.com"
     assert client.get("/api/v1/auth/me").status_code == 200
@@ -71,7 +74,7 @@ def test_login_and_wrong_password():
 
 def test_duplicate_signup_rejected():
     client, _ = _client()
-    body = {"email": "dup@b.com", "password": "password123"}
+    body = {"email": "dup@b.com", "password": "Str0ng#Passw0rd!"}
     assert client.post("/api/v1/auth/signup", json=body).status_code == 201
     assert client.post("/api/v1/auth/signup", json=body).status_code == 409
 
@@ -80,7 +83,7 @@ def test_signup_validation():
     client, _ = _client()
     assert (
         client.post(
-            "/api/v1/auth/signup", json={"email": "bad", "password": "password123"}
+            "/api/v1/auth/signup", json={"email": "bad", "password": "Str0ng#Passw0rd!"}
         ).status_code
         == 400
     )
@@ -101,7 +104,7 @@ def test_session_cookie_authorizes_api(monkeypatch):
     # API 키가 있으면 이메일 인증이 강제된다 — 인증 링크로 세션을 발급받는다
     client.post(
         "/api/v1/auth/signup",
-        json={"email": "s@b.com", "password": "password123", "agree_terms": True},
+        json={"email": "s@b.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
         headers={"X-API-Key": "secret-key"},
     )
     token = store.create_email_verification("s@b.com")

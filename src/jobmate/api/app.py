@@ -149,9 +149,18 @@ def create_app(
         ):
             # 공개 공유 스냅샷 — GET만 인증 예외(POST /share는 세션 필요)
             public_share = path.startswith("/api/v1/share/") and request.method == "GET"
-            if not public_share and not (authorized(request) or ctx._session_user(request)):
+            if not public_share and not (
+                authorized(request) or ctx._session_user(request) or ctx._db_api_key(request)
+            ):
                 logger.warning("api auth failed: %s", path)
                 return ctx.err(401, "unauthorized", "invalid or missing API key", request)
+            # DB 스코프드 키 — deny-by-default 스코프 검사(env 키·세션은 대상 아님)
+            # 공개 공유 GET은 인증 예외이므로 스코프 검사도 적용하지 않는다
+            if not public_share and not ctx._api_scope_allows(request):
+                logger.warning("api scope denied: %s %s", request.method, path)
+                return ctx.err(
+                    403, "insufficient_scope", "API key scope does not allow this endpoint", request
+                )
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")

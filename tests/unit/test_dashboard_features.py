@@ -487,8 +487,8 @@ def test_team_aggregation():
     client, store, _s, _l = _env()
     from jobmate.security import hash_token, new_session_token
 
-    u1 = store.create_user("a@x.com", hash_password("password123"), "Alice")
-    store.create_user("b@x.com", hash_password("password123"), "Bob")
+    u1 = store.create_user("a@x.com", hash_password("Str0ng#Passw0rd!"), "Alice")
+    store.create_user("b@x.com", hash_password("Str0ng#Passw0rd!"), "Bob")
     store.create_run("dev_review", "0.1.0", {"task": "t"}, trace_id="t1", created_by="a@x.com")
     store.create_run("dev_review", "0.1.0", {"task": "t"}, trace_id="t2", created_by="a@x.com")
     store.create_run(
@@ -515,16 +515,16 @@ def test_audit_admin_only_and_events():
     assert "items" in r.json()
 
     # 비관리자 세션 → 403
-    store.create_user("user@x.com", hash_password("password123"), "U")
+    store.create_user("user@x.com", hash_password("Str0ng#Passw0rd!"), "U")
     login = client.post(
-        "/api/v1/auth/login", json={"email": "user@x.com", "password": "password123"}
+        "/api/v1/auth/login", json={"email": "user@x.com", "password": "Str0ng#Passw0rd!"}
     )
     assert login.status_code == 200
     assert client.get("/api/v1/audit").status_code == 403
     client.post("/api/v1/auth/logout")  # 세션 쿠키 제거 → 다시 로컬 admin 컨텍스트
 
     # 인증 이벤트가 audit에 기록된다
-    store.create_user("admin@x.com", hash_password("password123"), "A")
+    store.create_user("admin@x.com", hash_password("Str0ng#Passw0rd!"), "A")
     client.post("/api/v1/auth/login", json={"email": "admin@x.com", "password": "wrong"})
     items = client.get("/api/v1/audit").json()["items"]
     actions = {i["action"] for i in items}

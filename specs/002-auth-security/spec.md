@@ -93,7 +93,7 @@
 - MFA ticket 탈취·재사용 — ticket은 단기(5분)·1회성 consume, 사용 후 즉시 무효화. TOTP는 ±1 윈도우(30초×3)까지만 허용해 시간 드리프트를 수용하되 재사용된 동일 코드는 거부한다.
 - MFA 비활성화 시도 — 현재 비밀번호 또는 유효 TOTP 코드 재확인을 요구해 세션 탈취만으로 MFA를 끄지 못하게 한다.
 - 백업 코드 전량 소진 — 재발급 시 기존 미사용 코드 전부 무효화하고 새 세트 발급, 세션은 유지하되 `auth_mfa_backup_regen` 감사 기록.
-- API 키 스코프 상승 — 키로 키 관리 엔드포인트 호출 시 `api_keys:manage` 스코프 필요; member 세션은 자기 키만 관리. 스코프 문자열은 서버 allowlist로 검증해 임의 값 저장을 거부한다.
+- API 키 스코프 상승 — 키로 키 관리 엔드포인트 호출 시 `api_keys:manage` 스코프 필요; member 세션은 자기 키의 조회·폐기만 가능(발급 불가). 스코프 문자열은 서버 allowlist로 검증해 임의 값 저장을 거부한다. 권한 상승 스코프(`*`, `admin`, `api_keys:manage`)는 admin 세션 또는 env 키(`JOBMATE_API_KEY`)만 발급 가능 — `api_keys:manage` 키는 리소스 스코프만 발급할 수 있고 발급 키는 부모 키 소유자를 계승한다. 경로 스코프 매칭은 첫 세그먼트 전체 기준이며 하이픈 세그먼트(`agent-sessions` 등)는 `-`→`_` 정규화 후 매칭한다.
 - 세션 고정(session fixation) — 로그인/재설정/MFA verify 성공 시 항상 `new_session_token()`으로 새 토큰 발급(기존 `_set_session` 계약 유지), 성공 전후 쿠키 값이 달라야 한다.
 - Google 로그인 계정 — Google이 이메일 소유권·2FA를 증명하므로 jobMate TOTP는 비밀번호 계정 로그인에만 적용한다. Google-only 계정(`password_hash` 빈 값)의 비밀번호 재설정은 불가 — `password_reset`은 password_hash 존재 계정만 대상.
 - 유휴 만료와 장기 세션 충돌 — `last_seen_at` 갱신은 세션당 최소 간격(예: 5분)으로 쓰기 빈도를 제한한다.
@@ -137,7 +137,7 @@
 - **FR-021**: 키 관리 엔드포인트 — `POST /api/v1/auth/api-keys`(발급), `GET /api/v1/auth/api-keys`(목록, 원문 제외), `DELETE /api/v1/auth/api-keys/{id}`(폐기), 선택적 `POST /api/v1/auth/api-keys/{id}/revoke` — 를 제공해야 한다(MUST). 발급 응답에만 원문 키를 1회 포함하고 목록/조회 응답에는 `key_prefix`·name·scopes·만료·last_used만 반환한다.
 - **FR-022**: 스코프 모델 — `*`(전체, admin 상당), `admin`, `runs:read`, `runs:write`, `sessions:read` 등 allowlist된 스코프 문자열을 `scopes_json`에 저장하고, 임의 스코프는 422로 거부해야 한다(MUST). 키 인증 시 `authorized()`가 env 키(`JOBMATE_API_KEY`) 매칭을 먼저 시도하고, 실패 시 `api_keys.key_hash` 조회로 유효(미폐기·미만료) 키를 해석해 `request.state.api_scopes`에 스코프 집합을 주입해야 한다. `JOBMATE_API_KEY`는 스코프 `*`의 레거시 키로 계속 동작한다(하위 호환).
 - **FR-023**: 쓰기/admin 엔드포인트는 기존 미들웨어 인증(`authorized`) 통과 후 스코프 검사를 추가해야 한다. 최소한 `runs:read`/`runs:write` 구분을 `POST /api/v1/runs` 등 핵심 엔드포인트에 적용하고, 나머지 엔드포인트는 스코프 미지정 키에 대해 deny-by-default 또는 기존 동작 유지 여부를 구현 계획에서 명시해야 한다(MUST — deny-by-default 권장).
-- **FR-024**: API 키 관리 자체는 admin 세션 또는 `api_keys:manage` 스코프 키만 허용하고, member 세션은 자기 소유(`owner_user_id`) 키의 조회·폐기만 가능해야 한다(MUST). 발급 rate limit(사용자당 분당 10회)을 적용한다.
+- **FR-024**: API 키 관리 자체는 admin 세션 또는 `api_keys:manage` 스코프 키만 허용하고, member 세션은 자기 소유(`owner_user_id`) 키의 조회·폐기만 가능해야 한다(MUST) — member의 키 발급 요청은 403. `*`/`admin`/`api_keys:manage` 스코프 발급은 admin 세션 또는 env 키로 제한하고(MUST), `api_keys:manage` 키가 발급한 키는 부모 키의 `owner_user_id`를 계승해야 한다. 발급 rate limit(사용자당 분당 10회)을 적용한다.
 
 **공통 보안 요구사항**
 

@@ -10,7 +10,7 @@ import hashlib
 import hmac
 import logging
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -30,9 +30,13 @@ from ...security import (
     encrypt_str,
     hash_password,
     hash_token,
+    new_api_key,
     new_session_token,
+    password_min_len,
+    password_pwned,
     totp_secret,
     totp_verify_step,
+    validate_password,
     verify_password,
 )
 
@@ -57,6 +61,10 @@ def register(app: FastAPI, ctx: Any) -> None:
     _mfa_challenge_page = ctx._mfa_challenge_page
     _mfa_record = ctx._mfa_record
     _mfa_throttled = ctx._mfa_throttled
+    _notify_new_device = ctx._notify_new_device
+    _db_api_key = ctx._db_api_key
+    _API_KEY_SCOPES = ctx._API_KEY_SCOPES
+    _rate_hit = ctx._rate_hit
     _maybe_first_user_admin = ctx._maybe_first_user_admin
     _pub_user = ctx._pub_user
     _remote_open_mode = ctx._remote_open_mode
@@ -73,6 +81,43 @@ def register(app: FastAPI, ctx: Any) -> None:
     _signup_throttled = ctx._signup_throttled
     err = ctx.err
     store = ctx.store
+
+    def _reject_weak_password(request: Request, password: str, email: str) -> JSONResponse | None:
+        """비밀번호 정책 위반 시 400 응답, 통과 시 None.
+        validate_password(길이/denylist/이메일 포함/단순 패턴) +
+        HIBP k-anonymity 유출 검사(JOBMATE_PWNED_CHECK=1일 때만 네트워크 호출)."""
+        reason = validate_password(password, email)
+        if reason == "too_short":
+            return err(
+                400,
+                "weak_password",
+                f"비밀번호는 {password_min_len()}자 이상이어야 합니다",
+                request,
+            )
+        if reason is None and password_pwned(password):
+            reason = "pwned_password"
+        if reason is None:
+            return None
+        msg = {
+            "common_password": "너무 흔한 비밀번호는 사용할 수 없습니다",
+            "contains_email": "비밀번호에 이메일을 포함할 수 없습니다",
+            "numeric_only": "숫자만으로 된 비밀번호는 사용할 수 없습니다",
+            "repeated_chars": "동일 문자 반복 비밀번호는 사용할 수 없습니다",
+            "sequential_chars": "연속된 문자/숫자 비밀번호는 사용할 수 없습니다",
+            "pwned_password": "유출된 비밀번호는 사용할 수 없습니다. 다른 비밀번호를 선택하세요",
+        }.get(reason, "비밀번호 정책을 만족하지 않습니다")
+        # spec 002 US3 AS1 — 거부 사유를 감사에 남긴다(비밀번호 원문 금지)
+        try:
+            store.audit(
+                "",
+                (email or "-").strip().lower() or "-",
+                "auth_password_rejected",
+                "-",
+                {"reason": reason, "path": request.url.path},
+            )
+        except Exception:
+            logger.debug("weak-password audit failed", exc_info=True)
+        return err(400, "weak_password", msg, request)
 
     @app.post("/api/v1/auth/signup")
     def auth_signup(body: dict[str, Any], request: Request) -> JSONResponse:
@@ -104,8 +149,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         name = str(body.get("display_name", "")).strip()[:80]
         if not _EMAIL_RE.match(email):
             return err(400, "invalid_email", "이메일 형식이 올바르지 않습니다", request)
-        if len(password) < 8:
-            return err(400, "weak_password", "비밀번호는 8자 이상이어야 합니다", request)
+        weak = _reject_weak_password(request, password, email)
+        if weak is not None:
+            return weak
         if not email_allowed(email):
             logger.warning("signup denied (not allowed): %s", email)
             return err(403, "email_not_allowed", "허용되지 않은 이메일입니다", request)
@@ -143,7 +189,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         return resp
 
     @app.post("/api/v1/auth/login")
-    def auth_login(body: dict[str, Any], request: Request) -> JSONResponse:
+    def auth_login(
+        body: dict[str, Any], request: Request, background_tasks: BackgroundTasks
+    ) -> JSONResponse:
         if _remote_open_mode(request):
             return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         email = str(body.get("email", "")).strip().lower()
@@ -196,6 +244,8 @@ def register(app: FastAPI, ctx: Any) -> None:
         logger.info("auth login: user=%s", row[0])
         resp = JSONResponse({"user": _pub_user(user) if user else {}})
         _set_session(resp, request, row[0])
+        if user is not None:
+            _notify_new_device(request, user, background_tasks)
         return resp
 
     @app.post("/api/v1/auth/verify/resend")
@@ -320,9 +370,13 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         token = str(body.get("token", ""))
         new_password = str(body.get("new_password", ""))
-        if len(new_password) < 8:
-            return err(400, "weak_password", "새 비밀번호는 8자 이상이어야 합니다", request)
         token_hash = hash_token(token) if token else ""
+        # consume 전에 토큰의 계정 이메일을 들여다봐 contains_email 정책을 적용한다
+        # — 정책 위반으로 토큰이 소진되는 것을 막는다(peek은 소비하지 않음).
+        peeked = store.peek_password_reset(token_hash) if token_hash else None
+        weak = _reject_weak_password(request, new_password, peeked[1] if peeked else "")
+        if weak is not None:
+            return weak
         consumed = store.consume_password_reset(token_hash) if token_hash else None
         if consumed is None:
             store.audit("", "-", "auth_password_reset_failed", "", {"reason": "invalid_or_expired"})
@@ -448,7 +502,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         return JSONResponse({"status": "active", "backup_codes": codes})
 
     @app.post("/api/v1/auth/mfa/verify")
-    def auth_mfa_verify(body: dict[str, Any], request: Request) -> JSONResponse:
+    def auth_mfa_verify(
+        body: dict[str, Any], request: Request, background_tasks: BackgroundTasks
+    ) -> JSONResponse:
         """MFA 챌린지 완료 — ticket consume(1회성) → TOTP(±1, 리플레이 거부)
         또는 미사용 백업 코드 검증 → 세션 발급.
 
@@ -503,6 +559,8 @@ def register(app: FastAPI, ctx: Any) -> None:
         # 챌린지 쿠키는 티켓 소비와 함께 무효 — 남겨두면 login CSRF(타인 티켓 심기)와
         # stale 챌린지 페이지 UX 문제가 생긴다.
         resp.delete_cookie(MFA_PENDING_COOKIE, path="/")
+        if user is not None:
+            _notify_new_device(request, user, background_tasks)
         return resp
 
     @app.get("/api/v1/auth/mfa/challenge")
@@ -620,8 +678,9 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(401, "unauthorized", "로그인이 필요합니다", request)
         current = str(body.get("current_password", ""))
         new_password = str(body.get("new_password", ""))
-        if len(new_password) < 8:
-            return err(400, "weak_password", "새 비밀번호는 8자 이상이어야 합니다", request)
+        weak = _reject_weak_password(request, new_password, str(user.get("email") or ""))
+        if weak is not None:
+            return weak
         row = store.get_user_password_hash(str(user.get("email") or ""))
         # Google-only 계정(password_hash 빈 값)은 현재 비밀번호가 없어 변경 불가 —
         # 명시적 연결 플로우가 생기기 전까지 지원하지 않는다.
@@ -817,7 +876,11 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.get("/api/v1/auth/google/callback")
     def auth_google_callback(
-        request: Request, code: str = "", state: str = "", error: str = ""
+        request: Request,
+        background_tasks: BackgroundTasks,
+        code: str = "",
+        state: str = "",
+        error: str = "",
     ) -> Any:
         def back(q: str) -> RedirectResponse:
             return RedirectResponse(f"/?auth_error={q}", status_code=302)
@@ -942,4 +1005,170 @@ def register(app: FastAPI, ctx: Any) -> None:
         _set_session(resp, request, user["id"])
         resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
         resp.delete_cookie(MFA_PENDING_COOKIE, path="/")
+        _notify_new_device(request, user, background_tasks)
         return resp
+
+    # ---- 스코프드 API 키 관리 (spec 002 US4) ----
+    _API_KEY_CREATE_BUCKET: dict[str, list[float]] = {}
+
+    def _api_key_actor(request: Request) -> tuple[str, dict[str, Any] | None] | None:
+        """키 관리 주체 — ("user", 세션유저) / ("key", db키정보) / ("env", None).
+        env 키(JOBMATE_API_KEY)와 api_keys:manage 스코프 키, 세션 사용자만 허용."""
+        user = _session_user(request)
+        if user is not None:
+            return ("user", user)
+        ka = _db_api_key(request)
+        if ka is not None and "api_keys:manage" in ka["scopes"]:
+            return ("key", ka)
+        if api_key() and authorized(request):
+            return ("env", None)
+        return None
+
+    @app.post("/api/v1/auth/api-keys")
+    def auth_api_key_create(body: dict[str, Any], request: Request) -> JSONResponse:
+        """API 키 발급 — 원문은 이 응답에 1회만 포함, DB엔 해시+prefix만."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 환경에서는 사용할 수 없습니다", request)
+        actor = _api_key_actor(request)
+        if actor is None:
+            return err(401, "unauthorized", "로그인 또는 API 키 인증이 필요합니다", request)
+        kind, obj = actor
+        # FR-024 — 키 발급은 admin 세션·env 키·api_keys:manage 키만.
+        # member 세션은 자기 키의 조회·폐기만 가능(발급 불가).
+        if kind == "user" and obj is not None and _effective_role(obj) != "admin":
+            return err(403, "forbidden", "API 키 발급은 관리자만 가능합니다", request)
+        # 발급 rate limit — 주체당 분당 10회
+        if kind == "user" and obj is not None:
+            rate_key = f"user:{obj['id']}"
+        elif kind == "key" and obj is not None:
+            rate_key = f"key:{obj['id']}"
+        else:
+            rate_key = "env"
+        if _rate_hit(_API_KEY_CREATE_BUCKET, rate_key, 60.0, 10):
+            store.audit("", "-", "auth_api_key_create_throttled", "", {})
+            return err(429, "too_many_attempts", "키 발급 요청이 너무 많습니다", request)
+        name = str(body.get("name", "")).strip()[:80] or "default"
+        scopes_raw = body.get("scopes")
+        if scopes_raw is None:
+            scopes_raw = []
+        if not isinstance(scopes_raw, list) or not all(isinstance(s, str) for s in scopes_raw):
+            return err(422, "invalid_scopes", "scopes는 문자열 배열이어야 합니다", request)
+        scopes = sorted({s.strip() for s in scopes_raw if s.strip()})
+        bad = [s for s in scopes if s not in _API_KEY_SCOPES]
+        if bad:
+            return err(
+                422,
+                "invalid_scopes",
+                f"허용되지 않는 스코프: {', '.join(bad[:5])}",
+                request,
+            )
+        # 권한 상승 방지 — *, admin, api_keys:manage 스코프는 admin 세션 또는
+        # env 키만 발급 가능. api_keys:manage 키가 동일/상위 권한 키를
+        # 발급해 권한이 키를 타고 영속 확장되는 것을 차단한다.
+        _ELEVATED = {"*", "admin", "api_keys:manage"}
+        if _ELEVATED & set(scopes) and kind == "key":
+            return err(
+                403,
+                "forbidden",
+                "관리자 수준 스코프는 admin 세션 또는 서버 키로만 발급할 수 있습니다",
+                request,
+            )
+        expires_at = None
+        days = body.get("expires_in_days")
+        if days is not None:
+            try:
+                days = int(days)
+            except (TypeError, ValueError):
+                return err(422, "invalid_expires", "expires_in_days는 정수여야 합니다", request)
+            if not 1 <= days <= 365:
+                return err(
+                    422, "invalid_expires", "expires_in_days는 1~365 범위여야 합니다", request
+                )
+            expires_at = (datetime.now(UTC) + timedelta(days=days)).isoformat()
+        owner_id = ""
+        if kind == "user" and obj is not None:
+            owner_id = str(obj["id"])
+            # admin 세션은 body.owner_user_id로 타인 소유 키 발급 가능
+            target = str(body.get("owner_user_id", "")).strip()
+            if target and _effective_role(obj) == "admin":
+                owner_id = target
+        elif kind == "key" and obj is not None:
+            # manage 키가 발급한 키는 부모 키 소유자를 계승 —
+            # ownerless 키는 member 목록/폐기에서 영구히 보이지 않는다
+            owner_id = str(obj.get("owner_user_id") or "")
+        raw, prefix, khash = new_api_key()
+        kid = store.create_api_key(owner_id, name, khash, prefix, scopes, expires_at)
+        store.audit(
+            "",
+            str((obj or {}).get("email") or "-"),
+            "auth_api_key_created",
+            kid,
+            {"name": name, "scopes": scopes, "owner": owner_id},
+        )
+        logger.info("api key created: id=%s owner=%s scopes=%s", kid, owner_id, scopes)
+        return JSONResponse(
+            {
+                "id": kid,
+                "name": name,
+                "key_prefix": prefix,
+                "key": raw,  # 원문은 이 응답에만 포함 — 재조회 불가
+                "scopes": scopes,
+                "expires_at": expires_at,
+            },
+            status_code=201,
+        )
+
+    @app.get("/api/v1/auth/api-keys")
+    def auth_api_key_list(request: Request) -> JSONResponse:
+        """키 메타데이터 목록 — 세션 사용자는 본인 키만, admin/env/manage 키는 전체.
+        key_hash·원문은 어떤 응답에도 포함하지 않는다."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 환경에서는 사용할 수 없습니다", request)
+        user = _session_user(request)
+        if user is not None:
+            if _effective_role(user) == "admin":
+                keys = store.list_api_keys(None)
+            else:
+                keys = store.list_api_keys(user["id"])
+            return JSONResponse({"keys": keys})
+        if api_key() and authorized(request):
+            return JSONResponse({"keys": store.list_api_keys(None)})
+        ka = _db_api_key(request)
+        if ka is not None and "api_keys:manage" in ka["scopes"]:
+            return JSONResponse({"keys": store.list_api_keys(None)})
+        return err(401, "unauthorized", "로그인 또는 API 키 인증이 필요합니다", request)
+
+    @app.delete("/api/v1/auth/api-keys/{key_id}")
+    def auth_api_key_revoke(key_id: str, request: Request) -> JSONResponse:
+        """키 폐기 — 본인 소유 키 또는 관리 권한자만."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 환경에서는 사용할 수 없습니다", request)
+        user = _session_user(request)
+        if user is not None:
+            if _effective_role(user) == "admin":
+                ok = store.revoke_api_key(key_id)
+            else:
+                ok = store.revoke_api_key(key_id, owner_user_id=user["id"])
+            if not ok:
+                return err(404, "not_found", "키를 찾을 수 없습니다", request)
+            store.audit(
+                "",
+                str(user.get("email") or "-"),
+                "auth_api_key_revoked",
+                key_id,
+                {},
+            )
+            logger.info("api key revoked: id=%s by=%s", key_id, user["id"])
+            return JSONResponse({"status": "revoked"})
+        if api_key() and authorized(request):
+            if not store.revoke_api_key(key_id):
+                return err(404, "not_found", "키를 찾을 수 없습니다", request)
+            store.audit("", "-", "auth_api_key_revoked", key_id, {"via": "env_key"})
+            return JSONResponse({"status": "revoked"})
+        ka = _db_api_key(request)
+        if ka is not None and "api_keys:manage" in ka["scopes"]:
+            if not store.revoke_api_key(key_id):
+                return err(404, "not_found", "키를 찾을 수 없습니다", request)
+            store.audit("", "-", "auth_api_key_revoked", key_id, {"via": f"key:{ka['id']}"})
+            return JSONResponse({"status": "revoked"})
+        return err(401, "unauthorized", "로그인 또는 API 키 인증이 필요합니다", request)

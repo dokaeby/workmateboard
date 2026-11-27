@@ -28,7 +28,7 @@ def test_signup_is_open_when_no_allowlist(client, monkeypatch):
     c, store = client
     r = c.post(
         "/api/v1/auth/signup",
-        json={"email": "owner@example.com", "password": "password123", "agree_terms": True},
+        json={"email": "owner@example.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
     )
     assert r.status_code == 201
     assert store.get_user_by_email("owner@example.com") is not None
@@ -42,7 +42,7 @@ def test_public_signup_without_admin_key_does_not_grant_admin(client, monkeypatc
     c, store = client
     r = c.post(
         "/api/v1/auth/signup",
-        json={"email": "attacker@example.com", "password": "password123", "agree_terms": True},
+        json={"email": "attacker@example.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
     )
     assert r.status_code == 201
     token = store.create_email_verification("attacker@example.com")
@@ -57,7 +57,7 @@ def test_admin_key_provisioned_first_signup_grants_admin(client, monkeypatch):
     c, store = client
     r = c.post(
         "/api/v1/auth/signup",
-        json={"email": "owner@example.com", "password": "password123", "agree_terms": True},
+        json={"email": "owner@example.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
         headers={"X-API-Key": "admin-key"},
     )
     assert r.status_code == 201
@@ -70,7 +70,11 @@ def test_allowed_email_cannot_be_claimed_without_admin_key(client, monkeypatch):
     assert (
         c.post(
             "/api/v1/auth/signup",
-            json={"email": "owner@example.com", "password": "password123", "agree_terms": True},
+            json={
+                "email": "owner@example.com",
+                "password": "Str0ng#Passw0rd!",
+                "agree_terms": True,
+            },
         ).status_code
         == 403
     )
@@ -81,7 +85,7 @@ def test_removed_email_loses_session_access(client, monkeypatch):
     assert (
         c.post(
             "/api/v1/auth/signup",
-            json={"email": "old@example.com", "password": "password123", "agree_terms": True},
+            json={"email": "old@example.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
         ).status_code
         == 201
     )
@@ -98,7 +102,7 @@ def test_vercel_without_api_key_keeps_machine_api_closed(client, monkeypatch):
     assert (
         c.post(
             "/api/v1/auth/signup",
-            json={"email": "any@example.com", "password": "password123", "agree_terms": True},
+            json={"email": "any@example.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
         ).status_code
         == 201
     )

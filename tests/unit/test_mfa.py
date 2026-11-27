@@ -13,7 +13,7 @@ from jobmate.security import hash_password, totp_code
 from jobmate.store.db import Store
 from tests.integration.helpers import default_outputs, scripted_llm
 
-_PW = "password123"
+_PW = "Str0ng#Passw0rd!"
 
 
 def _client(monkeypatch=None):

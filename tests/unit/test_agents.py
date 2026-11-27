@@ -36,7 +36,7 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def _login(store: Store, client: TestClient, email: str, role: str = "member") -> None:
     u = store.get_user_by_email(email) or store.create_user(
-        email, hash_password("password123"), email
+        email, hash_password("Str0ng#Passw0rd!"), email
     )
     assert u is not None
     store.set_user_role(u["id"], role)

@@ -48,7 +48,7 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch | None = None):
 def _login(store: Store, client: TestClient, email: str, role: str = "member") -> None:
     """사용자 생성/역할 지정 후 세션 쿠키를 client에 심는다."""
     u = store.get_user_by_email(email) or store.create_user(
-        email, hash_password("password123"), email
+        email, hash_password("Str0ng#Passw0rd!"), email
     )
     assert u is not None
     store.set_user_role(u["id"], role)
@@ -82,7 +82,7 @@ def _fail_stage(store: Store, run_id: str, stage_key: str = "impl", model: str =
 
 def test_store_role_normalization(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "t.db"))
-    u = store.create_user("a@b.com", hash_password("password123"))
+    u = store.create_user("a@b.com", hash_password("Str0ng#Passw0rd!"))
     assert u is not None
     # DB 기본값 'user' → 읽을 때 'member'로 정규화
     assert store.get_user_by_email("a@b.com")["role"] == "member"
@@ -97,7 +97,7 @@ def test_auth_me_normalized_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     client, store = _client(tmp_path, monkeypatch)
     r = client.post(
         "/api/v1/auth/signup",
-        json={"email": "first@b.com", "password": "password123", "agree_terms": True},
+        json={"email": "first@b.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
         headers={"X-API-Key": "test-api-key"},
     )
     assert r.status_code == 201
