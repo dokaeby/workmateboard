@@ -20,7 +20,8 @@ from ...insights import (
 )
 from ...workflows import WORKFLOWS
 from ..schemas import CardCreateRequest, ScheduleToggleRequest, ShareCreateRequest
-from ..support import _last_cron_tick_at, _parse_session_ts
+from ..session_stats import _parse_session_ts
+from ..support import _last_cron_tick_at
 
 logger = logging.getLogger("jobmate.api")
 

@@ -16,22 +16,8 @@ from ...sensors import (
     verify_slack_signature,
     verify_telegram_secret,
 )
-from ..jobs import (
-    _check_waiting_approvals,
-    _maybe_daily_radar,
-    _maybe_generate_reports,
-    _maybe_poll_gmail,
-    _process_due_notification_jobs,
-    _process_due_routines,
-    _process_due_schedules,
-    _process_pending_messages,
-)
-from ..support import (
-    _mark_cron_tick,
-    _maybe_check_triggers,
-    _reap_stale_runs,
-    _retention_sweep,
-)
+from ..jobs import run_automation_cycle
+from ..support import _mark_cron_tick
 
 logger = logging.getLogger("jobmate.api")
 
@@ -238,37 +224,25 @@ def register(app: FastAPI, ctx: Any) -> None:
                 execute_run, new_run.id, new_run.workflow_key, job_payload, None
             )
 
-        # 고착 run 복구 + 보존 기간 정리 — 틱마다 호출하되 내부 스로틀 적용
-        _reap_stale_runs(store, settings, llm, adapters, schedule=_promote_schedule)
-        _retention_sweep(store)
-        _process_pending_messages(store, settings, llm, adapters)
-        _process_due_notification_jobs(store, adapters)
-        schedule_jobs: list = []
-        _process_due_schedules(store, settings, llm, adapters, defer=schedule_jobs)
-        # routines — spec 3차 C. schedule와 동일하게 defer→BackgroundTasks.
-        # claim CAS가 automation loop과의 중복 발사를 막는다.
-        routine_jobs: list = []
-        _process_due_routines(store, settings, llm, adapters, defer=routine_jobs)
-        _schedule_run_jobs(schedule_jobs + routine_jobs, background_tasks)
-        _check_waiting_approvals(store, adapters)
-        # watchdog 1 cycle — spec 2차 E. 서버리스 tick에서도 automation
-        # loop과 동일 규칙으로 감지/복구/escalation을 수행한다.
-        try:
-            from ...services import watchdog as _watchdog
+        def _flush_jobs(jobs: list) -> None:
+            """defer에 모인 run job을 응답 후 실행 — _schedule_run_jobs는
+            VERCEL이면 BackgroundTasks, 그 외 daemon thread로 보낸다."""
+            _schedule_run_jobs(jobs, background_tasks)
 
-            _watchdog.run_cycle(store)
-        except Exception:
-            logger.warning("cron tick watchdog cycle failed", exc_info=True)
-        _maybe_poll_gmail(store, settings, adapters)
-        radar_jobs: list = []
-        _maybe_daily_radar(
-            store, settings, llm, adapters, defer=radar_jobs, schedule=_promote_schedule
+        # 고착 run 복구 + 보존 기간 정리 + 메시지/스케줄/루틴/승인/폴링/리포트까지
+        # automation loop와 동일한 1회 사이클 — run 실행만 BackgroundTasks로 위임.
+        # (서버리스에서 틱 핸들러 안에 run을 동기 실행하면 수 분짜리 run이
+        # maxDuration을 넘어 함수가 죽고 run이 running에 고착된다.)
+        run_automation_cycle(
+            store,
+            settings,
+            llm,
+            adapters,
+            promote_schedule=_promote_schedule,
+            flush_jobs=_flush_jobs,
+            watchdog_log=logger,
+            watchdog_message="cron tick watchdog cycle failed",
         )
-        _schedule_run_jobs(radar_jobs, background_tasks)
-        trigger_jobs: list = []
-        _maybe_check_triggers(store, settings, llm, adapters, defer=trigger_jobs)
-        _schedule_run_jobs(trigger_jobs, background_tasks)
-        _maybe_generate_reports(store, settings, adapters)
         logger.info("cron tick cycle completed")
         return JSONResponse(content={"ok": True})
 

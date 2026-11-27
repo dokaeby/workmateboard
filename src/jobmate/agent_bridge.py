@@ -234,7 +234,7 @@ class Bridge:
         # egress 정책을 적용한다 — http는 loopback만, 공인은 https 필수,
         # userinfo 금지, SSRF 가드 통과 호스트만 허용(R2-3). 반환값은
         # 정규화된 URL(스킴 보정·userinfo 없음)이라 그대로 로깅해도 안전하다.
-        from .paperclip_client import validate_jobmate_url
+        from .paperclip import validate_jobmate_url
 
         self.url = validate_jobmate_url(url)
         self.api_key = api_key

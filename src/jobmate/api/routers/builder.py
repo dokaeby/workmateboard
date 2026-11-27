@@ -12,6 +12,11 @@ from fastapi.responses import JSONResponse
 from ... import webutil
 from ...models import WorkflowSpec
 from ...workflows import WORKFLOWS
+from ..connectors import (
+    _CONNECTOR_CACHE,
+    _CONNECTOR_CACHE_TTL,
+    _fetch_connector_items,
+)
 from ..schemas import (
     CommentCreateRequest,
     ConnectorCreateRequest,
@@ -20,15 +25,8 @@ from ..schemas import (
     ScheduleToggleRequest,
     TriggerCreateRequest,
 )
-from ..support import (
-    _BUILTIN_WF_KEYS,
-    _CONNECTOR_CACHE,
-    _CONNECTOR_CACHE_TTL,
-    _config_has_secret,
-    _encrypt_config_secrets,
-    _fetch_connector_items,
-    _sync_workflow_registry,
-)
+from ..sensitive_fields import _config_has_secret, _encrypt_config_secrets
+from ..support import _BUILTIN_WF_KEYS, _sync_workflow_registry
 
 logger = logging.getLogger("jobmate.api")
 

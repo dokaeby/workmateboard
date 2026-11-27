@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _agent_bridge(args: argparse.Namespace) -> int:
     from .agent_bridge import Bridge
-    from .paperclip_client import PaperclipError
+    from .paperclip import PaperclipError
 
     # get_settings()의 load_dotenv() 이후 호출되므로 .env의 JOBMATE_URL도 반영된다.
     url = args.url or os.environ.get("JOBMATE_URL") or "http://127.0.0.1:8000"
@@ -253,7 +253,7 @@ def _paperclip_bridge(args: argparse.Namespace) -> int:
     secret은 환경변수 우선 — argv에 키를 받지 않고 로그에도 남기지 않는다.
     동기화 실패는 safe 로그(오류 종류/상태만 — URL·페이로드 금지) 후
     다음 주기에 재시도한다."""
-    from .paperclip_client import (
+    from .paperclip import (
         PaperclipBridge,
         PaperclipClient,
         PaperclipError,

@@ -9,9 +9,14 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from ..support import _endpoint_fp
-
 logger = logging.getLogger("jobmate.api")
+
+
+def _endpoint_fp(endpoint: str) -> str:
+    """push endpoint 비식별 지문 — 원문 대신 SHA256 앞 12자."""
+    import hashlib
+
+    return hashlib.sha256(endpoint.encode()).hexdigest()[:12]
 
 
 def register(app: FastAPI, ctx: Any) -> None:

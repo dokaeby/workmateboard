@@ -23,7 +23,7 @@ from ..schemas import (
     ScheduleToggleRequest,
     UserRoleRequest,
 )
-from ..support import _session_est_cost_usd
+from ..session_stats import _session_est_cost_usd
 
 logger = logging.getLogger("jobmate.api")
 

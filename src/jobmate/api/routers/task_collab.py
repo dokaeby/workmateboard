@@ -34,7 +34,7 @@ from ..schemas import (
     TaskArtifactCreateRequest,
     TaskCommentCreateRequest,
 )
-from ..support import sanitize_project_audit_fields
+from ..sensitive_fields import sanitize_project_audit_fields
 
 logger = logging.getLogger("jobmate.api")
 

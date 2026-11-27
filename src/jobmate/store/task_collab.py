@@ -2,7 +2,7 @@
 """Task 협업 스토어 메서드 믹스인 (db.py Store에서 추출).
 
 agent-management 3차 (paperclip spec B) — task_comments/task_artifacts
-영속화. 스키마는 db.py SCHEMA/SCHEMA_PG에 이미 정의돼 있다.
+영속화. 스키마는 schema_sqlite.py/schema_pg.py에 이미 정의돼 있다.
 어휘/URI/길이 검증은 서비스 계층(jobmate.services.task_collab)이 담당하고,
 여기서는 원자적 쓰기·조회만 제공한다.
 """

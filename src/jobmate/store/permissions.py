@@ -2,7 +2,7 @@
 """Agent permission 스토어 메서드 믹스인 (db.py Store에서 추출).
 
 agent-management 3차 (paperclip spec D) — agent_permissions 영속화와
-capability 판정용 조회. 스키마는 db.py SCHEMA/SCHEMA_PG에 이미 정의돼
+capability 판정용 조회. 스키마는 schema_sqlite.py/schema_pg.py에 이미 정의돼
 있다(scope_id NOT NULL DEFAULT '' — UNIQUE NULL 회피).
 
 판정 규칙(deny 우선, scope precedence, 기본 deny capability)은

@@ -28,7 +28,8 @@ from ..schemas import (
     ProjectPatchRequest,
     RunPatchRequest,
 )
-from ..support import _session_view, sanitize_project_audit_fields
+from ..sensitive_fields import sanitize_project_audit_fields
+from ..session_stats import _session_view
 
 logger = logging.getLogger("jobmate.api")
 

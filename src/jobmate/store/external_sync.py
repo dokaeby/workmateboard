@@ -3,7 +3,7 @@
 
 agent-management 3차 (paperclip spec E/F) — external_agents/external_tasks/
 external_runs/external_sync_cursors upsert·snapshot ingest·커서/상태 조회.
-스키마는 db.py SCHEMA/SCHEMA_PG에 이미 정의돼 있다(provider+external_id UNIQUE).
+스키마는 schema_sqlite.py/schema_pg.py에 이미 정의돼 있다(provider+external_id UNIQUE).
 
 sync 의미:
 - snapshot은 (provider, external_id) 기준 upsert — snapshot에 없는 기존

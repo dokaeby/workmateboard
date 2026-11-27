@@ -20,11 +20,11 @@ from ..workflows.registry_builder import build_runner
 from .support import (
     _acquire_run_slot,
     _mark_cron_tick,
-    _maybe_check_triggers,
     _reap_stale_runs,
     _retention_sweep,
     _run_slots,
 )
+from .triggers import _maybe_check_triggers
 
 logger = logging.getLogger("jobmate.api")
 worker_logger = logging.getLogger("jobmate.worker")
@@ -53,6 +53,77 @@ class BudgetExceededError(RuntimeError):
 
 
 # ---------- automation worker ----------
+
+
+def run_automation_cycle(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    *,
+    promote_schedule: Any = None,
+    flush_jobs: Any = None,
+    watchdog_log: Any = worker_logger,
+    watchdog_message: str = "watchdog cycle failed",
+) -> None:
+    """자동화 1회 사이클 — automation loop 스레드와 /api/v1/cron/tick의 공용 본체.
+
+    스케줄러 진입점은 두 곳이다:
+    1. _automation_loop — 비서버리스 환경의 상주 daemon thread
+       (lifespan에서 시작, worker_interval_seconds 간격).
+    2. POST/GET /api/v1/cron/tick — 서버리스(Vercel)에서 외부 cron이 호출하는
+       HTTP 핸들러. 상주 스레드가 없으므로 이 경로가 유일한 구동 신호다.
+
+    두 경로가 실행하는 _process_*/_maybe_* 단위 작업과 순서는 여기서 단일
+    기준으로 유지한다. 차이는 run 실행 방식뿐이다:
+    - loop: defer 없이 호출 → 각 단계가 daemon thread로 즉시 실행.
+    - tick: flush_jobs(=BackgroundTasks 래퍼)와 promote_schedule을 넘겨
+      run 실행과 deferred wakeup promote를 응답 후로 미룬다.
+    """
+    _reap_stale_runs(store, settings, llm, adapters, schedule=promote_schedule)
+    _retention_sweep(store)
+    _process_pending_messages(store, settings, llm, adapters)
+    _process_due_notification_jobs(store, adapters)
+    # schedules+routines는 하나의 defer 목록에 모아 한 번에 flush —
+    # tick에서도 기존처럼 schedules 작업이 routines 작업보다 먼저 실행된다.
+    jobs: list = []
+    defer = jobs if flush_jobs is not None else None
+    _process_due_schedules(store, settings, llm, adapters, defer=defer)
+    _process_due_routines(store, settings, llm, adapters, defer=defer)
+    if flush_jobs is not None:
+        flush_jobs(jobs)
+    _check_waiting_approvals(store, adapters)
+    # watchdog 1 cycle — spec 2차 E. 감지/복구/escalation은 내부에서
+    # batch 상한(JOBMATE_WATCHDOG_BATCH)과 중복 방지를 적용한다.
+    try:
+        from ..services import watchdog as _watchdog
+
+        _watchdog.run_cycle(store)
+    except Exception:
+        watchdog_log.warning(watchdog_message, exc_info=True)
+    _maybe_poll_gmail(store, settings, adapters)
+    radar_jobs: list = []
+    _maybe_daily_radar(
+        store,
+        settings,
+        llm,
+        adapters,
+        defer=radar_jobs if flush_jobs is not None else None,
+        schedule=promote_schedule,
+    )
+    if flush_jobs is not None:
+        flush_jobs(radar_jobs)
+    trigger_jobs: list = []
+    _maybe_check_triggers(
+        store,
+        settings,
+        llm,
+        adapters,
+        defer=trigger_jobs if flush_jobs is not None else None,
+    )
+    if flush_jobs is not None:
+        flush_jobs(trigger_jobs)
+    _maybe_generate_reports(store, settings, adapters)
 
 
 def _promote_deferred_runs(
@@ -603,32 +674,18 @@ def _automation_loop(
     store: Store, settings: Settings, llm: Any, adapters: dict[str, Any], stop: threading.Event
 ) -> None:
     """calendar-agent worker 포팅: pending 메시지 처리 + 알림 예약 발송 +
-    gmail 폴링 + radar 일일 수집."""
+    gmail 폴링 + radar 일일 수집.
+
+    1회 사이클의 작업 순서는 run_automation_cycle이 단일 기준 — 서버리스
+    환경에서는 /api/v1/cron/tick이 같은 사이클을 BackgroundTasks 실행으로
+    대체한다(두 진입점 설명은 run_automation_cycle docstring 참고)."""
     while not stop.is_set():
         try:
             _mark_cron_tick(store)
             # 비용 원장 1회성 백필 — automation_state 가드로 매 tick 1쿼리 조기 반환.
             # 배치 상한이 있어 대량 DB에서도 tick을 막지 않는다(2차 C).
             cost_ledger.maybe_backfill_cost_events(store)
-            _reap_stale_runs(store, settings, llm, adapters)
-            _retention_sweep(store)
-            _process_pending_messages(store, settings, llm, adapters)
-            _process_due_notification_jobs(store, adapters)
-            _process_due_schedules(store, settings, llm, adapters)
-            _process_due_routines(store, settings, llm, adapters)
-            _check_waiting_approvals(store, adapters)
-            # watchdog 1 cycle — spec 2차 E. 감지/복구/escalation은 내부에서
-            # batch 상한(JOBMATE_WATCHDOG_BATCH)과 중복 방지를 적용한다.
-            try:
-                from ..services import watchdog as _watchdog
-
-                _watchdog.run_cycle(store)
-            except Exception:
-                worker_logger.warning("watchdog cycle failed", exc_info=True)
-            _maybe_poll_gmail(store, settings, adapters)
-            _maybe_daily_radar(store, settings, llm, adapters)
-            _maybe_check_triggers(store, settings, llm, adapters)
-            _maybe_generate_reports(store, settings, adapters)
+            run_automation_cycle(store, settings, llm, adapters)
         except Exception:
             worker_logger.exception("automation loop error")
         stop.wait(settings.worker_interval_seconds)

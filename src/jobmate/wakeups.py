@@ -533,12 +533,9 @@ def on_run_finished(
             # input.project는 이름 문자열일 수 있으므로 permission scope_id
             # (canonical project uuid)로 해석한다 — POST /runs와 동일 규칙.
             # 해석 실패 시 ''를 넘겨 task_id 유도 project가 대신 쓰이게 한다.
-            _w_project_id = ""
-            _w_project = str(input_data.get("project") or "").strip()
-            if _w_project:
-                _w_proj = store.get_project(_w_project) or store.find_project_by_name(_w_project)
-                if _w_proj is not None:
-                    _w_project_id = str(_w_proj.get("id") or "")
+            _w_project_id = perm_svc.resolve_project_scope_id(
+                store, str(input_data.get("project") or "")
+            )
             try:
                 perm_svc.require_permission(
                     store,

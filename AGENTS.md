@@ -19,13 +19,24 @@
 
 ## 주요 구조
 
-- `src/jobmate/api/app.py` — FastAPI 대시보드 API + `_automation_loop` + `_sync_cronjob`
+- `src/jobmate/api/app.py` — FastAPI 앱 조합 루트(create_app + 미들웨어 + 라우터 등록).
+  요청 컨텍스트 클로저는 `api/appctx.py`, 코어 라우트는 `api/routers/core.py`,
+  스케줄러 잡은 `api/jobs.py`(`run_automation_cycle` 단일 사이클,
+  `_automation_loop`/`cron_tick` 두 진입점 공유)
 - `src/jobmate/workflows/dev_review.py` — dev_review 워크플로(분석→구현→자동검사→보안→리뷰→QA→사람승인)
 - `src/jobmate/api/static/index.html` — 단일 파일 대시보드 UI.
   "Agent Command"(office) 뷰는 `dev_review` run의 스테이지 진행을 3D 보드로
   시각화하고 `POST /api/v1/runs/{id}/approve`로 승인/거절을 처리한다.
-- `src/jobmate/store/db.py` — SQLite/PostgreSQL 공용 Store (스키마 이중 정의)
+- `src/jobmate/store/db.py` — SQLite/PostgreSQL 공용 Store (믹스인 조합 + 커넥션/tx 생명주기)
+  - `store/schema_sqlite.py` / `store/schema_pg.py` — 신규 DB용 CREATE TABLE 스키마(이중 정의)
+  - `store/pg_dialect.py` — SQLite 방언→PG 변환(`_pg_translate`) + `_PGConn` 재접속 래퍼
+  - `store/migrations.py` — `MigrationStoreMixin`: 기존 DB 컬럼/인덱스 ALTER 보강
 - `src/jobmate/security.py` — API 키 인증 + Fernet 암호화
+- `src/jobmate/services/agent_management.py` — facade. 실제 구현은
+  `agent_lifecycle`/`task_ops`/`agent_runtime`/`run_projection`/`management_common`/`redaction`
+- `src/jobmate/services/routines.py` — 오케스트레이션. 순수 스케줄 계산(DST/next-run)은 `routine_schedule.py`
+- `src/jobmate/services/permissions.py` — capability 평가. `require_permission(target_project_id=)`가 현재+목표 scope 평가
+- `src/jobmate/paperclip/` — paperclip bridge 패키지(client/bridge/urls/errors). `paperclip_client.py`는 호환 shim
 
 ## 주의
 

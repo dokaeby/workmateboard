@@ -27,6 +27,7 @@ from typing import Any
 
 from ..models import AgentCapability, ApprovalActionType, PermissionEffect, PermissionScopeType
 from ..store.db import Store
+from .management_common import ManagementError
 
 logger = logging.getLogger("jobmate.permissions")
 
@@ -60,6 +61,23 @@ _SCOPE_RANK = {
 DECISION_ALLOW = "allow"
 DECISION_DENY = "deny"
 DECISION_NEEDS_APPROVAL = "needs_approval"
+
+
+def resolve_project_scope_id(store: Store, ref: str) -> str:
+    """project 참조(project id 또는 이름 문자열)를 permission scope_id
+    (canonical project uuid)로 해석한다.
+
+    run/wakeup input의 project 필드는 이름 문자열일 수 있으므로 판정 전에
+    이 헬퍼로 정규화해야 project-scoped 규칙이 매칭된다. 해석 실패 시
+    ""를 반환 — 호출자는 task_id 유도 project가 대신 쓰이게 둔다
+    (api/routers/runs.py, wakeups.py promote 경로와 동일 규칙)."""
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+    proj = store.get_project(ref) or store.find_project_by_name(ref)
+    if proj is None:
+        return ""
+    return str(proj.get("id") or "")
 
 
 def _resolve_scope_ids(
@@ -226,56 +244,15 @@ def _permission_denied_message(capability: str, decision: dict[str, Any]) -> str
     return f"agent lacks permission '{capability}'" + (f" (scope: {scope})" if scope else "")
 
 
-def require_permission(
+def _enforce_decision(
     store: Store,
     agent_id: str,
     capability: str,
+    decision: dict[str, Any],
     *,
-    scope_type: str = "",
-    scope_id: str = "",
-    task_id: str = "",
-    project_id: str = "",
-    actor: str = "",
-) -> dict[str, Any]:
-    """agent-actor 경로의 강제 지점 — spec "서버가 반드시 다시 검증".
-
-    - deny → ManagementError(403, 'permission_denied') + denial 로그
-      (actor/capability/resource id만 — payload 원문 금지, spec H).
-    - needs_approval → has_decided_approval(action, 'agent', agent_id)가
-      없으면 ManagementError(409, 'approval_required'). 승인은
-      (action_type, agent) standing grant — 과거 승인 이력이 있으면 계속
-      유효하다(모듈 docstring 참조). 승인 row는 POST /management/approvals로
-      사람이 만들고 결정한다 — high risk는 로그인된 lead/admin만 결정
-      가능(ACTION_MIN_RISK 강제).
-    - allow → 판정 dict 반환(호출자는 무시 가능)."""
-    from .agent_management import ManagementError  # 지연 import — 순환 방지
-
-    # task 컨텍스트가 있으면 task.project_id가 project 스코프의 정본이다.
-    # 호출자가 다른 project_id를 함께 넘기면(두 스코프가 충돌) 조용히
-    # 한쪽을 무시하지 않고 422로 거부한다 — project deny 우회 방지.
-    _tid, _pid, conflict_pid = _resolve_scope_ids(
-        store,
-        scope_type=scope_type,
-        scope_id=scope_id,
-        task_id=task_id,
-        project_id=project_id,
-    )
-    if conflict_pid:
-        raise ManagementError(
-            422,
-            "validation",
-            "project_id conflicts with task's project "
-            f"(task belongs to {_pid or 'no project'}, got {conflict_pid})",
-        )
-    decision = evaluate_permission(
-        store,
-        agent_id,
-        capability,
-        scope_type=scope_type,
-        scope_id=scope_id,
-        task_id=task_id,
-        project_id=project_id,
-    )
+    actor: str,
+) -> None:
+    """판정 dict를 강제한다 — deny/needs_approval은 ManagementError."""
     dec = str(decision.get("decision") or "")
     if dec == DECISION_DENY:
         logger.warning(
@@ -308,6 +285,78 @@ def require_permission(
                 f"capability '{capability}' requires an approved '{action or 'approval'}'"
                 " approval_request",
             )
+
+
+def require_permission(
+    store: Store,
+    agent_id: str,
+    capability: str,
+    *,
+    scope_type: str = "",
+    scope_id: str = "",
+    task_id: str = "",
+    project_id: str = "",
+    target_project_id: str = "",
+    actor: str = "",
+) -> dict[str, Any]:
+    """agent-actor 경로의 강제 지점 — spec "서버가 반드시 다시 검증".
+
+    - deny → ManagementError(403, 'permission_denied') + denial 로그
+      (actor/capability/resource id만 — payload 원문 금지, spec H).
+    - needs_approval → has_decided_approval(action, 'agent', agent_id)가
+      없으면 ManagementError(409, 'approval_required'). 승인은
+      (action_type, agent) standing grant — 과거 승인 이력이 있으면 계속
+      유효하다(모듈 docstring 참조). 승인 row는 POST /management/approvals로
+      사람이 만들고 결정한다 — high risk는 로그인된 lead/admin만 결정
+      가능(ACTION_MIN_RISK 강제).
+    - allow → 판정 dict 반환(호출자는 무시 가능).
+
+    target_project_id — "이동 후" 스코프 평가(R2-1). task/project를 다른
+    project로 옮기는 연산에서, 현재 컨텍스트(task→project 정본) 평가가
+    통과한 뒤 대상 project 스코프를 두 번째 컨텍스트로 평가한다.
+    project_id 인자와 달리 task_id와 함께 넘겨도 _resolve_scope_ids 충돌
+    검사를 거치지 않는다 — 대상 project는 '현재'가 아니라 '목표' 컨텍스트다.
+    현재 컨텍스트 평가가 먼저 강제되므로 deny/needs_approval 우선순위는
+    기존 두 번의 require_permission 호출과 동일하다. 호출자가 현재와
+    같은 project를 넘기면 동일 규칙을 재평가할 뿐 결과는 같다."""
+    # task 컨텍스트가 있으면 task.project_id가 project 스코프의 정본이다.
+    # 호출자가 다른 project_id를 함께 넘기면(두 스코프가 충돌) 조용히
+    # 한쪽을 무시하지 않고 422로 거부한다 — project deny 우회 방지.
+    _tid, _pid, conflict_pid = _resolve_scope_ids(
+        store,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        task_id=task_id,
+        project_id=project_id,
+    )
+    if conflict_pid:
+        raise ManagementError(
+            422,
+            "validation",
+            "project_id conflicts with task's project "
+            f"(task belongs to {_pid or 'no project'}, got {conflict_pid})",
+        )
+    decision = evaluate_permission(
+        store,
+        agent_id,
+        capability,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        task_id=task_id,
+        project_id=project_id,
+    )
+    _enforce_decision(store, agent_id, capability, decision, actor=actor)
+    # 이동 대상 project 스코프 — 현재 컨텍스트 강제가 모두 통과한 뒤에만
+    # 평가한다(기존 patch_task의 두 번째 require_permission 호출과 동일 순서).
+    target = (target_project_id or "").strip()
+    if target:
+        target_decision = evaluate_permission(
+            store,
+            agent_id,
+            capability,
+            project_id=target,
+        )
+        _enforce_decision(store, agent_id, capability, target_decision, actor=actor)
     return decision
 
 
@@ -324,8 +373,6 @@ def validate_permission_rules(
       UNIQUE 제약 위반을 요청 단계에서 명확한 오류로 바꾼다.
     - 반환값은 store.replace_agent_permissions에 그대로 전달 가능한
       정규화 dict 목록."""
-    from .agent_management import ManagementError  # 지연 import — 순환 방지
-
     agent = store.get_agent(agent_id)
     if agent is None:
         raise ManagementError(404, "not_found", "agent not found")

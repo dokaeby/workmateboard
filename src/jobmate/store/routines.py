@@ -2,7 +2,7 @@
 """Routine 스토어 메서드 믹스인 (db.py Store에서 추출).
 
 agent-management 3차 (paperclip spec C) — routines/routine_runs 영속화.
-스키마는 db.py SCHEMA/SCHEMA_PG에 이미 정의돼 있다.
+스키마는 schema_sqlite.py/schema_pg.py에 이미 정의돼 있다.
 
 동시성 모델은 workflow_schedules(usage.py)를 그대로 따른다:
 - due_routines() 조회 → claim_routine_fire()가 next_run_at CAS로

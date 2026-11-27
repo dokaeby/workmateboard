@@ -699,7 +699,7 @@ def test_cli_paperclip_bridge_once(monkeypatch):
         def close(self):
             pass
 
-    import jobmate.paperclip_client as pc
+    import jobmate.paperclip as pc
 
     monkeypatch.setattr(pc, "PaperclipClient", _FakeClient)
     monkeypatch.setattr(pc, "PaperclipBridge", _FakeBridge)
