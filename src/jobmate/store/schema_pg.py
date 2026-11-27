@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   last_seen_at TEXT,
+  current_org_id TEXT NOT NULL DEFAULT '',
   revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
@@ -889,4 +890,50 @@ CREATE TABLE IF NOT EXISTS external_sync_cursors (
   updated_at TEXT NOT NULL,
   UNIQUE(provider, company_id)
 );
+
+-- 조직(Organization) — spec 003 US1. kind: personal|team, status: active|suspended|deleted
+CREATE TABLE IF NOT EXISTS organizations (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'team',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- slug는 lower() 기준 전역 UNIQUE — deleted 행도 예약 유지(30일 유예 후 purge)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_slug_lower
+  ON organizations(lower(slug));
+
+-- 조직 멤버십 — role: org_owner|org_admin|member (앱 계층 검증)
+CREATE TABLE IF NOT EXISTS organization_members (
+  org_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY (org_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_role ON organization_members(org_id, role);
+
+
+-- 조직 초대 — spec 003 US2. token_hash만 저장, 원문 미저장
+CREATE TABLE IF NOT EXISTS org_invitations (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  role TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'pending',
+  invited_by TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_org_invites_lookup
+  ON org_invitations(org_id, email, status);
+CREATE INDEX IF NOT EXISTS idx_org_invites_email ON org_invitations(email);
+
 """

@@ -169,6 +169,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         if user is None:
             return err(409, "email_taken", "이미 가입된 이메일입니다", request)
         _maybe_first_user_admin(user, request)
+        # spec 003 FR-003 — 가입 시 개인 워크스페이스 자동 생성
+        try:
+            store.create_personal_org(user)
+        except Exception:
+            logger.warning("personal org creation failed: user=%s", user["id"], exc_info=True)
         store.audit("", user["email"], "auth_signup", user["id"], {"terms_agreed": terms_agreed})
         logger.info("auth signup: user=%s", user["id"])
         verify_required = _email_verification_required()
@@ -793,6 +798,25 @@ def register(app: FastAPI, ctx: Any) -> None:
                         "마지막 관리자 계정은 삭제할 수 없습니다",
                         request,
                     )
+            # 마지막 org_owner 보호 — 유일 owner인 team 조직이 있으면
+            # 계정 삭제로 ownerless 조직이 고착되므로 먼저 이관/삭제 요구.
+            # 개인 워크스페이스(kind=personal)는 cascade가 함께 정리한다.
+            blocking_orgs = store.orgs_blocking_owner_delete(uid)
+            if blocking_orgs:
+                store.audit(
+                    "",
+                    email,
+                    "auth_account_delete_blocked",
+                    uid,
+                    {"reason": "last_org_owner", "orgs": [o["id"] for o in blocking_orgs]},
+                )
+                logger.warning("account delete blocked: last org owner user=%s", uid)
+                return err(
+                    409,
+                    "last_org_owner",
+                    "조직의 마지막 소유자입니다 — 소유권을 이관하거나 조직을 삭제한 뒤 탈퇴하세요",
+                    request,
+                )
             # 감사 기록은 actor 마스킹 전에 남긴다 — 삭제 후에도 행위가 추적된다.
             # delete가 실패하면 감사도 남기지 않기 위해 삭제 성공 후 기록한다.
             counts = store.delete_user_cascade(uid)
@@ -975,6 +999,11 @@ def register(app: FastAPI, ctx: Any) -> None:
             if user is None:
                 return back("signup_failed")
             _maybe_first_user_admin(user, request)
+            # spec 003 FR-003 — Google 가입도 개인 워크스페이스 자동 생성
+            try:
+                store.create_personal_org(user)
+            except Exception:
+                logger.warning("personal org creation failed: user=%s", user["id"], exc_info=True)
             logger.info("auth signup via google: user=%s", user["id"])
         else:
             # 기존 계정에 Google 연결 — 이메일 인증 완료 처리

@@ -83,6 +83,64 @@ class MigrationStoreMixin:
         # 세션 유휴 만료(spec 002 FR-017) — 마지막 활동 시각
         self._ensure_columns("auth_sessions", {"last_seen_at": "TEXT"})
 
+    def _migrate_org_columns(self) -> None:
+        """조직 테넌시(spec 003 US1/US3) — 세션 조직 컨텍스트 컬럼 +
+        기존 단일 테넌트 데이터의 기본 조직 백필.
+
+        organizations/organization_members 테이블은 SCHEMA executescript가
+        이미 생성했다. 여기서는 ① auth_sessions.current_org_id 컬럼 보강,
+        ② 조직이 하나도 없으면 default 조직 생성 + 기존 users 전원 멤버 등록,
+        ③ current_org_id가 빈 세션을 기본 조직으로 채운다."""
+        self._ensure_columns("auth_sessions", {"current_org_id": "TEXT NOT NULL DEFAULT ''"})
+        try:
+            n_orgs = self._conn.execute("SELECT COUNT(*) AS n FROM organizations").fetchone()["n"]
+            if n_orgs == 0:
+                users = self._conn.execute(
+                    "SELECT id,email,display_name,role,created_at FROM users"
+                    " ORDER BY created_at ASC, id ASC"
+                ).fetchall()
+                if users:
+                    now = _iso(_now())
+                    with self.tx() as c:
+                        c.execute(
+                            "INSERT INTO organizations(id,name,slug,kind,status,"
+                            "created_by,created_at,updated_at)"
+                            " VALUES(?,?,?,?,?,?,?,?)",
+                            (
+                                "defaultorg01",
+                                "Default",
+                                "default",
+                                "team",
+                                "active",
+                                "",
+                                now,
+                                now,
+                            ),
+                        )
+                    # spec FR-015 — 가장 먼저 생성된 admin=org_owner,
+                    # 나머지 admin=org_admin, member=member.
+                    # admin이 없으면 최초 사용자를 owner로(조직 고아 방지).
+                    admins = [u for u in users if str(u["role"] or "") == "admin"]
+                    owner_id = str((admins or users)[0]["id"])
+                    admin_ids = {str(u["id"]) for u in admins}
+                    for u in users:
+                        uid = str(u["id"])
+                        if uid == owner_id:
+                            role = "org_owner"
+                        elif uid in admin_ids:
+                            role = "org_admin"
+                        else:
+                            role = "member"
+                        self.add_org_member("defaultorg01", uid, role)
+                    with self.tx() as c:
+                        c.execute(
+                            "UPDATE auth_sessions SET current_org_id='defaultorg01'"
+                            " WHERE current_org_id='' OR current_org_id IS NULL"
+                        )
+                    logger.info("org backfill: default org + %d members", len(users))
+        except Exception as e:
+            logger.warning("org backfill failed: %s", e)
+
     def _migrate_run_columns(self) -> None:
         """기존 DB의 runs에 created_by/project/agent_id 컬럼 보강."""
         self._ensure_columns(

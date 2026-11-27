@@ -35,6 +35,7 @@ from .governance import GovernanceStoreMixin
 from .inbox import InboxStoreMixin
 from .management import ManagementStoreMixin
 from .migrations import MigrationStoreMixin
+from .orgs import OrgStoreMixin
 from .permissions import PermissionStoreMixin
 from .pg_dialect import _is_pg_dsn, _PGConn
 from .pg_dialect import _pg_translate as _pg_translate
@@ -76,6 +77,7 @@ class Store(
     RoutineStoreMixin,
     PermissionStoreMixin,
     ExternalSyncStoreMixin,
+    OrgStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -109,6 +111,7 @@ class Store(
         self._migrate_agent_session_columns()
         self._migrate_approval_columns()
         self._migrate_user_columns()
+        self._migrate_org_columns()
         self._migrate_run_columns()
         self._migrate_budget_incident_index()
         self._migrate_wakeup_idempotency_index()

@@ -1053,7 +1053,10 @@ def build_app_context(
 
     def _set_session(response: Any, request: Request, user_id: str) -> None:
         token = new_session_token()
-        store.create_session(user_id, hash_token(token), SESSION_TTL_DAYS)
+        # 세션 조직 컨텍스트(spec 003) — 기본값은 첫 번째 멤버십 조직
+        # (개인 워크스페이스 또는 백필된 default 조직)
+        org_id = store.user_default_org_id(user_id)
+        store.create_session(user_id, hash_token(token), SESSION_TTL_DAYS, org_id=org_id)
         evicted = store.enforce_session_limit(user_id, _max_sessions())
         if evicted:
             u = store.get_user_by_id(user_id)
@@ -1335,6 +1338,35 @@ def build_app_context(
             logger.debug("password reset audit failed", exc_info=True)
         logger.info("password reset mail delivered: user=%s sent=%s", user_id, sent)
         return sent
+
+    # ---- 조직 초대 (spec 003 US2) ----
+    def _invite_url(request: Request, token: str) -> str:
+        base = (settings.public_base_url or str(request.base_url)).rstrip("/")
+        # 토큰은 쿼리(?token=)로 — path에 두면 접근 로그에 원문이 남는다(NFR-005)
+        return f"{base}/api/v1/invitations/info?token={token}"
+
+    def send_org_invite(
+        request: Request, org: dict[str, Any], email: str, role: str, token: str
+    ) -> bool:
+        """조직 초대 메일 발송 — Host 허용목록 검증 포함. 실패해도 예외 없음."""
+        if not _public_host_allowed(request):
+            logger.warning("org invite email refused: host not allowed")
+            try:
+                store.audit("", email, "org_invite_send_blocked", str(org.get("id") or ""), {})
+            except Exception:
+                logger.debug("invite-send-blocked audit failed", exc_info=True)
+            return False
+        try:
+            return mailer.send_org_invite_email(
+                email,
+                str(org.get("name") or ""),
+                role,
+                _invite_url(request, token),
+                gmail=adapters.get("gmail"),
+            )
+        except Exception as e:
+            logger.warning("org invite email send failed: %s", str(e)[:200])
+            return False
 
     _VERIFY_OK_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <title>이메일 인증 완료</title></head>

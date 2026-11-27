@@ -78,6 +78,19 @@ def _reset_body(reset_url: str) -> tuple[str, str]:
     )
 
 
+def _invite_body(org_name: str, role: str, invite_url: str) -> tuple[str, str]:
+    role_ko = "관리자" if role == "org_admin" else "멤버"
+    return (
+        f"[jobMate] {org_name} 조직 초대",
+        f"{org_name} 조직에 {role_ko}로 초대되었습니다.\n\n"
+        "아래 링크를 열어 초대를 확인하고 수락해 주세요.\n\n"
+        f"{invite_url}\n\n"
+        "링크는 72시간 동안 유효하며 한 번만 사용할 수 있습니다.\n"
+        "초대받은 이메일과 동일한 계정으로 로그인해야 수락할 수 있습니다.\n"
+        "본인이 요청하지 않았다면 이 메일은 무시하셔도 됩니다.\n",
+    )
+
+
 def _deliver(to: str, subject: str, body: str, gmail: Any | None, kind: str, link: str) -> bool:
     """SMTP→Gmail API 폴백 발송 공통부. kind는 로그 라벨, link는 로컬 개발용
     마스킹 URL(_log_safe_url 적용)."""
@@ -162,6 +175,18 @@ def send_password_reset_email(to: str, reset_url: str, gmail: Any | None = None)
     SMTP→Gmail API 폴백 구조."""
     subject, body = _reset_body(reset_url)
     return _deliver(to, subject, body, gmail, "password-reset", reset_url)
+
+
+def send_org_invite_email(
+    to: str,
+    org_name: str,
+    role: str,
+    invite_url: str,
+    gmail: Any | None = None,
+) -> bool:
+    """조직 초대 링크 발송 — spec 003 FR-008. 토큰 원문은 invite_url에만 포함."""
+    subject, body = _invite_body(org_name, role, invite_url)
+    return _deliver(to, subject, body, gmail, "org-invite", invite_url)
 
 
 def send_login_alert_email(

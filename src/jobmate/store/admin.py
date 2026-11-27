@@ -39,6 +39,7 @@ class AdminStoreMixin:
         - agent_events: created_at < now-90d 삭제 — heartbeat 등 고빈도
           이벤트 포함 전체 타입 동일 기준. tasks/task_runs는 업무 이력
           소유권이라 별도 정책이 없어 보존한다.
+        - org_invitations: expires_at < now-30d 삭제(초대 이력은 audit_events 보존)
         반환값: 테이블별 삭제/정리 건수."""
         now = now or _now()
         d30 = _iso(now - timedelta(days=30))
@@ -69,6 +70,9 @@ class AdminStoreMixin:
                 (now_iso,),
             )
             counts["mfa_tickets"] = int(getattr(cur, "rowcount", 0) or 0)
+            # 만료 후 30일 지난 초대 행 정리 — 상태 이력은 audit_events가 보존
+            cur = c.execute("DELETE FROM org_invitations WHERE expires_at < ?", (d30,))
+            counts["org_invitations"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute("DELETE FROM agent_session_events WHERE created_at < ?", (d30,))
             counts["agent_session_events"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute(
@@ -217,6 +221,26 @@ class AdminStoreMixin:
                 counts[table] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute("DELETE FROM api_keys WHERE owner_user_id=?", (user_id,))
             counts["api_keys"] = int(getattr(cur, "rowcount", 0) or 0)
+            # 조직 멤버십·초대 정리(spec 003) — 초대는 invited_by(user_id 또는
+            # 이메일)와 수신 이메일 양쪽으로 매칭해 잔존 PII를 제거한다.
+            cur = c.execute("DELETE FROM organization_members WHERE user_id=?", (user_id,))
+            counts["organization_members"] = int(getattr(cur, "rowcount", 0) or 0)
+            if email:
+                cur = c.execute(
+                    "DELETE FROM org_invitations WHERE invited_by=? OR invited_by=?"
+                    " OR lower(email)=?",
+                    (user_id, email, email),
+                )
+            else:
+                cur = c.execute("DELETE FROM org_invitations WHERE invited_by=?", (user_id,))
+            counts["org_invitations"] = int(getattr(cur, "rowcount", 0) or 0)
+            # 멤버가 0명이 된 개인 워크스페이스 정리 — 팀 조직은 last_org_owner
+            # 보호로 멤버 잔존 상태에서만 삭제되므로 여기 걸리지 않는다.
+            cur = c.execute(
+                "DELETE FROM organizations WHERE kind='personal'"
+                " AND id NOT IN (SELECT org_id FROM organization_members)"
+            )
+            counts["organizations"] = int(getattr(cur, "rowcount", 0) or 0)
             if email:
                 cur = c.execute("DELETE FROM email_verifications WHERE email=?", (email,))
                 counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
@@ -270,6 +294,19 @@ class AdminStoreMixin:
                 " ORDER BY created_at DESC",
                 (user_id,),
             ).fetchall()
+            member_rows = c.execute(
+                "SELECT m.org_id,m.role,m.status,m.joined_at,o.name AS org_name,"
+                "o.slug AS org_slug,o.kind AS org_kind"
+                " FROM organization_members m JOIN organizations o ON o.id=m.org_id"
+                " WHERE m.user_id=? ORDER BY m.joined_at",
+                (user_id,),
+            ).fetchall()
+            invite_rows = c.execute(
+                "SELECT org_id,email,role,status,expires_at,used_at,created_at"
+                " FROM org_invitations WHERE invited_by=? OR invited_by=?"
+                " OR lower(email)=? ORDER BY created_at DESC",
+                (user_id, email, email),
+            ).fetchall()
         safe_user = {k: v for k, v in user.items() if k != "password_hash"}
         return {
             "exported_at": _iso(_now()),
@@ -291,6 +328,9 @@ class AdminStoreMixin:
             "password_reset_tokens": [dict(r) for r in reset_rows],
             # key_hash는 절대 포함하지 않는다 — 메타데이터만
             "api_keys": [dict(r) for r in key_rows],
+            # token_hash는 절대 포함하지 않는다 — 초대 메타데이터만
+            "org_memberships": [dict(r) for r in member_rows],
+            "org_invitations": [dict(r) for r in invite_rows],
         }
 
     def list_audit(self, limit: int = 200) -> list[dict[str, Any]]:

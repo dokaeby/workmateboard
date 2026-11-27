@@ -144,6 +144,9 @@ def create_app(
                     "/api/v1/webhooks/",
                     "/api/v1/cron/tick",
                     "/api/v1/auth/",
+                    # 초대 토큰은 bearer secret — 세션 없이도 정보 조회 가능,
+                    # accept/decline은 라우트가 세션을 자체 검증한다
+                    "/api/v1/invitations/",
                 )
             )
         ):
@@ -220,6 +223,7 @@ def create_app(
     from .routers import messaging as _r_messaging
     from .routers import misc as _r_misc
     from .routers import ops as _r_ops
+    from .routers import orgs as _r_orgs
     from .routers import paperclip as _r_paperclip
     from .routers import permissions as _r_permissions
     from .routers import push as _r_push
@@ -249,6 +253,7 @@ def create_app(
     _r_task_collab.register(app, ctx)
     _r_routines.register(app, ctx)
     _r_permissions.register(app, ctx)
+    _r_orgs.register(app, ctx)
     _r_paperclip.register(app, ctx)
     return app
 

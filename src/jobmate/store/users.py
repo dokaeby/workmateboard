@@ -32,6 +32,8 @@ class UserStoreMixin:
             # 컬럼이 없는 구 스키마 SELECT(세션 JOIN 등)는 검증 완료로 간주
             "email_verified": bool(r["email_verified"]) if "email_verified" in r.keys() else True,
             "created_at": r["created_at"],
+            # 세션 조직 컨텍스트(spec 003) — 세션 JOIN SELECT에만 존재
+            "current_org_id": r["current_org_id"] if "current_org_id" in r.keys() else "",
         }
 
     def create_user(
@@ -93,16 +95,38 @@ class UserStoreMixin:
         ).fetchone()
         return (r["id"], r["password_hash"]) if r else None
 
-    def create_session(self, user_id: str, token_hash: str, ttl_days: int = 30) -> None:
-        """세션 생성 — id는 토큰의 SHA-256 해시(원문 토큰은 저장하지 않음)."""
+    def create_session(
+        self, user_id: str, token_hash: str, ttl_days: int = 30, org_id: str = ""
+    ) -> None:
+        """세션 생성 — id는 토큰의 SHA-256 해시(원문 토큰은 저장하지 않음).
+        org_id는 세션의 현재 조직 컨텍스트(spec 003)."""
         now = _now()
         exp = now + timedelta(days=ttl_days)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO auth_sessions(id,user_id,created_at,expires_at,last_seen_at)"
-                " VALUES(?,?,?,?,?)",
-                (token_hash, user_id, _iso(now), _iso(exp), _iso(now)),
+                "INSERT INTO auth_sessions(id,user_id,created_at,expires_at,last_seen_at,"
+                "current_org_id) VALUES(?,?,?,?,?,?)",
+                (token_hash, user_id, _iso(now), _iso(exp), _iso(now), org_id),
             )
+
+    def set_session_org(self, token_hash: str, org_id: str) -> bool:
+        """세션의 현재 조직 전환(spec 003 US1) — 반환: 갱신 성공 여부."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE auth_sessions SET current_org_id=? WHERE id=? AND revoked_at IS NULL",
+                (org_id, token_hash),
+            )
+        return int(getattr(cur, "rowcount", 0) or 0) > 0
+
+    def clear_session_org_context(self, user_id: str, org_id: str) -> int:
+        """멤버 제거·탈퇴·조직 삭제 시 해당 사용자의 세션 조직 컨텍스트를
+        비운다 — 제거된 조직을 current_org_id로 들고 있는 세션이 남지 않게."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE auth_sessions SET current_org_id='' WHERE user_id=? AND current_org_id=?",
+                (user_id, org_id),
+            )
+        return int(getattr(cur, "rowcount", 0) or 0)
 
     # last_seen_at 갱신 최소 간격 — 요청마다 쓰지 않도록 5분 스로틀
     _SESSION_TOUCH_INTERVAL_SEC = 300
@@ -115,7 +139,8 @@ class UserStoreMixin:
         갱신해 요청당 쓰기를 제한한다."""
         r = self._conn.execute(
             "SELECT u.id, u.email, u.display_name, u.google_sub, u.role, u.created_at,"
-            " s.expires_at, s.created_at AS sess_created_at, s.last_seen_at"
+            " s.expires_at, s.created_at AS sess_created_at, s.last_seen_at,"
+            " s.current_org_id"
             " FROM auth_sessions s JOIN users u ON u.id = s.user_id"
             " WHERE s.id=? AND s.revoked_at IS NULL",
             (token_hash,),
