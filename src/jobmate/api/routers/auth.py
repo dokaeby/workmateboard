@@ -6,26 +6,33 @@ Handlers are byte-for-byte copies; create_app locals arrive via `ctx`
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
+import secrets
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ...security import (
+    MFA_PENDING_COOKIE,
     OAUTH_STATE_COOKIE,
     SESSION_COOKIE,
     allowed_emails,
     api_key,
     authorized,
+    decrypt_str,
     email_allowed,
+    encrypt_str,
     hash_password,
     hash_token,
     new_session_token,
+    totp_secret,
+    totp_verify_step,
     verify_password,
 )
 
@@ -47,6 +54,9 @@ def register(app: FastAPI, ctx: Any) -> None:
     _login_key = ctx._login_key
     _login_record = ctx._login_record
     _login_throttled = ctx._login_throttled
+    _mfa_challenge_page = ctx._mfa_challenge_page
+    _mfa_record = ctx._mfa_record
+    _mfa_throttled = ctx._mfa_throttled
     _maybe_first_user_admin = ctx._maybe_first_user_admin
     _pub_user = ctx._pub_user
     _remote_open_mode = ctx._remote_open_mode
@@ -174,6 +184,14 @@ def register(app: FastAPI, ctx: Any) -> None:
                 request,
             )
         _login_record(key, ok=True)
+        mfa = store.get_mfa_secret(row[0])
+        if mfa is not None and mfa.get("status") == "active":
+            # 비밀번호 계정 + MFA 활성 — 세션 대신 5분·1회성 챌린지 티켓 발급.
+            # Google 로그인은 Google 측 인증에 위임하므로 이 경로를 타지 않는다.
+            ticket = store.create_mfa_ticket(row[0])
+            store.audit("", email, "auth_login_mfa_challenge", row[0], {})
+            logger.info("login mfa challenge: user=%s", row[0])
+            return JSONResponse({"mfa_required": True, "mfa_ticket": ticket})
         store.audit("", email, "auth_login", row[0], {})
         logger.info("auth login: user=%s", row[0])
         resp = JSONResponse({"user": _pub_user(user) if user else {}})
@@ -327,6 +345,259 @@ def register(app: FastAPI, ctx: Any) -> None:
         )
         logger.info("password reset: user=%s sessions_revoked=%d", user_id, revoked)
         return JSONResponse({"status": "password_reset"})
+
+    # ---- MFA/TOTP ----
+    _MFA_BACKUP_COUNT = 10
+
+    def _mfa_backup_hash(user_id: str, code: str) -> str:
+        """백업 코드 해시 — user_id를 salt로 써 DB 유출 시 오프라인 복구를 어렵게 한다."""
+        return hashlib.sha256(f"{user_id}:{str(code).strip().lower()}".encode()).hexdigest()
+
+    def _issue_mfa_backup_codes(user_id: str) -> list[str]:
+        """새 백업 코드 세트 발급 — 평문은 이 응답에서 1회만 반환, DB엔 해시만."""
+        codes = [secrets.token_hex(5) for _ in range(_MFA_BACKUP_COUNT)]
+        store.replace_mfa_backup_codes(user_id, [_mfa_backup_hash(user_id, c) for c in codes])
+        return codes
+
+    def _mfa_reauth_ok(user: dict[str, Any], body: dict[str, Any]) -> bool:
+        """MFA 변경 작업 재인증 — 현재 비밀번호 또는 유효 TOTP 코드."""
+        if _mfa_throttled(user["id"]):
+            return False
+        password = str(body.get("password", ""))
+        row = store.get_user_password_hash(str(user.get("email") or ""))
+        ok = bool(password and row is not None and row[1] and verify_password(password, row[1]))
+        if not ok:
+            code = str(body.get("code", ""))
+            sec = store.get_mfa_secret(user["id"])
+            if code and sec is not None and sec.get("status") == "active":
+                # TOTP 재인증도 verify와 같은 사용자 단위 실패 카운터를 공유한다 —
+                # 세션만으로 disable/backup-codes에 무제한 코드 추측이 가능하면 안 된다.
+                step = totp_verify_step(decrypt_str(sec["secret_enc"]), code)
+                # CAS 선점 — 같은 스텝의 코드 재사용(리플레이)과 동시 요청 경합을
+                # 원자적으로 차단한다.
+                ok = step is not None and store.mfa_mark_totp_step(user["id"], step)
+        # 비밀번호·코드 어느 쪽이든 실제 시도가 있었으면 결과를 카운터에 반영한다 —
+        # 비밀번호 경로만 무제한이면 세션 탈취자가 disable을 무차별 대입할 수 있다.
+        if password or str(body.get("code", "")):
+            _mfa_record(user["id"], ok=ok)
+        return ok
+
+    @app.post("/api/v1/auth/mfa/setup")
+    def auth_mfa_setup(request: Request) -> JSONResponse:
+        """pending TOTP 비밀키 발급 — Fernet 암호화해 저장, otpauth URI 1회 반환."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        # setup의 upsert와 confirm의 상태 전이를 같은 임계구역에 둬
+        # "pending 확인 중 비밀키가 바뀌는" 레이스를 차단한다.
+        with store.exclusive():
+            sec = store.get_mfa_secret(user["id"])
+            if sec is not None and sec.get("status") == "active":
+                return err(409, "mfa_already_enabled", "이미 MFA가 활성화되어 있습니다", request)
+            secret = totp_secret()
+            store.upsert_mfa_secret(user["id"], encrypt_str(secret))
+        email = str(user.get("email") or "")
+        otpauth = f"otpauth://totp/jobMate:{quote(email)}?secret={secret}&issuer=jobMate"
+        store.audit("", email, "auth_mfa_setup", user["id"], {})
+        logger.info("mfa setup: user=%s", user["id"])
+        return JSONResponse({"secret": secret, "otpauth_uri": otpauth, "status": "pending"})
+
+    @app.post("/api/v1/auth/mfa/confirm")
+    def auth_mfa_confirm(body: dict[str, Any], request: Request) -> JSONResponse:
+        """pending 비밀키의 TOTP 코드 1회 검증 → 활성화 + 백업 코드 발급 + 세션 폐기."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        if _mfa_throttled(user["id"]):
+            return err(
+                429,
+                "too_many_attempts",
+                "시도 횟수가 너무 많습니다. 잠시 후 다시 시도하세요",
+                request,
+            )
+        with store.exclusive():
+            sec = store.get_mfa_secret(user["id"])
+            if sec is None or sec.get("status") != "pending":
+                return err(400, "mfa_not_pending", "확인 대기 중인 MFA 등록이 없습니다", request)
+            step = totp_verify_step(decrypt_str(sec["secret_enc"]), str(body.get("code", "")))
+            if step is None:
+                _mfa_record(user["id"], ok=False)
+                store.audit(
+                    "",
+                    str(user.get("email") or "-"),
+                    "auth_mfa_confirm_failed",
+                    user["id"],
+                    {},
+                )
+                logger.info("mfa confirm failed: user=%s", user["id"])
+                return err(400, "invalid_code", "인증 코드가 올바르지 않습니다", request)
+            _mfa_record(user["id"], ok=True)
+            # confirm의 코드 사용은 last_totp_step에 기록하지 않는다 — 등록 확인과
+            # 로그인 verify는 목적이 달라, 같은 스텝의 코드를 로그인에도 쓸 수 있어야 한다.
+            store.confirm_mfa_secret(user["id"])
+        codes = _issue_mfa_backup_codes(user["id"])
+        revoked = store.revoke_user_sessions(user["id"])
+        store.audit(
+            "",
+            str(user.get("email") or "-"),
+            "auth_mfa_enabled",
+            user["id"],
+            {"backup_codes": len(codes), "sessions_revoked": revoked},
+        )
+        logger.info("mfa enabled: user=%s sessions_revoked=%d", user["id"], revoked)
+        return JSONResponse({"status": "active", "backup_codes": codes})
+
+    @app.post("/api/v1/auth/mfa/verify")
+    def auth_mfa_verify(body: dict[str, Any], request: Request) -> JSONResponse:
+        """MFA 챌린지 완료 — ticket consume(1회성) → TOTP(±1, 리플레이 거부)
+        또는 미사용 백업 코드 검증 → 세션 발급.
+
+        ticket을 코드 검증 전에 consume하므로 티켓당 코드 시도는 1회뿐이다 —
+        별도 실패 rate limit 없이 무차별 대입이 원천 차단된다(티켓 발급 자체가
+        비밀번호 인증을 요구)."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
+        ticket = str(body.get("mfa_ticket", ""))
+        ticket_hash = hash_token(ticket) if ticket else ""
+        user_id = store.consume_mfa_ticket(ticket_hash) if ticket_hash else None
+        if user_id is None:
+            store.audit("", "-", "auth_mfa_verify_failed", "", {"reason": "invalid_ticket"})
+            return err(
+                400,
+                "invalid_or_expired_ticket",
+                "MFA 인증이 만료되었거나 이미 사용되었습니다. 다시 로그인하세요",
+                request,
+            )
+        if _mfa_throttled(user_id):
+            store.audit("", "-", "auth_mfa_verify_throttled", user_id, {})
+            logger.warning("mfa verify throttled: user=%s", user_id)
+            return err(
+                429,
+                "too_many_attempts",
+                "시도 횟수가 너무 많습니다. 잠시 후 다시 시도하세요",
+                request,
+            )
+        sec = store.get_mfa_secret(user_id)
+        code = str(body.get("code", "")).strip()
+        ok = False
+        if sec is not None and sec.get("status") == "active":
+            step = totp_verify_step(decrypt_str(sec["secret_enc"]), code)
+            # CAS 선점 — 같은 스텝의 코드 재사용(리플레이)과 동시 verify 경합을
+            # 원자적으로 차단한다.
+            if step is not None and store.mfa_mark_totp_step(user_id, step):
+                ok = True
+            if not ok and code:
+                ok = store.consume_mfa_backup_code(user_id, _mfa_backup_hash(user_id, code))
+        if not ok:
+            _mfa_record(user_id, ok=False)
+            store.audit("", "-", "auth_mfa_verify_failed", user_id, {"reason": "bad_code"})
+            logger.info("mfa verify failed: user=%s", user_id)
+            return err(401, "invalid_mfa_code", "인증 코드가 올바르지 않습니다", request)
+        _mfa_record(user_id, ok=True)
+        user = store.get_user_by_id(user_id)
+        email = str((user or {}).get("email") or "-")
+        store.audit("", email, "auth_login_mfa", user_id, {})
+        logger.info("mfa login: user=%s", user_id)
+        resp = JSONResponse({"user": _pub_user(user) if user else {}})
+        _set_session(resp, request, user_id)
+        # 챌린지 쿠키는 티켓 소비와 함께 무효 — 남겨두면 login CSRF(타인 티켓 심기)와
+        # stale 챌린지 페이지 UX 문제가 생긴다.
+        resp.delete_cookie(MFA_PENDING_COOKIE, path="/")
+        return resp
+
+    @app.get("/api/v1/auth/mfa/challenge")
+    def auth_mfa_challenge(request: Request) -> Any:
+        """Google 로그인 MFA 챌린지 페이지 — mfa_pending 쿠키의 티켓을 HTML에 심는다.
+        티켓 원문은 URL/응답 본문에 노출하지 않고 서버가 렌더링 시에만 삽입한다."""
+        ticket = request.cookies.get(MFA_PENDING_COOKIE, "")
+        if not ticket:
+            return RedirectResponse("/", status_code=302)
+        return HTMLResponse(_mfa_challenge_page(ticket))
+
+    @app.get("/api/v1/auth/mfa/status")
+    def auth_mfa_status(request: Request) -> JSONResponse:
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        sec = store.get_mfa_secret(user["id"])
+        enabled = sec is not None and sec.get("status") == "active"
+        return JSONResponse(
+            {
+                "mfa_enabled": enabled,
+                "status": (sec or {}).get("status", "disabled"),
+                "backup_codes_remaining": (
+                    store.count_mfa_backup_codes(user["id"]) if enabled else 0
+                ),
+            }
+        )
+
+    @app.post("/api/v1/auth/mfa/disable")
+    def auth_mfa_disable(body: dict[str, Any], request: Request) -> JSONResponse:
+        """MFA 해제 — 비밀번호 또는 TOTP 재인증 필수. 성공 시 백업 코드 전량
+        무효화 + 모든 세션 폐기."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        sec = store.get_mfa_secret(user["id"])
+        if sec is None or sec.get("status") != "active":
+            return err(400, "mfa_not_enabled", "활성화된 MFA가 없습니다", request)
+        if not _mfa_reauth_ok(user, body):
+            store.audit(
+                "", str(user.get("email") or "-"), "auth_mfa_disable_failed", user["id"], {}
+            )
+            return err(
+                403,
+                "invalid_credentials",
+                "비밀번호 또는 인증 코드가 올바르지 않습니다",
+                request,
+            )
+        store.set_mfa_status(user["id"], "disabled")
+        store.delete_mfa_backup_codes(user["id"])
+        revoked = store.revoke_user_sessions(user["id"])
+        store.audit(
+            "",
+            str(user.get("email") or "-"),
+            "auth_mfa_disabled",
+            user["id"],
+            {"sessions_revoked": revoked},
+        )
+        logger.info("mfa disabled: user=%s sessions_revoked=%d", user["id"], revoked)
+        return JSONResponse({"status": "disabled", "sessions_revoked": revoked})
+
+    @app.post("/api/v1/auth/mfa/backup-codes")
+    def auth_mfa_backup_codes(body: dict[str, Any], request: Request) -> JSONResponse:
+        """백업 코드 재발급 — 재인증 후 새 세트 발급, 기존 미사용 코드는 전부 무효화.
+        세션은 유지한다(사용자 본인이 재인증했으므로)."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        sec = store.get_mfa_secret(user["id"])
+        if sec is None or sec.get("status") != "active":
+            return err(400, "mfa_not_enabled", "활성화된 MFA가 없습니다", request)
+        if not _mfa_reauth_ok(user, body):
+            store.audit(
+                "",
+                str(user.get("email") or "-"),
+                "auth_mfa_backup_regen_failed",
+                user["id"],
+                {},
+            )
+            return err(
+                403,
+                "invalid_credentials",
+                "비밀번호 또는 인증 코드가 올바르지 않습니다",
+                request,
+            )
+        codes = _issue_mfa_backup_codes(user["id"])
+        store.audit(
+            "",
+            str(user.get("email") or "-"),
+            "auth_mfa_backup_regen",
+            user["id"],
+            {"backup_codes": len(codes)},
+        )
+        logger.info("mfa backup codes regenerated: user=%s", user["id"])
+        return JSONResponse({"backup_codes": codes})
 
     @app.post("/api/v1/auth/logout")
     def auth_logout(request: Request) -> Any:
@@ -647,7 +918,28 @@ def register(app: FastAPI, ctx: Any) -> None:
             store.set_user_email_verified(user["id"])
         store.audit("", email, "auth_login_google", user["id"], {})
         logger.info("auth login via google: user=%s", user["id"])
+        mfa = store.get_mfa_secret(user["id"])
+        if mfa is not None and mfa.get("status") == "active":
+            # MFA 활성 계정 — Google 로그인도 두 번째 요소를 요구한다. 세션 대신
+            # 5분·1회성 티켓을 HttpOnly 쿠키로 넘기고 챌린지 페이지로 보낸다.
+            # /mfa/verify 성공 시에만 세션이 발급된다.
+            ticket = store.create_mfa_ticket(user["id"])
+            store.audit("", email, "auth_login_mfa_challenge", user["id"], {})
+            logger.info("google login mfa challenge: user=%s", user["id"])
+            resp = RedirectResponse("/api/v1/auth/mfa/challenge", status_code=302)
+            resp.set_cookie(
+                MFA_PENDING_COOKIE,
+                ticket,
+                max_age=300,
+                httponly=True,
+                samesite="lax",
+                secure=_cookie_secure(request),
+                path="/",
+            )
+            resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
+            return resp
         resp = RedirectResponse("/", status_code=302)
         _set_session(resp, request, user["id"])
         resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
+        resp.delete_cookie(MFA_PENDING_COOKIE, path="/")
         return resp

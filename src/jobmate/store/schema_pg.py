@@ -243,6 +243,33 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_email ON password_reset_tokens(email);
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
 
+-- MFA/TOTP — 비밀키는 Fernet 암호화(enc:v1:), 백업코드·티켓은 SHA-256 해시만 저장
+CREATE TABLE IF NOT EXISTS mfa_secrets (
+  user_id TEXT PRIMARY KEY,
+  secret_enc TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  last_totp_step INTEGER,
+  created_at TEXT NOT NULL,
+  confirmed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS mfa_backup_codes (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_backup_codes_user ON mfa_backup_codes(user_id);
+CREATE TABLE IF NOT EXISTS mfa_tickets (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  ticket_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_tickets_hash ON mfa_tickets(ticket_hash);
+
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,
   tool TEXT NOT NULL,

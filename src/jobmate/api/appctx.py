@@ -994,6 +994,30 @@ def build_app_context(
         if len(_reset_attempts) > _RATE_MAX_KEYS:
             _prune_fail_bucket(_reset_attempts, _RESET_WINDOW)
 
+    # MFA 2차 인증 코드 실패 카운터 — 사용자당. 티켓은 1회성이라 verify는
+    # 티켓 재사용이 불가하지만, 로그인할 때마다 새 티켓이 발급되므로 사용자
+    # 단위로 묶어야 TOTP/백업코드 무차별 대입이 차단된다.
+    _mfa_fails: dict[str, list[float]] = {}
+    _MFA_WINDOW = 600.0
+    _MFA_MAX_FAILS = 5
+
+    def _mfa_throttled(user_id: str) -> bool:
+        now = time.time()
+        fails = [t for t in _mfa_fails.get(user_id, []) if now - t < _MFA_WINDOW]
+        if fails:
+            _mfa_fails[user_id] = fails
+        else:
+            _mfa_fails.pop(user_id, None)
+        return len(fails) >= _MFA_MAX_FAILS
+
+    def _mfa_record(user_id: str, ok: bool) -> None:
+        if ok:
+            _mfa_fails.pop(user_id, None)
+        else:
+            _mfa_fails.setdefault(user_id, []).append(time.time())
+            if len(_mfa_fails) > _RATE_MAX_KEYS:
+                _prune_fail_bucket(_mfa_fails, _MFA_WINDOW)
+
     # ---- 이메일 인증 (비밀번호 가입) ----
     _VERIFY_RESEND_MIN_INTERVAL = 600.0  # 같은 이메일 재발송 10분에 1회
 
@@ -1177,6 +1201,54 @@ document.getElementById('f').addEventListener('submit', async (e) => {{
       msg.style.color = '#15803d';
     }} else {{
       msg.textContent = '재설정에 실패했습니다. 링크가 만료되었을 수 있습니다.';
+      msg.style.color = '#b91c1c';
+    }}
+  }} catch {{
+    msg.textContent = '네트워크 오류가 발생했습니다.'; msg.style.color = '#b91c1c';
+  }}
+}});
+</script></body></html>"""
+
+    def _mfa_challenge_page(ticket: str) -> str:
+        """Google 로그인 등 리다이렉트 플로우의 MFA 챌린지 페이지.
+        mfa_pending 쿠키에서 읽은 티켓을 hidden 필드로 심고 /mfa/verify를 호출한다.
+        티켓은 5분·1회성이라 URL에 노출하지 않고 서버가 HTML에만 삽입한다."""
+        import html as _html
+
+        t = _html.escape(ticket, quote=True)
+        return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>MFA 인증</title></head>
+<body style="font-family:sans-serif;display:flex;align-items:center;
+justify-content:center;min-height:100vh;margin:0;background:#f6f7f9">
+<div style="background:#fff;border:1px solid #e3e6ea;border-radius:12px;
+padding:32px;max-width:360px">
+<h2 style="margin:0 0 8px;text-align:center">2단계 인증</h2>
+<p style="color:#555;font-size:13px;text-align:center;margin:0 0 16px">
+인증 앱의 6자리 코드 또는 백업 코드를 입력하세요.</p>
+<form id="f" style="display:flex;flex-direction:column;gap:12px">
+<input id="c" required autocomplete="one-time-code" inputmode="numeric"
+ placeholder="인증 코드" style="padding:10px;border:1px solid #ccc;
+border-radius:8px;font-size:14px;text-align:center;letter-spacing:2px">
+<button type="submit" style="padding:10px;border:0;border-radius:8px;
+background:#2563eb;color:#fff;font-size:14px;cursor:pointer">확인</button>
+</form>
+<p id="msg" style="color:#555;font-size:13px;text-align:center;margin:12px 0 0"></p>
+</div>
+<script>
+const TICKET = {t!r};
+document.getElementById('f').addEventListener('submit', async (e) => {{
+  e.preventDefault();
+  const msg = document.getElementById('msg');
+  msg.textContent = '확인 중…'; msg.style.color = '#555';
+  try {{
+    const r = await fetch('/api/v1/auth/mfa/verify', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{mfa_ticket: TICKET, code: document.getElementById('c').value}})
+    }});
+    if (r.ok) {{
+      location.href = '/';
+    }} else {{
+      msg.textContent = '코드가 올바르지 않거나 인증이 만료되었습니다. 다시 로그인하세요.';
       msg.style.color = '#b91c1c';
     }}
   }} catch {{

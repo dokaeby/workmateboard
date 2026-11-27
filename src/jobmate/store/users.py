@@ -310,6 +310,142 @@ class UserStoreMixin:
         with self.tx() as c:
             c.execute("DELETE FROM password_reset_tokens WHERE token_hash=?", (token_hash,))
 
+    # ---- MFA/TOTP (mfa_secrets / mfa_backup_codes / mfa_tickets) ----
+    def get_mfa_secret(self, user_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT user_id, secret_enc, status, last_totp_step, created_at, confirmed_at"
+            " FROM mfa_secrets WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        return dict(r) if r else None
+
+    def upsert_mfa_secret(self, user_id: str, secret_enc: str) -> None:
+        """pending 상태로 비밀키 저장 — 이미 active면 비밀키·상태를 덮어쓰지 않는다
+        (active 비밀키를 confirm 없이 교체하는 경로를 차단)."""
+        now = _iso(_now())
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO mfa_secrets(user_id,secret_enc,status,created_at)"
+                " VALUES(?,?,'pending',?)"
+                " ON CONFLICT(user_id) DO UPDATE SET"
+                " secret_enc=CASE WHEN mfa_secrets.status='active'"
+                " THEN mfa_secrets.secret_enc ELSE excluded.secret_enc END,"
+                " status=CASE WHEN mfa_secrets.status='active' THEN 'active' ELSE 'pending' END,"
+                " confirmed_at=CASE WHEN mfa_secrets.status='active'"
+                " THEN mfa_secrets.confirmed_at ELSE NULL END,"
+                " last_totp_step=CASE WHEN mfa_secrets.status='active'"
+                " THEN mfa_secrets.last_totp_step ELSE NULL END",
+                (user_id, secret_enc, now),
+            )
+
+    def confirm_mfa_secret(self, user_id: str) -> None:
+        with self.tx() as c:
+            c.execute(
+                "UPDATE mfa_secrets SET status='active', confirmed_at=? WHERE user_id=?",
+                (_iso(_now()), user_id),
+            )
+
+    def set_mfa_status(self, user_id: str, status: str) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE mfa_secrets SET status=? WHERE user_id=?", (status, user_id))
+
+    def mfa_mark_totp_step(self, user_id: str, step: int) -> bool:
+        """TOTP 스텝 원자적 선점(CAS) — last_totp_step이 step보다 작을 때만
+        갱신하고 성공 여부를 반환한다. SELECT→판정→UPDATE의 check-then-act
+        경합 없이 "이 스텝의 코드를 이번이 처음 수용했다"를 보장한다."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE mfa_secrets SET last_totp_step=? WHERE user_id=? AND"
+                " (last_totp_step IS NULL OR last_totp_step < ?)",
+                (step, user_id, step),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0) > 0
+
+    def replace_mfa_backup_codes(self, user_id: str, code_hashes: list[str]) -> int:
+        """기존 미사용 백업 코드 전부 무효화 후 새 세트 삽입. 반환: 삽입 건수."""
+        now = _now()
+        with self.tx() as c:
+            c.execute(
+                "UPDATE mfa_backup_codes SET used_at=? WHERE user_id=? AND used_at IS NULL",
+                (_iso(now), user_id),
+            )
+            for h in code_hashes:
+                c.execute(
+                    "INSERT INTO mfa_backup_codes(id,user_id,code_hash,created_at) VALUES(?,?,?,?)",
+                    (uuid.uuid4().hex[:16], user_id, h, _iso(now)),
+                )
+        return len(code_hashes)
+
+    def consume_mfa_backup_code(self, user_id: str, code_hash: str) -> bool:
+        """백업 코드 원자적 소진 — 미사용 코드 1개를 used_at 마킹. 성공 시 True."""
+        now = _now()
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE mfa_backup_codes SET used_at=?"
+                " WHERE user_id=? AND code_hash=? AND used_at IS NULL",
+                (_iso(now), user_id, code_hash),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0) > 0
+
+    def count_mfa_backup_codes(self, user_id: str) -> int:
+        r = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM mfa_backup_codes WHERE user_id=? AND used_at IS NULL",
+            (user_id,),
+        ).fetchone()
+        return int(r["c"]) if r else 0
+
+    def delete_mfa_backup_codes(self, user_id: str) -> None:
+        with self.tx() as c:
+            c.execute("DELETE FROM mfa_backup_codes WHERE user_id=?", (user_id,))
+
+    def create_mfa_ticket(self, user_id: str, ttl_minutes: int = 5) -> str:
+        """MFA 챌린지 티켓 발급 — 반환값이 원문, DB에는 SHA-256 해시만 저장."""
+        import hashlib
+        import secrets
+
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = _now()
+        self.delete_expired_mfa_tickets(now)
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO mfa_tickets(id,user_id,ticket_hash,expires_at,created_at)"
+                " VALUES(?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16],
+                    user_id,
+                    token_hash,
+                    _iso(now + timedelta(minutes=ttl_minutes)),
+                    _iso(now),
+                ),
+            )
+        return token
+
+    def consume_mfa_ticket(self, ticket_hash: str) -> str | None:
+        """티켓 원자적 consume — 유효(미사용·미만료)하면 user_id 반환."""
+        now = _now()
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE mfa_tickets SET used_at=?"
+                " WHERE ticket_hash=? AND used_at IS NULL AND expires_at>?",
+                (_iso(now), ticket_hash, _iso(now)),
+            )
+            if int(getattr(cur, "rowcount", 0) or 0) <= 0:
+                return None
+            r = c.execute(
+                "SELECT user_id FROM mfa_tickets WHERE ticket_hash=?", (ticket_hash,)
+            ).fetchone()
+            return str(r["user_id"]) if r else None
+
+    def delete_expired_mfa_tickets(self, now: datetime | None = None) -> int:
+        cutoff = _iso(now or _now())
+        with self.tx() as c:
+            cur = c.execute(
+                "DELETE FROM mfa_tickets WHERE expires_at < ? OR used_at IS NOT NULL",
+                (cutoff,),
+            )
+            return int(getattr(cur, "rowcount", 0) or 0)
+
     def delete_expired_password_resets(self, now: datetime | None = None) -> int:
         """만료/사용된 재설정 토큰 행 삭제 — 누적 방지용."""
         cutoff = _iso(now or _now())

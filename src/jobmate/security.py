@@ -18,6 +18,7 @@ import os
 import secrets
 import threading
 import time
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger("jobmate.security")
@@ -117,6 +118,61 @@ def enforce_production_secrets() -> None:
             "프로덕션 모드에서는 저장 데이터 암호화 키가 필수이며, "
             "키 없이 기동하면 민감값이 평문으로 DB에 저장됩니다."
         )
+
+
+def _totp_hotp(secret: bytes, counter: int) -> int:
+    """RFC 4226 HOTP — HMAC-SHA1 기반 동적 자릿수."""
+    import struct
+
+    digest = hmac.new(secret, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+    return code % 1_000_000
+
+
+def _b32key(secret_b32: str) -> bytes | None:
+    try:
+        return base64.b32decode(secret_b32 + "=" * (-len(secret_b32) % 8))
+    except Exception:
+        return None
+
+
+def totp_secret() -> str:
+    """base32 인코딩된 새 TOTP 비밀키 (RFC 4648, 20바이트 → 32자)."""
+    return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+
+
+def totp_code(secret_b32: str, at: datetime | None = None, step: int = 30) -> str:
+    """RFC 6238 TOTP 코드 생성 — at(기본 현재 UTC), 30초 스텝, 6자리."""
+    key = _b32key(secret_b32)
+    if key is None:
+        raise ValueError("invalid base32 secret")
+    counter = int((at.timestamp() if at else time.time()) // step)
+    return f"{_totp_hotp(key, counter):06d}"
+
+
+def totp_verify_step(
+    secret_b32: str, code: str, window: int = 1, at: datetime | None = None
+) -> int | None:
+    """TOTP 검증 — ±window 스텝까지 허용(시간 드리프트 수용).
+    반환: 매칭된 타임스텝 값(리플레이 방지용), 불일치 시 None."""
+    code = str(code or "").strip()
+    if not code.isdigit() or len(code) != 6:
+        return None
+    key = _b32key(secret_b32)
+    if key is None:
+        return None
+    now = at.timestamp() if at else time.time()
+    current = int(now // 30)
+    for offset in range(-window, window + 1):
+        step = current + offset
+        if hmac.compare_digest(f"{_totp_hotp(key, step):06d}", code):
+            return step
+    return None
+
+
+def totp_verify(secret_b32: str, code: str, window: int = 1, at: datetime | None = None) -> bool:
+    return totp_verify_step(secret_b32, code, window, at) is not None
 
 
 def encrypt_str(value: str) -> str:
@@ -249,6 +305,7 @@ def valid_stream_token(token: str) -> bool:
 
 SESSION_COOKIE = "jobmate_session"
 OAUTH_STATE_COOKIE = "jobmate_oauth_state"
+MFA_PENDING_COOKIE = "jobmate_mfa_pending"
 SESSION_TTL_DAYS = 30
 SCRYPT_N = 2**14
 SCRYPT_R = 8

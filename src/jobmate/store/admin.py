@@ -64,6 +64,11 @@ class AdminStoreMixin:
                 (now_iso,),
             )
             counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
+            cur = c.execute(
+                "DELETE FROM mfa_tickets WHERE expires_at < ? OR used_at IS NOT NULL",
+                (now_iso,),
+            )
+            counts["mfa_tickets"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute("DELETE FROM agent_session_events WHERE created_at < ?", (d30,))
             counts["agent_session_events"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute(
@@ -207,6 +212,9 @@ class AdminStoreMixin:
             else:
                 cur = c.execute("DELETE FROM password_reset_tokens WHERE user_id=?", (user_id,))
             counts["password_reset_tokens"] = int(getattr(cur, "rowcount", 0) or 0)
+            for table in ("mfa_tickets", "mfa_backup_codes", "mfa_secrets"):
+                cur = c.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))  # noqa: S608
+                counts[table] = int(getattr(cur, "rowcount", 0) or 0)
             if email:
                 cur = c.execute("DELETE FROM email_verifications WHERE email=?", (email,))
                 counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
