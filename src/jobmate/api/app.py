@@ -55,6 +55,13 @@ def create_app(
     settings = settings or get_settings()
     configure_logging(settings)
     configure_langsmith(settings)
+    from ..security import allowed_emails, api_key
+
+    if not api_key() and not allowed_emails() and not os.environ.get("VERCEL"):
+        logger.warning(
+            "authentication disabled (local dev mode): only loopback clients are authorized — "
+            "set JOBMATE_API_KEY or JOBMATE_ALLOWED_EMAILS before exposing this instance"
+        )
     if store is None:
         try:
             store = Store(database_dsn(settings))

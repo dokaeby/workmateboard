@@ -1,4 +1,4 @@
-"""GET /api/v1/messages source_text 마스킹 — gmail만 원문, 그 외는 lead 이상만."""
+"""GET /api/v1/messages source_text 마스킹 — 모든 provider 원문은 lead 이상만."""
 
 import tempfile
 from pathlib import Path
@@ -44,7 +44,7 @@ def _seed(store):
     )
 
 
-def test_member_sees_only_gmail_source_text(monkeypatch):
+def test_member_sees_no_source_text(monkeypatch):
     client, store = _client(monkeypatch)
     _seed(store)
     _session_client(client, store, "member@b.com")
@@ -52,13 +52,14 @@ def test_member_sees_only_gmail_source_text(monkeypatch):
     r = client.get("/api/v1/messages")
     assert r.status_code == 200
     msgs = {m["source_provider"]: m for m in r.json()["messages"]}
-    assert msgs["gmail"]["source_text"] == "gmail secret body"
+    # gmail 포함 모든 provider의 원문은 member에게 마스킹된다
+    assert msgs["gmail"]["source_text"] == ""
     assert msgs["slack"]["source_text"] == ""
     assert msgs["telegram"]["source_text"] == ""
 
     # provider=gmail 지정 조회도 동일
     r = client.get("/api/v1/messages?provider=gmail")
-    assert r.json()["messages"][0]["source_text"] == "gmail secret body"
+    assert r.json()["messages"][0]["source_text"] == ""
 
     # provider=slack 지정 조회도 member에게는 마스킹
     r = client.get("/api/v1/messages?provider=slack")

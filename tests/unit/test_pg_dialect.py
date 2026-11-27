@@ -109,3 +109,70 @@ def test_percent_before_placeholder_order():
     순서가 바뀌면 방금 만든 %s 플레이스홀더가 %%s로 깨진다."""
     out = _pg_translate("SELECT * FROM t WHERE p LIKE '%x%' AND id=?")
     assert out == "SELECT * FROM t WHERE p LIKE '%%x%%' AND id=%s"
+
+
+# ---------- _PGConn 트랜잭션 스택 (실제 PG 없이 fake 연결로 검증) ----------
+
+
+def _bare_pgconn():
+    """__init__의 psycopg.connect를 우회한 _PGConn — _c/_txs만 수동 구성."""
+    import psycopg
+
+    from jobmate.store.pg_dialect import _PGConn
+
+    conn = object.__new__(_PGConn)
+    conn._dsn = "postgres://fake/db"
+    conn._txs = []
+    conn._reconnects = 0
+    conn._reconnect = lambda: setattr(conn, "_reconnects", conn._reconnects + 1)  # type: ignore[attr-defined]
+    return conn, psycopg
+
+
+class _FakeTx:
+    def __init__(self, events: list[str], name: str) -> None:
+        self._events = events
+        self._name = name
+
+    def __enter__(self) -> "_FakeTx":
+        self._events.append(f"enter:{self._name}")
+        return self
+
+    def __exit__(self, *a: object) -> bool:
+        self._events.append(f"exit:{self._name}")
+        return False
+
+
+def test_pgconn_nested_tx_lifo():
+    """중첩 tx()는 스택으로 관리 — 안쪽 __exit__가 바깥 트랜잭션을 닫지 않는다."""
+    conn, _ = _bare_pgconn()
+    events: list[str] = []
+    seq = iter(range(10))
+
+    class FakeC:
+        def transaction(self) -> _FakeTx:
+            return _FakeTx(events, f"tx{next(seq)}")
+
+    conn._c = FakeC()
+    with conn:
+        with conn:
+            pass
+    assert events == ["enter:tx0", "enter:tx1", "exit:tx1", "exit:tx0"]
+    assert conn._txs == []
+
+
+def test_pgconn_execute_no_retry_inside_tx():
+    """트랜잭션 안 OperationalError는 재접속 재시도 없이 전파된다."""
+    conn, psycopg = _bare_pgconn()
+
+    class FakeC:
+        def execute(self, sql: str, params: object = ()) -> None:
+            raise psycopg.OperationalError("dead")
+
+        def transaction(self) -> _FakeTx:
+            return _FakeTx([], "tx")
+
+    conn._c = FakeC()
+    with conn:
+        with pytest.raises(psycopg.OperationalError):
+            conn.execute("SELECT 1")
+    assert conn._reconnects == 0

@@ -26,6 +26,39 @@ _DEFAULT_TEST_PREFIXES = (
     "python -m mypy",
 )
 _SHELL_METACHARS = re.compile(r"[&|;<>`$()\n]")
+# env로 추가되는 접두사에서 금지하는 셸/인터프리터 basename — 첫 토큰 기준.
+# (`python -m pytest` 같은 모듈 호출은 아래 _PY_INTERPRETER 예외로 허용)
+_SHELL_BINARIES = frozenset(
+    {
+        # 셸·인터프리터
+        "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
+        "node", "nodejs", "deno", "bun", "bunx", "perl", "ruby", "php", "lua",
+        "pythonw", "pypy", "pypy3", "jython", "micropython", "osascript",
+        # 셸/프로세스 재진입 래퍼
+        "env", "xargs", "find", "awk", "gawk", "sed", "nohup", "setsid",
+        "timeout", "watch", "parallel", "busybox", "command", "builtin",
+        "exec", "eval", "source", "sudo", "doas", "su", "runuser", "pkexec",
+        "chroot", "unshare", "nsenter", "capsh", "setpriv", "nice", "ionice",
+        "taskset", "chrt", "stdbuf", "flock", "daemon",
+        # 네트워크/원격 실행
+        "nc", "ncat", "netcat", "socat", "curl", "wget", "aria2c", "http",
+        "https", "ssh", "autossh", "mosh", "telnet", "ftp", "sftp", "scp",
+        "rsync", "kubectl", "helm", "terraform", "ansible", "vault",
+        # 패키지 러너/빌드 도구 — 내부에서 임의 코드 실행 가능
+        "make", "cmake", "ninja", "meson", "tox", "nox", "hatch", "pdm",
+        "poetry", "pipenv", "rye", "uv", "uvx", "pip", "pip3", "npm", "npx",
+        "pnpm", "yarn", "cargo", "rustc", "go", "gcc", "g++", "clang", "cc",
+        "docker", "podman", "nerdctl", "buildah",
+        # 디버거·에디터(TUI 셸 이스케이프)
+        "gdb", "lldb", "strace", "dtruss", "dtrace", "vim", "nvim", "vi",
+        "emacs", "nano", "joe", "ed", "ex", "less", "more", "man", "tmux",
+        "screen", "byobu", "zellij",
+        # OS 셸
+        "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh",
+    }
+)  # fmt: skip
+_PY_INTERPRETER = re.compile(r"^py(thon)?[0-9.]*$")
+_ALLOWED_MODULES = frozenset({"pytest", "ruff", "mypy"})
 # env 확장 접두사 허용 문자 — 공백/하이픈/점/슬래시/영숫자만.
 # 셸 메타문자·인용부호는 접두사 자체에도 허용하지 않는다.
 _PREFIX_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]*(?: [A-Za-z0-9_.\-/]+)*$")
@@ -207,13 +240,34 @@ def _tool_for_prefix(prefix: str) -> str | None:
     return None
 
 
+def _prefix_allowed(p: str) -> bool:
+    """env 확장 접두사 검사 — 문자 집합 + 셸/인터프리터 재진입 차단.
+
+    `python script.py`, `bash script.sh`처럼 첫 토큰이 인터프리터/셸이면
+    임의 코드 실행 경로가 열린다. `python -m pytest` 같은 허용 도구의
+    모듈 호출만 예외로 둔다."""
+    if not (p and len(p) <= 80 and _PREFIX_SAFE.match(p)):
+        return False
+    parts = p.split()
+    for i, tok in enumerate(parts):
+        base = Path(tok).name.lower()
+        if base in _SHELL_BINARIES:
+            return False
+        if _PY_INTERPRETER.match(base):
+            nxt = parts[i + 1 : i + 3]
+            if len(nxt) == 2 and nxt[0] == "-m" and nxt[1] in _ALLOWED_MODULES:
+                continue
+            return False
+    return True
+
+
 def _allowed_test_prefixes() -> list[str]:
     """기본 접두사 + JOBMATE_TEST_COMMAND_PREFIXES env 확장분을 반환한다."""
     prefixes = list(_DEFAULT_TEST_PREFIXES)
     raw = os.environ.get("JOBMATE_TEST_COMMAND_PREFIXES", "")
     for part in raw.split(","):
         p = " ".join(part.split())
-        if p and len(p) <= 80 and _PREFIX_SAFE.match(p):
+        if _prefix_allowed(p):
             prefixes.append(p)
     return prefixes
 

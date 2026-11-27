@@ -54,6 +54,9 @@ class _PGConn:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._reconnect_lock = threading.Lock()
+        # 중첩 tx()는 psycopg가 savepoint로 처리한다 — 단일 슬롯이면 안쪽
+        # __exit__가 바깥 트랜잭션까지 닫은 것으로 오인하므로 스택으로 둔다.
+        self._txs: list[Any] = []
         self._connect()
 
     def _connect(self) -> None:
@@ -71,21 +74,30 @@ class _PGConn:
         try:
             return self._c.execute(_pg_translate(sql), params)
         except psycopg.OperationalError:
+            # 트랜잭션 안에서는 재시도하지 않는다 — 새 autocommit 연결로 같은
+            # 문장을 다시 실행하면 부분 커밋/중복 쓰기가 생긴다. 예외를 올려
+            # tx 블록 전체가 실패하게 하고 호출자가 블록 단위로 재시도한다.
+            if self._txs:
+                raise
             self._reconnect()
             return self._c.execute(_pg_translate(sql), params)
 
     def __enter__(self) -> _PGConn:
+        tx = self._c.transaction()
         try:
-            self._tx = self._c.transaction()
-            self._tx.__enter__()
+            tx.__enter__()
         except psycopg.OperationalError:
             self._reconnect()
-            self._tx = self._c.transaction()
-            self._tx.__enter__()
+            tx = self._c.transaction()
+            tx.__enter__()
+        # __enter__가 성공한 트랜잭션만 스택에 올린다 — 실패 시 잔여 상태가
+        # 남아 이후 execute()의 재접속 재시도가 영구 차단되는 것을 막는다.
+        self._txs.append(tx)
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
-        return self._tx.__exit__(exc_type, exc, tb)
+        tx = self._txs.pop()
+        return tx.__exit__(exc_type, exc, tb)
 
     def close(self) -> None:
         self._c.close()

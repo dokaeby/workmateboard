@@ -231,15 +231,20 @@ class CommsStoreMixin:
         extraction: dict[str, Any],
         status: str,
         source_text: str = "",
+        retry_at: str = "",
     ) -> bool:
-        """INSERT OR IGNORE — 재전송이면 False."""
+        """INSERT OR IGNORE — 재전송이면 False.
+
+        retry_at을 미래로 주면 pending_messages/claim_message가 리스 만료
+        전까지 집지 않는다 — 웹훅이 커맨드 처리 동안 행이 intake worker에
+        선점되는 경쟁을 막는 용도."""
         now = _now()
         with self.tx() as c:
             cur = c.execute(
                 "INSERT OR IGNORE INTO message_extractions"
                 "(source_provider,source_id,thread_id,extraction_json,"
-                "processing_status,source_text,created_at)"
-                " VALUES(?,?,?,?,?,?,?)",
+                "processing_status,source_text,retry_at,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
                 (
                     provider,
                     source_id,
@@ -247,6 +252,7 @@ class CommsStoreMixin:
                     json.dumps(extraction),
                     status,
                     source_text,
+                    retry_at,
                     _iso(now),
                 ),
             )
@@ -473,13 +479,39 @@ class CommsStoreMixin:
             )
         return job_id
 
+    # claim 후 프로세스가 죽으면 processing에 고착되므로, updated_at이
+    # 이 시간을 넘긴 processing 행은 다시 due로 취급해 재발송을 허용한다.
+    _JOB_PROCESSING_STALE_SECONDS = 600
+
     def due_notification_jobs(self, now: str | None = None) -> list[dict[str, Any]]:
+        now_dt = _now() if now is None else (_dt(now) or _now())
+        stale_before = _iso(now_dt - timedelta(seconds=self._JOB_PROCESSING_STALE_SECONDS))
         rows = self._conn.execute(
-            "SELECT * FROM notification_jobs WHERE status='pending'"
-            " AND fire_at <= ? ORDER BY fire_at",
-            (now or _iso(_now()),),
+            "SELECT * FROM notification_jobs WHERE fire_at <= ?"
+            " AND (status='pending'"
+            "      OR (status='processing' AND updated_at <= ?))"
+            " ORDER BY fire_at",
+            (_iso(now_dt), stale_before),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def claim_job(self, job_id: str) -> bool:
+        """알림 job 원자 claim — pending(또는 stale processing)만 processing으로.
+
+        동시 cron tick/복수 인스턴스가 같은 job을 집어 알림을 중복 발송하는
+        것을 막는다. rowcount>0이면 claim 성공."""
+        with self.tx() as c:
+            cur = c.execute(
+                "UPDATE notification_jobs SET status='processing', updated_at=?"
+                " WHERE id=? AND (status='pending'"
+                "      OR (status='processing' AND updated_at <= ?))",
+                (
+                    _iso(_now()),
+                    job_id,
+                    _iso(_now() - timedelta(seconds=self._JOB_PROCESSING_STALE_SECONDS)),
+                ),
+            )
+        return cur.rowcount > 0
 
     def mark_job(self, job_id: str, status: str, error: str = "") -> None:
         delivered = _iso(_now()) if status == "delivered" else None

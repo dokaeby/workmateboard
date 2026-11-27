@@ -49,6 +49,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _login_throttled = ctx._login_throttled
     _maybe_first_user_admin = ctx._maybe_first_user_admin
     _pub_user = ctx._pub_user
+    _remote_open_mode = ctx._remote_open_mode
     _send_verification = ctx._send_verification
     _session_user = ctx._session_user
     _set_session = ctx._set_session
@@ -59,6 +60,10 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.post("/api/v1/auth/signup")
     def auth_signup(body: dict[str, Any], request: Request) -> JSONResponse:
+        # 인증 비활성 환경의 원격 요청 — 세션 발급 경로를 닫아 무키 배포가
+        # 외부에 노출돼도 member API까지 열리지 않게 한다(loopback 전용).
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         # 허용 목록이 설정된 경우에만 비밀번호 가입을 제한한다 — 비밀번호는
         # 이메일 소유권을 증명할 수 없어 허용 목록 이메일을 임의로 선점할 수 있다.
         if allowed_emails():
@@ -101,7 +106,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         user = store.create_user(email, hash_password(password), name)
         if user is None:
             return err(409, "email_taken", "이미 가입된 이메일입니다", request)
-        _maybe_first_user_admin(user)
+        _maybe_first_user_admin(user, request)
         store.audit("", user["email"], "auth_signup", user["id"], {"terms_agreed": terms_agreed})
         logger.info("auth signup: user=%s", user["id"])
         verify_required = _email_verification_required()
@@ -123,6 +128,8 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.post("/api/v1/auth/login")
     def auth_login(body: dict[str, Any], request: Request) -> JSONResponse:
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 인스턴스는 로컬 전용입니다", request)
         email = str(body.get("email", "")).strip().lower()
         password = str(body.get("password", ""))
         key = _login_key(request, email)
@@ -217,7 +224,8 @@ def register(app: FastAPI, ctx: Any) -> None:
         store.audit("", email, "auth_email_verified", user["id"], {})
         logger.info("email verified: user=%s", user["id"])
         resp = HTMLResponse(_VERIFY_OK_HTML)
-        _set_session(resp, request, user["id"])
+        if not _remote_open_mode(request):
+            _set_session(resp, request, user["id"])
         return resp
 
     @app.post("/api/v1/auth/logout")
@@ -510,7 +518,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             user = store.create_user(email, "", name, gsub, email_verified=True)
             if user is None:
                 return back("signup_failed")
-            _maybe_first_user_admin(user)
+            _maybe_first_user_admin(user, request)
             logger.info("auth signup via google: user=%s", user["id"])
         else:
             # 기존 계정에 Google 연결 — 이메일 인증 완료 처리
@@ -518,6 +526,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         store.audit("", email, "auth_login_google", user["id"], {})
         logger.info("auth login via google: user=%s", user["id"])
         resp = RedirectResponse("/", status_code=302)
-        _set_session(resp, request, user["id"])
+        if not _remote_open_mode(request):
+            _set_session(resp, request, user["id"])
         resp.delete_cookie(OAUTH_STATE_COOKIE, path="/")
         return resp

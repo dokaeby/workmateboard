@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
 from jobmate.api.app import create_app
 from jobmate.config import Settings
-from jobmate.security import decrypt_str, encrypt_str
+from jobmate.security import (
+    decrypt_str,
+    encrypt_str,
+    is_loopback_host,
+    is_loopback_request,
+)
 from jobmate.store.db import Store
 
 
@@ -96,3 +103,70 @@ def test_security_headers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     r = client.get("/")
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["x-frame-options"] == "DENY"
+
+
+# ---------- loopback 판정 (무키 모드 로컬 전용 게이트) ----------
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "127.0.0.53",
+        "::1",
+        "localhost",
+        "LOCALHOST",
+        "testclient",
+        "testserver",
+        # IPv4-mapped IPv6 — uvicorn :: 듀얼스택 바인드 시 client.host 형태
+        "::ffff:127.0.0.1",
+        "::ffff:127.1.2.3",
+        # FQDN trailing dot — DNS는 동등 취급
+        "localhost.",
+        "127.0.0.1.",
+    ],
+)
+def test_is_loopback_host_accepts(host: str) -> None:
+    assert is_loopback_host(host) is True
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "",
+        None,
+        "example.com",
+        "192.168.0.1",
+        "10.0.0.1",
+        "::ffff:8.8.8.8",
+        "localhost.evil.com",
+        "127.0.0.1.evil.com",
+        # IPv6 루프백이 아닌 주소·대괄호 표기
+        "[::1]",
+        "::2",
+    ],
+)
+def test_is_loopback_host_rejects(host: str | None) -> None:
+    assert is_loopback_host(host) is False
+
+
+def _req(host: str | None, headers: dict[str, str] | None = None):
+    return SimpleNamespace(
+        client=SimpleNamespace(host=host) if host is not None else None,
+        headers=headers or {},
+    )
+
+
+def test_is_loopback_request_client_host() -> None:
+    assert is_loopback_request(_req("127.0.0.1")) is True
+    assert is_loopback_request(_req("8.8.8.8")) is False
+    assert is_loopback_request(_req(None)) is False
+
+
+@pytest.mark.parametrize("header", ["x-forwarded-for", "forwarded"])
+def test_is_loopback_request_proxy_headers_fail_closed(header: str) -> None:
+    """같은 호스트 리버스 프록시 뒤에서는 client.host가 127.0.0.1로 보인다 —
+    프록시가 붙이는 전달 헤더가 있으면 loopback으로 신뢰하지 않는다."""
+    assert is_loopback_request(_req("127.0.0.1", {header: "203.0.113.9"})) is False
+    # 헤더가 없는 직접 loopback 연결은 여전히 허용
+    assert is_loopback_request(_req("127.0.0.1", {})) is True

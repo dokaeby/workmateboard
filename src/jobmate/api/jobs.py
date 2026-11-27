@@ -861,6 +861,10 @@ def _process_due_notification_jobs(store: Store, adapters: dict[str, Any]) -> No
     if notifier is None:
         return
     for job in store.due_notification_jobs():
+        # 원자 claim — 조회~발송 사이에 다른 tick이 같은 job을 집어
+        # 알림이 중복 발송되는 레이스를 막는다.
+        if not store.claim_job(job["id"]):
+            continue
         try:
             # MVP: 본문은 스케줄 이벤트 제목으로 구성
             ev_rows = store.list_scheduled_events(limit=200)

@@ -90,7 +90,10 @@ class Store(
         # 자기 데드락). PG/SQLite 모두 tx 직렬화 의미는 동일하다.
         self._lock = threading.RLock()
         self._local = threading.local()
-        self._sqlite_conns: list[Any] = []
+        # thread ident -> conn. 죽은 스레드의 연결은 다음 생성 시 회수한다 —
+        # 목록에 강한 참조를 계속 쌓으면 데몬 스레드 종료 후에도 연결이
+        # 해제되지 않아 FD가 고갈된다.
+        self._sqlite_conns: dict[int, Any] = {}
         self._closed = False
         if self._pg:
             self._pg_conn = _PGConn(dsn)
@@ -136,6 +139,18 @@ class Store(
             raise RuntimeError("store is closed")
         conn = getattr(self._local, "conn", None)
         if conn is None:
+            live = {t.ident for t in threading.enumerate() if t.ident is not None}
+            # 죽은 스레드의 ident는 새 스레드에 재사용될 수 있다 — 스냅샷한
+            # (ident, conn) 쌍을 닫되, dict 엔트리가 다른 conn으로 교체됐다면
+            # pop하지 않는다(새 스레드의 살아있는 conn을 닫는 사고 방지).
+            stale = [(i, c) for i, c in self._sqlite_conns.items() if i not in live]
+            for ident, stale_conn in stale:
+                if self._sqlite_conns.get(ident) is stale_conn:
+                    self._sqlite_conns.pop(ident, None)
+                try:
+                    stale_conn.close()
+                except Exception as e:
+                    logger.debug("reaped sqlite conn close failed: %s", e)
             conn = sqlite3.connect(
                 str(self._path),
                 check_same_thread=False,
@@ -146,7 +161,7 @@ class Store(
             conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn = conn
-            self._sqlite_conns.append(conn)
+            self._sqlite_conns[threading.get_ident()] = conn
         return conn
 
     def close(self) -> None:
@@ -163,10 +178,7 @@ class Store(
         conn = getattr(self._local, "conn", None)
         if conn is not None:
             self._local.conn = None
-            try:
-                self._sqlite_conns.remove(conn)
-            except ValueError:
-                pass
+            self._sqlite_conns.pop(threading.get_ident(), None)
             try:
                 conn.close()
             except Exception as e:

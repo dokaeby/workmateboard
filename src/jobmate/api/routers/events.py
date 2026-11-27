@@ -249,7 +249,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             store.update_scheduled_event(event_id, status=prev_status, reason="")
             store.audit("", "api", "event_approve_error", event_id, {"error": str(e)[:200]})
             logger.warning("scheduled event %s approve failed: %s", event_id, str(e)[:200])
-            return err(502, "calendar_error", str(e)[:300], request)
+            return err(502, "calendar_error", "캘린더 등록에 실패했습니다", request)
         store.update_scheduled_event(
             event_id,
             title=cand.title,

@@ -189,6 +189,24 @@ def test_claim_message_exclusive(tmp_path):
         store.close()
 
 
+def test_save_message_extraction_retry_at_lease(tmp_path):
+    """웹훅 dedup insert에 미래 retry_at을 주면 intake worker가 리스 만료 전
+    해당 행을 집지 않는다 — _messenger_handle 커맨드 처리 중 선점을 막는다."""
+    store = _store(tmp_path)
+    try:
+        future = (datetime.now(UTC) + timedelta(seconds=120)).isoformat()
+        assert store.save_message_extraction(
+            "slack", "s1", "th", {}, "pending", source_text="hi", retry_at=future
+        )
+        assert all(r["source_id"] != "s1" for r in store.pending_messages())
+        assert store.claim_message("slack", "s1") is False
+        # 커맨드 처리 완료 후 finish_message로 리스 해제 → 정상 intake 대상
+        store.finish_message("slack", "s1", "pending")
+        assert store.claim_message("slack", "s1") is True
+    finally:
+        store.close()
+
+
 def test_claim_schedule_fire_cas(tmp_path):
     store = _store(tmp_path)
     try:

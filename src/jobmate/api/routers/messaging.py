@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -20,6 +21,31 @@ from ..jobs import run_automation_cycle
 from ..support import _mark_cron_tick
 
 logger = logging.getLogger("jobmate.api")
+
+# 웹훅 본문 상한 — 인증/서명 검증 전에 전체 body를 버퍼링하는 것을 막는다
+_MAX_WEBHOOK_BODY = 256 * 1024
+
+# dedup insert~커맨드 처리 완료 사이 행이 intake worker에 선점되지 않도록
+# retry_at을 미래로 잡아두는 리스. _messenger_handle의 답장 HTTP(최대 ~10s)
+# 와 run 제출을 충분히 커버하고, 크래시 시에도 리스 만료 후 정상 intake된다.
+_COMMAND_HANDLE_LEASE_SECONDS = 120
+
+
+def _command_lease() -> str:
+    return (datetime.now(UTC) + timedelta(seconds=_COMMAND_HANDLE_LEASE_SECONDS)).isoformat()
+
+
+async def _read_body_capped(request: Request) -> bytes | None:
+    """Content-Length 선검사 + 스트림 읽기 상한. 초과 시 None."""
+    cl = request.headers.get("content-length", "")
+    if cl.isdigit() and int(cl) > _MAX_WEBHOOK_BODY:
+        return None
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_WEBHOOK_BODY:
+            return None
+    return bytes(body)
 
 
 def register(app: FastAPI, ctx: Any) -> None:
@@ -42,7 +68,9 @@ def register(app: FastAPI, ctx: Any) -> None:
     # ---- calendar-agent: 멀티채널 웹훅·수신함·이벤트·알림예약 ----
     @app.post("/api/v1/webhooks/slack")
     async def slack_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
-        body = await request.body()
+        body = await _read_body_capped(request)
+        if body is None:
+            return err(413, "payload_too_large", "request body too large", request)
         if not verify_slack_signature(
             body,
             request.headers.get("X-Slack-Request-Timestamp", ""),
@@ -73,17 +101,37 @@ def register(app: FastAPI, ctx: Any) -> None:
         ts = event.get("ts", "")
         source_id = f"{team}:{channel}:{ts}"
         text = event.get("text", "")
-        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
-        if _messenger_handle(
-            "slack", channel, text, background_tasks, sender_id=str(event.get("user") or "")
-        ):
-            return JSONResponse(content={"status": "command"})
+        # 중복 방지를 커맨드 처리보다 먼저 수행 — 재전송/재시도 웹훅이
+        # 동일 커맨드로 run을 중복 생성·비용을 반복 청구하는 것을 막는다.
         created = store.save_message_extraction(
-            "slack", source_id, event.get("thread_ts") or ts, {}, "pending", source_text=text[:8000]
+            "slack",
+            source_id,
+            event.get("thread_ts") or ts,
+            {},
+            "pending",
+            source_text=text[:8000],
+            retry_at=_command_lease(),
         )
-        return JSONResponse(
-            content={"status": "processed" if created else "duplicate", "source_id": source_id}
-        )
+        if not created:
+            return JSONResponse(content={"status": "duplicate", "source_id": source_id})
+        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
+        try:
+            handled = _messenger_handle(
+                "slack",
+                channel,
+                text,
+                background_tasks,
+                sender_id=str(event.get("user") or ""),
+            )
+        except Exception:
+            # 커맨드 처리 실패 — 리스를 즉시 해제해 intake 경로가 처리하게 한다
+            store.finish_message("slack", source_id, "pending")
+            raise
+        if handled:
+            store.finish_message("slack", source_id, "processed")
+            return JSONResponse(content={"status": "command"})
+        store.finish_message("slack", source_id, "pending")
+        return JSONResponse(content={"status": "processed", "source_id": source_id})
 
     @app.post("/api/v1/webhooks/telegram")
     async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
@@ -93,8 +141,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         ):
             logger.warning("telegram webhook rejected: bad secret")
             return err(401, "invalid_secret", "bad telegram secret", request)
+        body = await _read_body_capped(request)
+        if body is None:
+            return err(413, "payload_too_large", "request body too large", request)
         try:
-            update = json.loads(await request.body())
+            update = json.loads(body)
         except json.JSONDecodeError:
             return err(400, "bad_json", "invalid JSON", request)
         msg = update.get("message") or update.get("channel_post") or {}
@@ -106,15 +157,8 @@ def register(app: FastAPI, ctx: Any) -> None:
         if not text.strip() or not allowed_identifier(chat_id, settings.telegram_chat_ids):
             return JSONResponse(content={"status": "ignored"})
         source_id = f"{chat_id}:{msg.get('message_id', '')}"
-        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
-        if _messenger_handle(
-            "telegram",
-            chat_id,
-            text,
-            background_tasks,
-            sender_id=str((msg.get("from") or {}).get("id") or ""),
-        ):
-            return JSONResponse(content={"status": "command"})
+        # 중복 방지를 커맨드 처리보다 먼저 수행 — Telegram secret에는
+        # 타임스탬프가 없어 재전송이 무기한 가능하므로 특히 필요하다.
         created = store.save_message_extraction(
             "telegram",
             source_id,
@@ -122,10 +166,28 @@ def register(app: FastAPI, ctx: Any) -> None:
             {},
             "pending",
             source_text=text[:8000],
+            retry_at=_command_lease(),
         )
-        return JSONResponse(
-            content={"status": "processed" if created else "duplicate", "source_id": source_id}
-        )
+        if not created:
+            return JSONResponse(content={"status": "duplicate", "source_id": source_id})
+        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
+        try:
+            handled = _messenger_handle(
+                "telegram",
+                chat_id,
+                text,
+                background_tasks,
+                sender_id=str((msg.get("from") or {}).get("id") or ""),
+            )
+        except Exception:
+            # 커맨드 처리 실패 — 리스를 즉시 해제해 intake 경로가 처리하게 한다
+            store.finish_message("telegram", source_id, "pending")
+            raise
+        if handled:
+            store.finish_message("telegram", source_id, "processed")
+            return JSONResponse(content={"status": "command"})
+        store.finish_message("telegram", source_id, "pending")
+        return JSONResponse(content={"status": "processed", "source_id": source_id})
 
     @app.get("/api/v1/messages")
     def list_messages(
@@ -134,15 +196,13 @@ def register(app: FastAPI, ctx: Any) -> None:
         """메시지 수신함 목록.
 
         source_text(메일/Slack/Telegram 원문, 최대 8000자)는 민감 정보이므로
-        gmail provider만 그대로 노출한다(Gmail Checker UI가 사용).
-        그 외 provider는 lead 이상만 원문을 보고, member/비로그인에게는
+        lead 이상에게만 원문을 노출한다. 그 외(member/비로그인)에게는
         필드를 유지한 채 빈 문자열로 마스킹한다."""
         limit = max(1, min(int(limit), 200))
         msgs = store.list_message_extractions(provider, limit)
         if _lead_user(request) is None:
             for m in msgs:
-                if m.get("source_provider") != "gmail":
-                    m["source_text"] = ""
+                m["source_text"] = ""
         return {"messages": msgs}
 
     @app.post("/api/v1/gmail/digest")
@@ -192,8 +252,14 @@ def register(app: FastAPI, ctx: Any) -> None:
         from ...security import api_key, authorized
 
         # Vercel Cron requires its dedicated secret; other hosts also accept a machine key.
+        def _secret_ok() -> bool:
+            provided = request.headers.get("authorization", "")
+            return bool(secret) and hmac.compare_digest(
+                provided.encode(), f"Bearer {secret}".encode()
+            )
+
         if os.environ.get("VERCEL"):
-            valid = bool(secret) and request.headers.get("authorization") == f"Bearer {secret}"
+            valid = _secret_ok()
         else:
             # 인증 엣지 정리: CRON_SECRET·JOBMATE_API_KEY가 모두 없고
             # allowed_emails만 설정된 환경에서는 authorized()가 항상 False라
@@ -204,7 +270,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             # 무력화하면 안 되기 때문. 완전 무인증 개발 모드(모두 미설정)는
             # authorized()가 True를 반환하므로 기존대로 통과한다.
             valid = (
-                (bool(secret) and request.headers.get("authorization") == f"Bearer {secret}")
+                _secret_ok()
                 or (not secret and authorized(request))
                 or (bool(api_key()) and authorized(request))
                 or (not secret and not api_key() and _admin_user(request) is not None)
@@ -255,8 +321,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         _cron_authorized 단독으로는 secret 미설정+allowed_emails만 있는
         환경에서 인증이 무력화되므로 lead 검사를 병행한다."""
         cron_secret = os.environ.get("CRON_SECRET") or os.environ.get("JOBMATE_CRON_SECRET", "")
-        secret_ok = bool(cron_secret) and (
-            request.headers.get("authorization") == f"Bearer {cron_secret}"
+        secret_ok = bool(cron_secret) and hmac.compare_digest(
+            request.headers.get("authorization", "").encode(),
+            f"Bearer {cron_secret}".encode(),
         )
         if not secret_ok:
             if _lead_user(request) is None:

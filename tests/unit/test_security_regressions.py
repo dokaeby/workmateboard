@@ -34,6 +34,36 @@ def test_signup_is_open_when_no_allowlist(client, monkeypatch):
     assert store.get_user_by_email("owner@example.com") is not None
 
 
+def test_public_signup_without_admin_key_does_not_grant_admin(client, monkeypatch):
+    """보호 모드(JOBMATE_API_KEY만) + 허용목록 없음 + 가입자가 admin 키로 프로비저닝 받지
+    않은 경우 → 첫 사용자도 member로 승격되지 않는다(H-1). admin이 필요하면
+    JOBMATE_ALLOWED_EMAILS 설정 또는 관리자 API 키 프로비저닝으로만 부여."""
+    monkeypatch.setenv("JOBMATE_API_KEY", "admin-key")
+    c, store = client
+    r = c.post(
+        "/api/v1/auth/signup",
+        json={"email": "attacker@example.com", "password": "password123", "agree_terms": True},
+    )
+    assert r.status_code == 201
+    token = store.create_email_verification("attacker@example.com")
+    assert c.get(f"/api/v1/auth/verify?token={token}").status_code == 200
+    me = c.get("/api/v1/auth/me").json()["user"]
+    assert me["role"] == "member"
+
+
+def test_admin_key_provisioned_first_signup_grants_admin(client, monkeypatch):
+    """관리자 API 키로 프로비저닝한 첫 가입자만 자동 admin 승격된다."""
+    monkeypatch.setenv("JOBMATE_API_KEY", "admin-key")
+    c, store = client
+    r = c.post(
+        "/api/v1/auth/signup",
+        json={"email": "owner@example.com", "password": "password123", "agree_terms": True},
+        headers={"X-API-Key": "admin-key"},
+    )
+    assert r.status_code == 201
+    assert r.json()["user"]["role"] == "admin"
+
+
 def test_allowed_email_cannot_be_claimed_without_admin_key(client, monkeypatch):
     monkeypatch.setenv("JOBMATE_ALLOWED_EMAILS", "owner@example.com")
     c, _ = client

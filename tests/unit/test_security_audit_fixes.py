@@ -11,6 +11,7 @@
 - 인증 링크 Host allowlist (JOBMATE_PUBLIC_HOSTS)
 """
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -50,6 +51,7 @@ def _signup_verified(client, store, email, password="password123", name="U"):  #
     r = client.post(
         "/api/v1/auth/signup",
         json={"email": email, "password": password, "display_name": name, "agree_terms": True},
+        headers={"X-API-Key": os.environ.get("JOBMATE_API_KEY") or "k"},
     )
     assert r.status_code == 201, r.text
     _verify_session(client, store, email)
@@ -508,4 +510,88 @@ def test_login_unknown_and_google_only_both_401(monkeypatch):
         r = client.post("/api/v1/auth/login", json={"email": email, "password": "whatever1"})
         assert r.status_code == 401, (email, r.status_code)
         assert r.json()["error"]["code"] == "invalid_credentials"
+    store.close()
+
+
+# ---------- JOBMATE_PUBLIC_HOSTS opt-in (미설정 시 기존 계약대로 허용) ----------
+
+
+def test_verification_sent_when_public_hosts_unset(monkeypatch):
+    """PUBLIC_HOSTS 미설정 배포에서 fail-closed하면 모든 인증 메일이 거부돼
+    가입이 무력화된다 — 미설정 시에는 허용한다(04 문서 계약)."""
+    monkeypatch.setenv("JOBMATE_API_KEY", "k")
+    monkeypatch.delenv("JOBMATE_PUBLIC_HOSTS", raising=False)
+    monkeypatch.delenv("JOBMATE_PUBLIC_BASE_URL", raising=False)
+    mails: list[tuple[str, str]] = []
+
+    def fake_send(to: str, verify_url: str, gmail=None) -> bool:
+        mails.append((to, verify_url))
+        return True
+
+    monkeypatch.setattr(mailer, "send_verification_email", fake_send)
+    client, store = _client()
+    r = client.post(
+        "/api/v1/auth/signup",
+        json={"email": "open@b.com", "password": "password123", "agree_terms": True},
+        headers={"X-API-Key": "k", "Host": "anything.example.com"},
+    )
+    assert r.status_code == 201
+    assert r.json()["verify_email_sent"] is True
+    assert mails
+    store.close()
+
+
+# ---------- 무키 모드 원격 세션 발급 차단 ----------
+
+
+def _remote_open_client(monkeypatch):
+    """인증 완전 비활성(키·허용목록·VERCEL 없음) + 비-loopback 요청 시뮬레이션."""
+    for v in ("JOBMATE_API_KEY", "JOBMATE_ALLOWED_EMAILS", "VERCEL"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setattr("jobmate.security.is_loopback_request", lambda request: False)
+    return _client()
+
+
+def test_remote_signup_denied_in_open_mode(monkeypatch):
+    """무키 배포가 외부에 노출돼도 원격에서는 세션 발급 경로가 닫혀 있어야 한다."""
+    client, store = _remote_open_client(monkeypatch)
+    r = client.post(
+        "/api/v1/auth/signup",
+        json={"email": "remote@b.com", "password": "password123", "agree_terms": True},
+    )
+    assert r.status_code == 403
+    assert store.get_user_by_email("remote@b.com") is None
+    store.close()
+
+
+def test_remote_login_denied_in_open_mode(monkeypatch):
+    client, store = _remote_open_client(monkeypatch)
+    r = client.post("/api/v1/auth/login", json={"email": "a@b.com", "password": "password123"})
+    assert r.status_code == 403
+    store.close()
+
+
+def test_remote_verify_issues_no_session(monkeypatch):
+    """인증 링크 자체는 유효 처리하되(이메일 인증은 완료) 세션 쿠키는 발급하지 않는다."""
+    client, store = _remote_open_client(monkeypatch)
+    store.create_user("verify@b.com", "", "V")
+    token = store.create_email_verification("verify@b.com")
+    r = client.get(f"/api/v1/auth/verify?token={token}")
+    assert r.status_code == 200
+    assert store.get_user_by_email("verify@b.com")["email_verified"] is True
+    assert "jobmate_session" not in r.headers.get("set-cookie", "")
+    store.close()
+
+
+def test_loopback_signup_still_issues_session(monkeypatch):
+    """로컬 개발 모드(loopback)는 기존대로 가입 즉시 세션 발급."""
+    for v in ("JOBMATE_API_KEY", "JOBMATE_ALLOWED_EMAILS", "VERCEL"):
+        monkeypatch.delenv(v, raising=False)
+    client, store = _client()
+    r = client.post(
+        "/api/v1/auth/signup",
+        json={"email": "local@b.com", "password": "password123", "agree_terms": True},
+    )
+    assert r.status_code == 201
+    assert "jobmate_session" in r.headers.get("set-cookie", "")
     store.close()

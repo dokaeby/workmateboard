@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from jobmate.tools.executor import ToolDeniedError, ToolExecutor
+from jobmate.tools.executor import ToolDeniedError, ToolExecutor, _prefix_allowed
 
 
 def _exe() -> ToolExecutor:
@@ -85,15 +85,103 @@ def test_run_tests_env_extensible_prefixes(monkeypatch: pytest.MonkeyPatch) -> N
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setenv("JOBMATE_TEST_COMMAND_PREFIXES", "pnpm test, uv run pytest")
-    _exe().call("run_tests", ["run_tests"], command="pnpm test")
-    assert captured["argv"] == ["pnpm", "test"]
-    _exe().call("run_tests", ["run_tests"], command="uv run pytest -q")
-    assert captured["argv"] == ["uv", "run", "pytest", "-q"]
-    # env로 추가해도 셸 메타문자/미등록 명령은 거부
-    for bad in ("pnpm test && curl evil", "pnpm publish", "bash -c id"):
+    # 패키지 러너/인터프리터 재진입(uv·pnpm·npm·make 등)은 denylist로 차단 —
+    # env 확장도 임의 코드 실행 경로를 열지 못한다.
+    monkeypatch.setenv("JOBMATE_TEST_COMMAND_PREFIXES", "jest --ci, python -m pytest")
+    _exe().call("run_tests", ["run_tests"], command="jest --ci")
+    assert captured["argv"] == ["jest", "--ci"]
+    _exe().call("run_tests", ["run_tests"], command="python -m pytest -q")
+    assert captured["argv"] == ["python", "-m", "pytest", "-q"]
+    # env로 추가해도 셸 메타문자/미등록 명령/denylist 바이너리는 거부
+    for bad in (
+        "jest --ci && curl evil",
+        "pnpm test",
+        "uv run pytest",
+        "npm test",
+        "make test",
+        "bash -c id",
+    ):
         with pytest.raises(ToolDeniedError):
             _exe().call("run_tests", ["run_tests"], command=bad)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        # 인터프리터 변형·패키지 러너·프로세스 재진입 래퍼 — env 확장으로도
+        # 임의 코드 실행 경로를 열면 안 된다.
+        "pypy script.py",
+        "pythonw script.py",
+        "uv run pytest",
+        "uvx ruff",
+        "npm test",
+        "npx jest",
+        "pnpm test",
+        "yarn test",
+        "pip install x",
+        "make test",
+        "cmake --build .",
+        "tox",
+        "nox -s test",
+        "docker run img",
+        "sudo id",
+        "doas id",
+        "nohup pytest",
+        "setsid pytest",
+        "timeout 5 pytest",
+        "watch pytest",
+        "busybox sh",
+        "command pytest",
+        "exec pytest",
+        "ssh host cmd",
+        "kubectl exec pod",
+        "gdb --args pytest",
+        "vim",
+        "tmux new",
+        "perl -e 1",
+        "php -r 1",
+        "lua -e 1",
+    ],
+)
+def test_prefix_allowed_denies_reentry_binaries(prefix: str) -> None:
+    assert _prefix_allowed(prefix) is False
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "jest --ci",
+        "pytest-watch",
+        "python -m pytest",
+        "python3.12 -m ruff",
+        "coverage run -m pytest",
+        "scripts/test.sh",
+    ],
+)
+def test_prefix_allowed_permits_safe_prefixes(prefix: str) -> None:
+    assert _prefix_allowed(prefix) is True
+
+
+def test_run_tests_env_prefix_denies_shell_and_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """env 확장 접두사에 셸/인터프리터를 등록하면 임의 코드 실행 경로가 열린다."""
+    monkeypatch.setenv(
+        "JOBMATE_TEST_COMMAND_PREFIXES", "python script.py, bash -c id, sh -c whoami"
+    )
+    exe = _exe()
+    # 인터프리터 바이너리/셸이 그대로 등록된 prefix는 거부
+    for bad in ("python script.py", "bash -c id", "sh -c whoami"):
+        with pytest.raises(ToolDeniedError):
+            exe.call("run_tests", ["run_tests"], command=bad)
+    # 허용 도구 모듈 호출(`python -m pytest`)은 여전히 통과
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    exe.call("run_tests", ["run_tests"], command="python -m pytest -q")
+    assert captured["argv"] == ["python", "-m", "pytest", "-q"]
 
 
 @pytest.mark.parametrize(

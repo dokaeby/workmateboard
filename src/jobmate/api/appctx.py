@@ -9,6 +9,7 @@ register(app, ctx)가 바인딩하는 ctx.* 속성의 원천이다. 모든 헬�
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -222,10 +223,33 @@ def build_app_context(
             return "lead"
         return "member"
 
+    def _local_open_mode(request: Request) -> bool:
+        """인증 비활성 로컬 개발 모드 — 키·허용목록·VERCEL이 모두 없고 요청이
+        loopback일 때만 True. 무키 상태로 외부에 노출된 배포에서 admin API가
+        공개되는 것을 막는다."""
+        from ..security import allowed_emails, api_key, is_loopback_request
+
+        return (
+            not api_key()
+            and not allowed_emails()
+            and not os.environ.get("VERCEL")
+            and is_loopback_request(request)
+        )
+
+    def _remote_open_mode(request: Request) -> bool:
+        """인증 비활성 환경(키·허용목록 모두 없음 — VERCEL 포함)인데 loopback이
+        아닌 요청 — authorized()가 이미 401을 반환하지만 /api/v1/auth/*는
+        미들웨어 면제라 세션 발급 경로가 남아 있다(_session_user가 세션만
+        있으면 통과시키므로 원격 발급을 막아야 member API가 열리지 않는다).
+        원격 가입·로그인·소셜 로그인에서 이 값으로 세션 발급을 거부한다."""
+        from ..security import allowed_emails, api_key, is_loopback_request
+
+        return not api_key() and not allowed_emails() and not is_loopback_request(request)
+
     def _admin_user(request: Request) -> dict[str, Any] | None:
         """관리자 판정 — 세션 사용자 role=admin, 유효 API 키(머신), 또는
         인증이 비활성인 로컬 개발 모드(키·허용목록·VERCEL 모두 없음)일 때 허용."""
-        from ..security import allowed_emails, api_key
+        from ..security import api_key
 
         user = _session_user(request)
         if user is not None:
@@ -234,14 +258,14 @@ def build_app_context(
             return None
         if api_key() and authorized(request):
             return {"id": "api-key", "email": "", "role": "admin"}
-        if not api_key() and not allowed_emails() and not os.environ.get("VERCEL"):
+        if _local_open_mode(request):
             return {"id": "local", "email": "", "role": "admin"}
         return None
 
     def _lead_user(request: Request) -> dict[str, Any] | None:
         """팀장(lead) 이상 판정 — 세션 role이 lead/admin이거나,
         유효 API 키(머신), 또는 인증 비활성 로컬 개발 모드일 때 허용."""
-        from ..security import allowed_emails, api_key
+        from ..security import api_key
 
         user = _session_user(request)
         if user is not None:
@@ -251,7 +275,7 @@ def build_app_context(
             return None
         if api_key() and authorized(request):
             return {"id": "api-key", "email": "", "role": "admin"}
-        if not api_key() and not allowed_emails() and not os.environ.get("VERCEL"):
+        if _local_open_mode(request):
             return {"id": "local", "email": "", "role": "admin"}
         return None
 
@@ -266,15 +290,13 @@ def build_app_context(
         개발 모드만 인정한다. 유효 API 키(머신)는 _lead_user에서는 admin으로
         취급되지만 여기서는 제외 — 머신 키 하나가 임의 task의 checkout을
         해제하지 못하게 holder 검사가 필요한 경로(release)에서 구분용."""
-        from ..security import allowed_emails, api_key
-
         user = _session_user(request)
         if user is not None:
             role = _effective_role(user)
             if role in ("lead", "admin"):
                 return {**user, "role": role}
             return None
-        if not api_key() and not allowed_emails() and not os.environ.get("VERCEL"):
+        if _local_open_mode(request):
             return {"id": "local", "email": "", "role": "admin"}
         return None
 
@@ -746,7 +768,8 @@ def build_app_context(
             return True
         # 쿼리스트링 ?secret= 은 제거 — URL이 로그/프록시/브라우저 히스토리에
         # 남아 유출되므로 Authorization: Bearer 헤더만 허용한다.
-        if request.headers.get("authorization") == f"Bearer {secret}":
+        provided = request.headers.get("authorization", "")
+        if hmac.compare_digest(provided.encode(), f"Bearer {secret}".encode()):
             return True
         # cron-job.org 등 API 키 인증 경로 — 미들웨어에서 이미 검증된 키만 도달
 
@@ -850,11 +873,20 @@ def build_app_context(
             "role": _effective_role(u),
         }
 
-    def _maybe_first_user_admin(user: dict[str, Any]) -> None:
-        """첫 번째 가입 사용자는 자동 admin — 이후 관리자는 role/env로 지정.
+    def _maybe_first_user_admin(user: dict[str, Any], request: Request | None = None) -> None:
+        """첫 번째 가입 사용자는 자동 admin — 단, 공개 가입 환경은 제외.
+
+        보호 모드(키/VERCEL)인데 허용목록이 없으면 가입이 공개이므로 누구나
+        가입해 admin을 선점할 수 있다. 로컬 개발 모드, 허용목록(가입 자체에
+        관리자 키 필요), 관리자 키로 직접 프로비저닝한 가입만 승격한다.
 
         count 조회 후 판정하는 비원자 경로는 동시 가입 레이스에서 둘 다
         admin이 될 수 있다 — store의 조건부 단일 UPDATE로 원자화한다."""
+        from ..security import allowed_emails, api_key, authorized
+
+        if _email_verification_required() and not allowed_emails():
+            if not (api_key() and request is not None and authorized(request)):
+                return
         try:
             if store.promote_to_admin_if_first(user["id"]):
                 user["role"] = "admin"  # 응답용 dict도 동기화 (조회 시점 이후 승격)
@@ -957,10 +989,15 @@ def build_app_context(
         return f"{base}/api/v1/auth/verify?token={token}"
 
     def _public_host_allowed(request: Request) -> bool:
-        """JOBMATE_PUBLIC_HOSTS(쉼표 구분 허용 호스트) 설정 시 요청 Host가
-        목록에 없으면 인증 링크 발송을 거부한다 — Host 헤더 인젝션으로
-        공격자 도메인의 피싱 인증 링크가 발송되는 것을 막는다.
-        미설정 시 기존 동작(request.base_url 사용)을 유지한다."""
+        """인증 링크에 쓸 Host가 신뢰 가능한지 — Host 헤더 인젝션으로 공격자
+        도메인의 피싱 인증 링크가 발송되는 것을 막는다.
+
+        우선순위: public_base_url(설정값 기준이라 Host 무관) → JOBMATE_PUBLIC_HOSTS
+        → 둘 다 미설정이면 기존 계약대로 허용(04 문서: 제한은 PUBLIC_HOSTS
+        설정 시에만 적용). 미설정 배포에서 fail-closed하면 모든 인증 메일이
+        거부돼 가입/로그인이 무력화된다."""
+        if settings.public_base_url:
+            return True
         raw = os.environ.get("JOBMATE_PUBLIC_HOSTS", "")
         allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
         if not allowed:

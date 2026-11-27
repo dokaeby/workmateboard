@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import logging
 import os
 import secrets
@@ -25,6 +26,38 @@ PREFIX = "enc:v1:"
 ENCRYPTION_KEY_ENV = "JOBMATE_ENCRYPTION_KEY"
 API_KEY_ENV = "JOBMATE_API_KEY"
 _CRON_SECRET_ENVS = ("CRON_SECRET", "JOBMATE_CRON_SECRET")
+
+# 인증 비활성 "로컬 개발 모드"의 범위 — 요청 출처가 loopback일 때만 연다.
+# 무키 상태로 외부에 노출된 배포(Docker/VPS)에서 admin API까지 열리는 것을 막는다.
+# "testclient"/"testserver"는 Starlette TestClient의 기본 client host / Host 헤더다.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient", "testserver"})
+
+
+def is_loopback_host(host: str | None) -> bool:
+    h = (host or "").strip().lower().rstrip(".")
+    if h in _LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    # IPv4-mapped IPv6(::ffff:127.0.0.1) — uvicorn이 :: 듀얼스택으로 바인드할 때
+    # client.host가 이 형태로 올 수 있다.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def is_loopback_request(request: Any) -> bool:
+    # 같은 호스트의 리버스 프록시(Nginx/Caddy/cloudflared 등) 뒤에 있으면
+    # 모든 외부 클라이언트가 127.0.0.1로 보인다 — 프록시가 붙이는
+    # X-Forwarded-For/Forwarded가 있으면 loopback으로 신뢰하지 않는다
+    # (직접 연결한 공격자가 헤더를 넣어도 비-loopback 판정 → fail-closed).
+    headers = getattr(request, "headers", None)
+    if headers is not None and (headers.get("x-forwarded-for") or headers.get("forwarded")):
+        return False
+    client = getattr(request, "client", None)
+    return is_loopback_host(getattr(client, "host", None))
 
 
 def _key_material() -> str:
@@ -129,7 +162,11 @@ def authorized(request: Any) -> bool:
     유출 위험이 있어 폐기했다. 접근 로그는 쿼리스트링을 기록하지 않는다."""
     key = api_key()
     if not key:
-        return not os.environ.get("VERCEL") and not allowed_emails()
+        # 인증 비활성 모드 — loopback 요청만 허용한다. 무키 배포가 외부에
+        # 노출되면 모든 API(admin 포함)가 공개되던 문제를 막는다.
+        return (
+            not os.environ.get("VERCEL") and not allowed_emails() and is_loopback_request(request)
+        )
     auth = request.headers.get("authorization", "")
     provided = request.headers.get("x-api-key", "")
     if auth.lower().startswith("bearer "):

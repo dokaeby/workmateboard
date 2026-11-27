@@ -219,7 +219,8 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(404, "not_found", "share link not found", request)
         exp = link.get("expires_at") or ""
         exp_dt = _parse_session_ts(exp)
-        if exp_dt is not None and exp_dt <= datetime.now(UTC):
+        # 만료 시각이 없거나 파싱 불가면 만료로 취급한다(DB 변조 방어).
+        if exp_dt is None or exp_dt <= datetime.now(UTC):
             return err(410, "gone", "share link expired", request)
         return JSONResponse(
             content={
