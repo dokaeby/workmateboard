@@ -20,7 +20,7 @@ const DEBOUNCE_MS = 300;
 
 /** run/stage 이벤트가 건드리는 queryKey prefix 목록 (invalidateQueries는 prefix 매칭). */
 const RUN_KEYS = [
-  "runs", "run", "runs-stats", "office-runs", "office-run",
+  "runs", "run", "run-timeline", "runs-stats", "office-runs", "office-run",
   "approvals", "badge-count", "automation-overview",
   "inbox", "inbox-unread-count", "workflows", "calendar-events", "calendar-jobs",
 ];

@@ -229,8 +229,15 @@ function RuleForm({ initial, onDone }: { initial: AlertRule | null; onDone: () =
             value={f.value}
             onChange={(e) => set("value", e.target.value)}
             placeholder={t("al.valuePh", "값 (예: failed, 0.8, 5000)")}
+            list={f.field === "run.status" ? "al-run-status" : undefined}
             className="min-w-40 flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
           />
+          {f.field === "run.status" && (
+            <datalist id="al-run-status">
+              {["queued", "running", "waiting_approval", "waiting_review", "completed", "failed", "rejected", "cancelled", "budget_exhausted", "needs_human"]
+                .map((s) => <option key={s} value={s} />)}
+            </datalist>
+          )}
         </div>
         {f.op === "in" && (
           <div className="mt-1 text-[11px] text-muted">{t("al.inHint", "in 연산자는 쉼표로 구분해 여러 값을 입력하세요 (예: failed,error)")}</div>
