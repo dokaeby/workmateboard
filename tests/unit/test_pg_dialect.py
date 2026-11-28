@@ -4,11 +4,13 @@ _pg_translate 출력은 psycopg3 플레이스홀더 규칙(%s/%b/%t, %% 이스�
 따라야 하므로, 가능하면 psycopg 내부 쿼리 파서(_split_query)로도 검증한다.
 """
 
+import socket
 import threading
+from unittest.mock import patch
 
 import pytest
 
-from jobmate.store.pg_dialect import _is_pg_dsn, _pg_translate
+from jobmate.store.pg_dialect import _is_pg_dsn, _pg_translate, _resolve_ipv4_hostaddr
 
 
 def _split_query(sql: str) -> None:
@@ -111,6 +113,31 @@ def test_percent_before_placeholder_order():
     순서가 바뀌면 방금 만든 %s 플레이스홀더가 %%s로 깨진다."""
     out = _pg_translate("SELECT * FROM t WHERE p LIKE '%x%' AND id=?")
     assert out == "SELECT * FROM t WHERE p LIKE '%%x%%' AND id=%s"
+
+
+def test_resolve_ipv4_hostaddr():
+    """듀얼스택 호스트 → 첫 IPv4 주소. Vercel(IPv6 egress 없음) 500 회귀 방지."""
+    dsn = "postgres://u:p@db.example.neon.tech:5432/app?sslmode=require"
+
+    def fake_gai(host, port, family, type_):
+        if family == socket.AF_INET:
+            return [(2, 1, 6, "", ("52.76.108.241", 5432))]
+        return []
+
+    with patch("jobmate.store.pg_dialect.socket.getaddrinfo", side_effect=fake_gai):
+        assert _resolve_ipv4_hostaddr(dsn) == "52.76.108.241"
+
+
+def test_resolve_ipv4_hostaddr_no_ipv4():
+    """IPv6 전용 호스트 → None (호출부가 hostaddr 없이 기존 경로로 접속)."""
+    with patch("jobmate.store.pg_dialect.socket.getaddrinfo", return_value=[]):
+        assert _resolve_ipv4_hostaddr("postgres://u:p@v6only.example/db") is None
+
+
+def test_resolve_ipv4_hostaddr_non_tcp_dsn():
+    """유닉스 소켓/비DSN → None."""
+    assert _resolve_ipv4_hostaddr("/var/run/postgresql") is None
+    assert _resolve_ipv4_hostaddr("data/jobmate.db") is None
 
 
 # ---------- _PGConn 트랜잭션 스택 (실제 PG 없이 fake 연결로 검증) ----------

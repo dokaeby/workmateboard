@@ -7,10 +7,12 @@ Serverless 환경의 끊긴 연결 자동 재접속도 여기서 처리한다.
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 from typing import Any
 
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
 logger = logging.getLogger("jobmate.store.pg")
@@ -45,6 +47,39 @@ def _pg_translate(sql: str) -> str:
     return sql
 
 
+def _resolve_ipv4_hostaddr(dsn: str) -> str | None:
+    """DSN의 host를 IPv4 주소로 해석해 hostaddr 값을 만든다.
+
+    Neon 같은 듀얼스택 엔드포인트는 AAAA가 먼저 반환돼 libpq가 IPv6를
+    먼저 시도한다 — Vercel serverless는 IPv6 egress가 없어
+    'Cannot assign requested address'로 연결이 실패한다(매 요청 500).
+    hostaddr를 명시하면 libpq가 IPv4로만 접속한다. 해석 실패·IPv4
+    부재·비호스트 DSN(유닉스 소켓)이면 None — 기존 동작 유지."""
+    try:
+        info = conninfo_to_dict(dsn)
+    except Exception:
+        return None
+    # DSN이 hostaddr를 직접 지정한 경우 사용자 의도를 존중한다
+    if info.get("hostaddr"):
+        return None
+    host = info.get("host")
+    if not isinstance(host, str) or not host:
+        return None
+    addrs: list[str] = []
+    for h in host.split(","):
+        h = h.strip()
+        if not h:
+            continue
+        try:
+            infos = socket.getaddrinfo(h, None, socket.AF_INET, socket.SOCK_STREAM)
+        except OSError:
+            return None
+        if not infos:
+            return None
+        addrs.append(str(infos[0][4][0]))
+    return ",".join(addrs) if addrs else None
+
+
 class _PGConn:
     """psycopg 연결 래퍼 — Store의 sqlite3.Connection 사용 패턴을 모사.
 
@@ -65,7 +100,17 @@ class _PGConn:
         self._connect()
 
     def _connect(self) -> None:
-        self._c = psycopg.connect(self._dsn, autocommit=True, row_factory=dict_row)
+        hostaddr = _resolve_ipv4_hostaddr(self._dsn)
+        kwargs: dict[str, Any] = {"autocommit": True, "row_factory": dict_row}
+        if hostaddr:
+            kwargs["hostaddr"] = hostaddr
+        try:
+            self._c = psycopg.connect(self._dsn, **kwargs)
+        except psycopg.OperationalError:
+            if not hostaddr:
+                raise
+            # IPv6 전용 네트워크 폴백 — hostaddr 없이 원래 주소 순서로 재시도
+            self._c = psycopg.connect(self._dsn, autocommit=True, row_factory=dict_row)
 
     def _reconnect(self) -> None:
         # 호출자는 반드시 self._lock을 잡고 있어야 한다 — 열린 tx가 있으면
