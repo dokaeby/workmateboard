@@ -1,0 +1,38 @@
+# Vercel 업로드 제외 — 서버리스 함수에 불필요한 로컬 산출물
+# (.gitignore와 별개. v2/dist는 includeFiles로 필요하므로 절대 제외 금지)
+
+# Python 가상환경·의존성 (requirements.txt로 재설치됨)
+.venv/
+
+# 프론트엔드 의존성 (buildCommand가 재설치, dist만 필요)
+node_modules/
+
+# graphify 지식그래프 산출물
+graphify-out/
+
+# 로컬 데이터·DB·로그·비밀값
+data/
+logs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.checkpoints*
+.env
+.env.*
+!.env.example
+credentials*.json
+auth.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# 에디터/OS/도구 산출물
+.DS_Store
+.idea/
+.vscode/
+.serena/
+.playwright-mcp/
+.vercel
