@@ -100,14 +100,12 @@ export default function RisksPage() {
     retry: 1, // lead 권한 없으면 403 — 반복 재시도하지 않음
   });
 
-  const items = (data?.items || [])
-    .slice()
-    .sort((a, b) => {
-      const ra = SEV_RANK[String(a.severity || "").toLowerCase()] ?? 3;
-      const rb = SEV_RANK[String(b.severity || "").toLowerCase()] ?? 3;
-      if (ra !== rb) return ra - rb;
-      return (a.age_seconds ?? 1e18) - (b.age_seconds ?? 1e18); // 최신 우선
-    });
+  const items = (data?.items || []).toSorted((a, b) => {
+    const ra = SEV_RANK[String(a.severity || "").toLowerCase()] ?? 3;
+    const rb = SEV_RANK[String(b.severity || "").toLowerCase()] ?? 3;
+    if (ra !== rb) return ra - rb;
+    return (a.age_seconds ?? 1e18) - (b.age_seconds ?? 1e18); // 최신 우선
+  });
 
   return (
     <div className="mx-auto max-w-4xl p-4">

@@ -116,7 +116,7 @@ export default function MonitorPage() {
         .replace("{tok}", data.retry.tokens.toLocaleString())
         .replace("{calls}", String(data.retry.calls)));
     }
-    const topTokStage = [...(data.by_stage || [])].sort((a, b) => b.tokens - a.tokens)[0];
+    const topTokStage = (data.by_stage || []).toSorted((a, b) => b.tokens - a.tokens)[0];
     if (topTokStage && data.tokens.total > 0) {
       insights.push(t("monitor.insight.topTok", "토큰 소비 1위 stage: {stage} ({pct}%)")
         .replace("{stage}", topTokStage.stage_key)

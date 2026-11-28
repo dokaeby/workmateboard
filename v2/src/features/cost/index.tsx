@@ -241,7 +241,7 @@ function ObsCostSection() {
     refetchInterval: 60000,
   });
 
-  const items = (costs.data?.items || []).slice().sort((a, b) => (Number(b.cost_usd) || 0) - (Number(a.cost_usd) || 0)).slice(0, 10);
+  const items = (costs.data?.items || []).toSorted((a, b) => (Number(b.cost_usd) || 0) - (Number(a.cost_usd) || 0)).slice(0, 10);
   const maxCost = Math.max(1e-9, ...items.map((x) => Number(x.cost_usd) || 0));
   const daily = usage.data?.daily || [];
   const dailyCosts = daily.map((d) => Number(d.cost_usd) || 0);

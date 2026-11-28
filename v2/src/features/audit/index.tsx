@@ -27,9 +27,7 @@ function AuditBody() {
     refetchInterval: 60000,
   });
 
-  const items = (data?.items || [])
-    .slice()
-    .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+  const items = (data?.items || []).toSorted((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
 
   return (
     <div className="mx-auto max-w-6xl p-4">

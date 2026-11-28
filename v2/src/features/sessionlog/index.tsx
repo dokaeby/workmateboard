@@ -155,7 +155,7 @@ export default function SessionlogPage() {
 
   const hist = histQ.data;
   const stats = hist?.stats || {};
-  const timeline = (hist?.timeline || []).slice().reverse(); // 최신 먼저
+  const timeline = (hist?.timeline || []).toReversed(); // 최신 먼저
   const files = filesList(hist?.files_touched);
   const curProject = sel?.project || "";
   const names = [...new Set([...projectNames, ...(curProject ? [curProject] : [])])];

@@ -262,7 +262,7 @@ function stageStats(stages: RunStage[] | undefined) {
   const list = stages || [];
   const done = list.filter((s) => s.finished_at || STAGE_DONE.has(String(s.status || ""))).length;
   const current = list.find((s) => s.status === "running" || s.status === "started")
-    || [...list].reverse().find((s) => !s.finished_at && !STAGE_DONE.has(String(s.status || "")));
+    || list.findLast((s) => !s.finished_at && !STAGE_DONE.has(String(s.status || "")));
   const tokens = list.reduce((a, s) => a + (Number(s.tokens_in) || 0) + (Number(s.tokens_out) || 0), 0);
   return { done, total: list.length, current, tokens };
 }

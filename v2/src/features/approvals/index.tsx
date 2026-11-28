@@ -352,9 +352,7 @@ export default function ApprovalsPage() {
     refetchInterval: 30000,
   });
 
-  const items = (data?.items || [])
-    .slice()
-    .sort((a, b) => itemAgeSec(a) - itemAgeSec(b));
+  const items = (data?.items || []).toSorted((a, b) => itemAgeSec(a) - itemAgeSec(b));
 
   const decide = async (item: ApprovalQueueItem, decision: "approve" | "reject") => {
     const key = `${item.kind}:${item.id}`;
