@@ -569,7 +569,7 @@ class AgentSessionStoreMixin:
         org_id: str | None = None,
     ) -> None:
         """push된 세션 상태를 활동 로그에 적재. status/doing이 바뀌었거나
-        마지막 기록 후 60초가 지나야만 insert(스로틀). 가끔 7일 이전 행을 정리."""
+        마지막 기록 후 60초가 지나야만 insert(스로틀). 가끔 retention 이전 행을 정리."""
         import secrets
 
         now_dt = _now()
@@ -614,9 +614,9 @@ class AgentSessionStoreMixin:
                 "recorded_at,org_id) VALUES(?,?,?,?,?,?,?)",
                 (tool, session_key, status, doing, project, now, oid),
             )
-            # 저비용 보존 정책 — insert마다 ~2% 확률로 7일 이전 행 삭제
+            # 저비용 보존 정책 — insert마다 ~2% 확률로 retention 이전 행 삭제
             if secrets.randbelow(50) == 0:
-                cutoff = _iso(now_dt - timedelta(days=self._ACTIVITY_RETENTION_DAYS))
+                cutoff = _iso(now_dt - timedelta(days=self._activity_retention_days))
                 c.execute("DELETE FROM session_activity WHERE recorded_at < ?", (cutoff,))
 
     def session_activity(

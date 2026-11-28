@@ -142,6 +142,8 @@ class Store(
         self._ensure_external_company_indexes()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
+        # settings.session_activity_retention_days로 app 기동 시 덮어쓴다
+        self._activity_retention_days = self._ACTIVITY_RETENTION_DAYS
 
     @property
     def _conn(self) -> Any:
@@ -287,7 +289,7 @@ class Store(
 
     # ---- session_activity (세션 활동 녹화/리플레이) ----
     _ACTIVITY_THROTTLE_SECONDS = 60.0
-    _ACTIVITY_RETENTION_DAYS = 7
+    _ACTIVITY_RETENTION_DAYS = 30
 
     # ---- reports (daily/weekly 리포트) ----
 

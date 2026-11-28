@@ -76,6 +76,7 @@ def create_app(
                 "postgres" if settings.database_url else settings.db_path,
             )
             raise
+    store._activity_retention_days = max(1, settings.session_activity_retention_days)
     if os.environ.get("VERCEL") and not (
         settings.database_url
         or os.environ.get("POSTGRES_URL")

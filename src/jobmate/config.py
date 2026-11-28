@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     privacy_policy_url: str = ""  # JOBMATE_PRIVACY_POLICY_URL
     consent_enforce: str = "off"  # JOBMATE_CONSENT_ENFORCE: off|read_only|block
     pii_mask: str = "off"  # JOBMATE_PII_MASK: off|on — on 시 관찰 이벤트/로그 PII 마스킹
+    session_activity_retention_days: int = Field(
+        default=30, ge=1, le=36500
+    )  # JOBMATE_SESSION_ACTIVITY_RETENTION_DAYS
 
     @field_validator("terms_version", "privacy_version", mode="before")
     @classmethod

@@ -406,7 +406,7 @@ CREATE INDEX IF NOT EXISTS idx_inbox_items_created ON inbox_items(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_items_dedupe
   ON inbox_items(dedupe_key, org_id) WHERE dedupe_key != '';
 
--- session_activity: 에이전트 세션 활동 스냅샷 (리플레이용, 7일 보관)
+-- session_activity: 에이전트 세션 활동 스냅샷 (리플레이용, 기본 30일 보관·설정 가능)
 CREATE TABLE IF NOT EXISTS session_activity (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tool TEXT NOT NULL,
