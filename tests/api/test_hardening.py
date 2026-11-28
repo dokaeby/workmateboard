@@ -205,11 +205,13 @@ def test_retention_sweep_deletes_only_expired_terminal_data():
     with store.tx() as c:
         c.execute("UPDATE runs SET created_at=? WHERE id=?", (old, live.id))
 
-    # 200일 전 audit/llm_usage — 삭제 대상
+    # 200일 전 llm_usage / 400일 전 audit — 삭제 대상
+    # (spec 005: audit_events 기본 TTL이 법정 하한 365일로 상향)
     store.audit("", "sys", "old_event", "", {})
     store.record_llm_usage("m", 1, 1)
+    audit_old = (now - timedelta(days=400)).isoformat()
     with store.tx() as c:
-        c.execute("UPDATE audit_events SET created_at=? WHERE action='old_event'", (old,))
+        c.execute("UPDATE audit_events SET created_at=? WHERE action='old_event'", (audit_old,))
         c.execute("UPDATE llm_usage SET created_at=?", (old,))
 
     # 만료된 세션 — 삭제 대상

@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -20,142 +22,83 @@ def _org_filter() -> tuple[str, list[Any]]:
     return (" AND org_id=?", [oid]) if oid else ("", [])
 
 
+def _audit_like_escape(s: str) -> str:
+    """LIKE 패턴 이스케이프 — action prefix 매칭에서 %/_/\\를 리터럴로."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def encode_audit_cursor(created_at: str, row_id: str) -> str:
+    """keyset cursor 인코딩 — (created_at,id) 복합 키의 불투명 문자열."""
+    return base64.urlsafe_b64encode(f"{created_at}|{row_id}".encode()).decode()
+
+
+def decode_audit_cursor(cursor: str) -> tuple[str, str] | None:
+    """encode_audit_cursor 역변환 — 형식이 아니면 None."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+        ts, sep, rid = raw.partition("|")
+        if not sep or not ts or not rid:
+            return None
+        return ts, rid
+    except Exception:
+        return None
+
+
 # retention 삭제 대상 run 상태 — wakeups._TERMINAL_STATUSES와 동일 집합.
 # 고정 SQL 조각(리터럴)이라 f-string 삽입해도 인젝션 위험이 없다.
 _TERMINAL_RUN_STATUSES_SQL = (
     "('completed','failed','rejected','cancelled','budget_exhausted','needs_human')"
 )
 
+# FR-014 anonymize 대상 — (table, column). 값이 user_id 또는 email과
+# 일치하는 행의 행위자 식별자를 'deleted_user'로 치환한다(행 자체는 보존).
+# approvals.decided_by/approval_requests.requested_by·decided_by는
+# 'local'/에이전트 id 등 비사용자 값도 저장되지만 user_id/email 매칭만
+# 갱신하므로 오탐이 없다.
+_ANONYMIZE_ACTOR_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("runs", "created_by"),
+    ("agent_events", "actor"),
+    ("agents", "created_by"),
+    ("goals", "created_by"),
+    ("evals", "created_by"),
+    ("tasks", "created_by"),
+    ("playbooks", "created_by"),
+    ("workflow_revisions", "created_by"),
+    ("projects", "created_by"),
+    ("task_artifacts", "created_by"),
+    ("routines", "created_by"),
+    ("organizations", "created_by"),
+    ("webhook_subscriptions", "created_by"),
+    ("approvals", "decided_by"),
+    ("approval_requests", "requested_by"),
+    ("approval_requests", "decided_by"),
+)
+# author_id는 user_id(uuid)만 저장한다 — email 매칭 대상이 아니다.
+_ANONYMIZE_USER_ID_ONLY_COLUMNS: tuple[tuple[str, str], ...] = (("task_comments", "author_id"),)
+
 
 class AdminStoreMixin:
     def retention_sweep(self, now: datetime | None = None) -> dict[str, int]:
         """보존 기간 경과 데이터 정리 — cron tick에서 하루 1회 호출 권장.
 
-        - audit_events: created_at < now-90d 삭제
-        - llm_usage: created_at < now-180d 삭제
-        - auth_sessions: expires_at < now 삭제(만료 세션)
-        - runs/stage_runs: 종결 상태(completed|failed|rejected|cancelled|
-          budget_exhausted|needs_human — wakeups._TERMINAL_STATUSES와 동일)이고
-          created_at < now-180d 삭제
-          (진행 중 queued/running/waiting_* 는 절대 삭제하지 않는다)
-        - message_extractions: processed 이고 created_at < now-30d면
-          source_text만 비움(행은 유지 — 재처리 방지용 키/상태 보존)
-        - agent_session_events: created_at < now-30d 삭제
-        - wakeup_requests: finished_at < now-90d 삭제
-          (미완료 queued/deferred는 진행 중 요청일 수 있어 보존)
-        - budget_incidents: open 아닌 행 created_at < now-180d 삭제
-          (open 인시던트는 정책 감시 중이므로 보존)
-        - eval_runs: status <> 'pending'이고 created_at < now-365d 삭제
-          (pending은 lazy 채점 대기 중이므로 보존; evals 픽스처 자체는
-          이력이므로 유지)
-        - agent_events: created_at < now-90d 삭제 — heartbeat 등 고빈도
-          이벤트 포함 전체 타입 동일 기준. tasks/task_runs는 업무 이력
-          소유권이라 별도 정책이 없어 보존한다.
-        - webhook_deliveries: 종결 상태(success|dead|cancelled)이고
-          created_at < now-90d 삭제 — dead 배달이 무한 누적돼 webhook
-          헬스 컴포넌트가 영구 degraded로 고정되는 것을 막는다.
-          pending/failed/delivering(진행·재시도 대상)은 보존한다.
-          webhook_subscriptions는 구독 설정이므로 삭제하지 않는다.
-        - org_invitations: expires_at < now-30d 삭제(초대 이력은 audit_events 보존)
+        spec 005 US1 이후 실제 purge는 store/retention.py의 정책 엔진
+        (`run_purge`)이 수행한다 — 유형별 TTL은 retention_policies DB
+        override > 코드 기본값 순으로 결정되고, 실행은 purge_runs에,
+        요약은 retention_purge 감사 이벤트로 기록된다. 이 메서드는
+        기존 시그니처를 유지하는 얇은 위임이다.
+
+        정책 유형(기본 TTL): audit_events 365d(법정 하한), llm_usage 180d,
+        auth_sessions 만료 기준, runs+자식(종결 상태만) 180d,
+        message_extractions source_text 비우기 30d, agent_session_events 30d,
+        wakeup_requests 90d(완료분만), budget_incidents 180d(open 제외),
+        eval_runs 365d(pending 제외), agent_events 90d,
+        webhook_deliveries 90d(종결만), org_invitations 30d,
+        inbox_items/notifications/email_summaries 90d.
+        여기에 정책 외 고정 정리(만료 password_reset_tokens/
+        email_verifications/mfa_tickets)와 삭제 조직 purge가 추가된다.
         반환값: 테이블별 삭제/정리 건수."""
-        now = now or _now()
-        d30 = _iso(now - timedelta(days=30))
-        d90 = _iso(now - timedelta(days=90))
-        d180 = _iso(now - timedelta(days=180))
-        d365 = _iso(now - timedelta(days=365))
-        now_iso = _iso(now)
-        counts: dict[str, int] = {}
-        with self.tx() as c:
-            cur = c.execute("DELETE FROM audit_events WHERE created_at < ?", (d90,))
-            counts["audit_events"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute("DELETE FROM llm_usage WHERE created_at < ?", (d180,))
-            counts["llm_usage"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute("DELETE FROM auth_sessions WHERE expires_at < ?", (now_iso,))
-            counts["auth_sessions"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "DELETE FROM password_reset_tokens WHERE expires_at < ? OR used_at IS NOT NULL",
-                (now_iso,),
-            )
-            counts["password_reset_tokens"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "DELETE FROM email_verifications WHERE expires_at < ? OR used_at IS NOT NULL",
-                (now_iso,),
-            )
-            counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "DELETE FROM mfa_tickets WHERE expires_at < ? OR used_at IS NOT NULL",
-                (now_iso,),
-            )
-            counts["mfa_tickets"] = int(getattr(cur, "rowcount", 0) or 0)
-            # 만료 후 30일 지난 초대 행 정리 — 상태 이력은 audit_events가 보존
-            cur = c.execute("DELETE FROM org_invitations WHERE expires_at < ?", (d30,))
-            counts["org_invitations"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute("DELETE FROM agent_session_events WHERE created_at < ?", (d30,))
-            counts["agent_session_events"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "UPDATE message_extractions SET source_text=''"
-                " WHERE processing_status='processed' AND created_at < ? AND source_text <> ''",
-                (d30,),
-            )
-            counts["message_extractions_cleared"] = int(getattr(cur, "rowcount", 0) or 0)
-            # 종결 run만 삭제 — 자식(stage_runs/approvals/run_comments)부터 정리.
-            # IN 리스트 대신 동일 조건의 서브쿼리로 지워 바인딩 변수 수를
-            # 일정하게 유지한다(삭제 대상 수와 무관하게 단일 문장).
-            cur = c.execute(
-                "DELETE FROM stage_runs WHERE run_id IN "  # noqa: S608
-                f"(SELECT id FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL}"
-                " AND created_at < ?)",
-                (d180,),
-            )
-            counts["stage_runs"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "DELETE FROM approvals WHERE run_id IN "  # noqa: S608
-                f"(SELECT id FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL}"
-                " AND created_at < ?)",
-                (d180,),
-            )
-            counts["approvals"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "DELETE FROM run_comments WHERE run_id IN "  # noqa: S608
-                f"(SELECT id FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL}"
-                " AND created_at < ?)",
-                (d180,),
-            )
-            counts["run_comments"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                f"DELETE FROM runs WHERE status IN {_TERMINAL_RUN_STATUSES_SQL} AND created_at < ?",  # noqa: S608
-                (d180,),
-            )
-            counts["runs"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "DELETE FROM wakeup_requests WHERE finished_at IS NOT NULL AND finished_at < ?",
-                (d90,),
-            )
-            counts["wakeup_requests"] = int(getattr(cur, "rowcount", 0) or 0)
-            cur = c.execute(
-                "DELETE FROM budget_incidents WHERE status <> 'open' AND created_at < ?",
-                (d180,),
-            )
-            counts["budget_incidents"] = int(getattr(cur, "rowcount", 0) or 0)
-            # eval_runs 채점 이력 — pending(lazy 채점 대기)은 보존.
-            cur = c.execute(
-                "DELETE FROM eval_runs WHERE status <> 'pending' AND created_at < ?",
-                (d365,),
-            )
-            counts["eval_runs"] = int(getattr(cur, "rowcount", 0) or 0)
-            # agent_events — 90일 경과분 전부 삭제(타입 무관). 멱등 replay는
-            # 최근 키만 의미가 있고, 장기 보존 감사는 audit_events(90d)가 담당.
-            cur = c.execute("DELETE FROM agent_events WHERE created_at < ?", (d90,))
-            counts["agent_events"] = int(getattr(cur, "rowcount", 0) or 0)
-            # 종결 webhook delivery 정리 — dead가 영구 누적되면 webhook
-            # 헬스 체크가 계속 degraded를 보고한다. 재시도 대상
-            # (pending/failed/delivering)은 절대 삭제하지 않는다.
-            cur = c.execute(
-                "DELETE FROM webhook_deliveries"
-                " WHERE status IN ('success','dead','cancelled') AND created_at < ?",
-                (d90,),
-            )
-            counts["webhook_deliveries"] = int(getattr(cur, "rowcount", 0) or 0)
+        result = self.run_purge(dry_run=False, actor="retention_sweep", now=now or _now())
+        counts = dict(result.get("counts") or {})
         counts.update(self.purge_deleted_organizations(now=now))
         return counts
 
@@ -348,14 +291,32 @@ class AdminStoreMixin:
             return int(getattr(cur, "rowcount", 0) or 0) > 0
 
     def delete_user_cascade(self, user_id: str) -> dict[str, int]:
-        """계정 삭제(개인정보보호법 대응) — users + auth_sessions +
-        email_verifications + 본인 귀속 데이터(run_comments)를 정리한다.
+        """계정 삭제(개인정보보호법 대응) — spec 005 FR-014 처리 매트릭스.
 
-        audit_events는 법적 보존이 필요할 수 있으므로 삭제하지 않고
-        actor만 'deleted_user'로 마스킹해 유지한다. 호출 측에서 삭제 행위를
-        audit에 먼저 기록해야 한다(마스킹 후에도 action은 남는다).
+        - hard delete: users, auth_sessions, email_verifications,
+          password_reset_tokens, run_comments, mfa_*, api_keys,
+          user_permissions, organization_members, org_invitations,
+          consent_records, 본인 생성 share_links/dashboard_cards
+        - anonymize: runs/agents/goals/evals/tasks/playbooks/
+          workflow_revisions/projects/task_artifacts/routines/organizations/
+          webhook_subscriptions.created_by, approvals.decided_by,
+          approval_requests.requested_by·decided_by, agent_events.actor,
+          task_comments.author_id → 'deleted_user' (업무 이력 행은 보존,
+          행위자 식별자만 제거), audit_events.actor는 'deleted_user'로
+          마스킹(법적 보존 — 기간은 retention 정책)
+        - soft-delete: 본인 귀속 개인 워크스페이스(멤버 0명)는
+          status='deleted' — 자식 행 정리는 purge_deleted_organizations가
+          보존 기간 경과 후 수행
+        - retain: audit_events(마스킹 후 보존), llm_usage(actor 컬럼 없음 —
+          비용 집계만), notifications/inbox_items/message_extractions 등
+          시스템·조직 소유 데이터
+        - push_subscriptions/inbox_items는 소유자(user_id) 컬럼이 없어 본인
+          귀속을 식별할 수 없다 — 스키마 보강 전까지 보존(알려진 한계).
+        삭제 성공 시 같은 tx에 deletion_receipts 행을 기록한다(FR-015/016 —
+        user_id 해시+유형별 건수만, PII 없음). 호출 측은 반환 counts와 별도로
+        latest_deletion_receipt_for_hash(user_id_hash)로 영수증 id를 회수한다.
         타 사용자 데이터는 절대 건드리지 않는다.
-        반환값: 테이블별 삭제 건수."""
+        반환값: 테이블별 삭제/익명화 건수."""
         user = self.get_user_by_id(user_id)
         email = str((user or {}).get("email") or "").lower()
         counts: dict[str, int] = {}
@@ -381,6 +342,25 @@ class AdminStoreMixin:
             counts["user_permissions"] = int(getattr(cur, "rowcount", 0) or 0)
             # 조직 멤버십·초대 정리(spec 003) — 초대는 invited_by(user_id 또는
             # 이메일)와 수신 이메일 양쪽으로 매칭해 잔존 PII를 제거한다.
+            # 개인 워크스페이스 후보는 멤버십 삭제 전에 수집한다 — 멤버 행이
+            # 지워진 뒤에는 조직이 이 사용자에게 귀속됐는지 알 수 없다.
+            # created_by(가입 시 uid 저장) 또는 멤버십 소속으로 판별한다.
+            own_org_conds = ["o.created_by=?"]
+            own_org_params: list[Any] = [user_id]
+            if email:
+                own_org_conds.append("o.created_by=?")
+                own_org_params.append(email)
+            personal_org_ids = [
+                str(r["id"])
+                for r in c.execute(
+                    "SELECT o.id FROM organizations o"  # noqa: S608
+                    " WHERE o.kind='personal' AND o.status<>'deleted' AND ("
+                    + " OR ".join(own_org_conds)
+                    + " OR o.id IN (SELECT org_id FROM organization_members"
+                    " WHERE user_id=?))",
+                    (*own_org_params, user_id),
+                ).fetchall()
+            ]
             cur = c.execute("DELETE FROM organization_members WHERE user_id=?", (user_id,))
             counts["organization_members"] = int(getattr(cur, "rowcount", 0) or 0)
             if email:
@@ -392,26 +372,94 @@ class AdminStoreMixin:
             else:
                 cur = c.execute("DELETE FROM org_invitations WHERE invited_by=?", (user_id,))
             counts["org_invitations"] = int(getattr(cur, "rowcount", 0) or 0)
-            # 멤버가 0명이 된 개인 워크스페이스 정리 — 팀 조직은 last_org_owner
-            # 보호로 멤버 잔존 상태에서만 삭제되므로 여기 걸리지 않는다.
-            cur = c.execute(
-                "DELETE FROM organizations WHERE kind='personal'"
-                " AND id NOT IN (SELECT org_id FROM organization_members)"
-            )
-            counts["organizations"] = int(getattr(cur, "rowcount", 0) or 0)
+            # 본인 귀속 개인 워크스페이스 정리 — 멤버가 0명이 된 조직만
+            # soft-delete(status='deleted')한다. 실제 자식 행 정리는
+            # purge_deleted_organizations가 보존 기간 경과 후 수행하므로
+            # org 스코프 데이터가 고아로 남지 않는다(FR-028). 무관한
+            # memberless 개인 조직(타인 생성·이미 고아)은 건드리지 않는다.
+            if personal_org_ids:
+                placeholders = ",".join("?" for _ in personal_org_ids)
+                cur = c.execute(
+                    "UPDATE organizations SET status='deleted', updated_at=?"  # noqa: S608
+                    " WHERE kind='personal' AND status<>'deleted'"
+                    f" AND id IN ({placeholders})"
+                    " AND id NOT IN (SELECT org_id FROM organization_members)",
+                    (_iso(_now()), *personal_org_ids),
+                )
+                counts["organizations"] = int(getattr(cur, "rowcount", 0) or 0)
+            else:
+                counts["organizations"] = 0
             if email:
                 cur = c.execute("DELETE FROM email_verifications WHERE email=?", (email,))
                 counts["email_verifications"] = int(getattr(cur, "rowcount", 0) or 0)
+            # audit_events.actor·run_comments는 user_id 매칭도 포함한다 —
+            # email이 비어 있는 계정도 반드시 정리해야 하므로 if email:
+            # 가드 밖에서 처리한다.
+            if email:
                 c.execute(
                     "UPDATE audit_events SET actor='deleted_user' WHERE actor=? OR lower(actor)=?",
                     (user_id, email),
                 )
-                c.execute(
+                cur = c.execute(
                     "DELETE FROM run_comments WHERE user_id=? OR lower(email)=?",
                     (user_id, email),
                 )
+            else:
+                c.execute(
+                    "UPDATE audit_events SET actor='deleted_user' WHERE actor=?",
+                    (user_id,),
+                )
+                cur = c.execute("DELETE FROM run_comments WHERE user_id=?", (user_id,))
+            counts["run_comments"] = int(getattr(cur, "rowcount", 0) or 0)
+            # spec 005 FR-014 — hard delete: 본인 동의 이력(계정 파기 시 함께
+            # 삭제 — spec Assumptions: 동의 이력도 파기 대상).
+            cur = c.execute("DELETE FROM consent_records WHERE user_id=?", (user_id,))
+            counts["consent_records"] = int(getattr(cur, "rowcount", 0) or 0)
+            # hard delete: 본인 생성 share_links/dashboard_cards — created_by는
+            # _actor_label 경유로 세션 사용자 email(또는 user_id)를 저장한다.
+            for table in ("share_links", "dashboard_cards"):
+                if email:
+                    cur = c.execute(
+                        f"DELETE FROM {table} WHERE created_by=? OR created_by=?",  # noqa: S608
+                        (user_id, email),
+                    )
+                else:
+                    cur = c.execute(
+                        f"DELETE FROM {table} WHERE created_by=?",  # noqa: S608
+                        (user_id,),
+                    )
+                counts[table] = int(getattr(cur, "rowcount", 0) or 0)
+            # anonymize — FR-014 처리 매트릭스: 행위자 식별자 컬럼을
+            # 'deleted_user'로 치환한다. 행 자체는 업무/관찰 이력으로 보존.
+            # 컬럼 값은 user_id 또는 email 어느 쪽으로 기록됐든 매칭한다.
+            for table, col in _ANONYMIZE_ACTOR_COLUMNS:
+                if email:
+                    cur = c.execute(
+                        f"UPDATE {table} SET {col}='deleted_user'"  # noqa: S608
+                        f" WHERE {col}=? OR {col}=?",
+                        (user_id, email),
+                    )
+                else:
+                    cur = c.execute(
+                        f"UPDATE {table} SET {col}='deleted_user' WHERE {col}=?",  # noqa: S608
+                        (user_id,),
+                    )
+                counts[f"{table}_{col}_anonymized"] = int(getattr(cur, "rowcount", 0) or 0)
+            # author_id는 uuid(user_id)만 저장 — email 매칭 없이 user_id만.
+            for table, col in _ANONYMIZE_USER_ID_ONLY_COLUMNS:
+                cur = c.execute(
+                    f"UPDATE {table} SET {col}='deleted_user' WHERE {col}=?",  # noqa: S608
+                    (user_id,),
+                )
+                counts[f"{table}_{col}_anonymized"] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute("DELETE FROM users WHERE id=?", (user_id,))
             counts["users"] = int(getattr(cur, "rowcount", 0) or 0)
+            # 삭제 영수증 — 사용자 행이 실제로 지워진 경우에만 같은 tx에 기록
+            # (미존재 user_id로 빈 영수증이 남는 것을 막는다). PII 없이 해시+건수.
+            if counts.get("users"):
+                self._deletion_receipt_insert(
+                    c, self.user_id_hash(user_id), counts, status="completed"
+                )
         return counts
 
     def export_user_data(self, user_id: str) -> dict[str, Any]:
@@ -425,16 +473,26 @@ class AdminStoreMixin:
                 " WHERE user_id=? ORDER BY created_at DESC",
                 (user_id,),
             ).fetchall()
+            # email이 비어 있으면 '' 매칭으로 actor=''·email='' 행을
+            # 끌어오지 않도록 user_id 매칭만 사용한다.
+            actor_conds = ["actor=?"]
+            actor_params: list[Any] = [user_id]
+            if email:
+                actor_conds.append("lower(actor)=?")
+                actor_params.append(email)
+            actor_where = " OR ".join(actor_conds)
             audit_rows = c.execute(
-                "SELECT run_id,actor,action,object_ref,detail,created_at"
-                " FROM audit_events WHERE actor=? OR lower(actor)=?"
+                "SELECT run_id,actor,action,object_ref,detail,created_at"  # noqa: S608
+                f" FROM audit_events WHERE {actor_where}"
                 " ORDER BY created_at DESC LIMIT 1000",
-                (user_id, email),
+                tuple(actor_params),
             ).fetchall()
             comment_rows = c.execute(
-                "SELECT run_id,body,created_at FROM run_comments"
-                " WHERE user_id=? OR lower(email)=? ORDER BY created_at DESC LIMIT 1000",
-                (user_id, email),
+                "SELECT run_id,body,created_at FROM run_comments"  # noqa: S608
+                " WHERE user_id=?"
+                + (" OR lower(email)=?" if email else "")
+                + " ORDER BY created_at DESC LIMIT 1000",
+                (user_id, *([email] if email else [])),
             ).fetchall()
             verify_rows = c.execute(
                 "SELECT email,expires_at,used_at,created_at FROM email_verifications"
@@ -465,6 +523,40 @@ class AdminStoreMixin:
                 " OR lower(email)=? ORDER BY created_at DESC",
                 (user_id, email, email),
             ).fetchall()
+            # spec 005 FR-017 — 동의 이력(본인 열람권 대상)
+            consent_rows = c.execute(
+                "SELECT terms_version,privacy_version,agreed_at,ip,user_agent,created_at"
+                " FROM consent_records WHERE user_id=? ORDER BY created_at DESC LIMIT 1000",
+                (user_id,),
+            ).fetchall()
+            # 본인 created_by인 runs — id/워크플로/상태/시각만(input·metadata
+            # 등 타인·시스템 데이터가 섞일 수 있는 본문은 제외). email이
+            # 비어 있으면 '' 매칭으로 타인 행을 끌어오지 않도록 user_id만.
+            run_cond = "created_by=?"
+            run_params: list[Any] = [user_id]
+            if email:
+                run_cond += " OR created_by=?"
+                run_params.append(email)
+            run_rows = c.execute(
+                "SELECT id,workflow_key,status,created_at,updated_at FROM runs"  # noqa: S608
+                f" WHERE {run_cond} ORDER BY created_at DESC LIMIT 1000",
+                tuple(run_params),
+            ).fetchall()
+            # 본인 생성 share_links 메타 — payload(공유 스냅샷 본문)는 제외.
+            # token은 살아있는 bearer 자격증명이라 export에 포함하지 않는다.
+            share_cond = "created_by=?"
+            share_params: list[Any] = [user_id]
+            if email:
+                share_cond += " OR created_by=?"
+                share_params.append(email)
+            share_rows = c.execute(
+                "SELECT kind,ref_id,created_at,expires_at FROM share_links"  # noqa: S608
+                f" WHERE {share_cond} ORDER BY created_at DESC LIMIT 1000",
+                tuple(share_params),
+            ).fetchall()
+            # push_subscriptions/inbox_items는 소유자 컬럼이 없어 본인 귀속을
+            # 식별할 수 없다 — 스키마 보강 전까지 export에서도 제외(알려진 한계).
+            # push endpoint 원문·keys는 어떤 경우에도 export하지 않는다.
         safe_user = {k: v for k, v in user.items() if k != "password_hash"}
         return {
             "exported_at": _iso(_now()),
@@ -489,12 +581,20 @@ class AdminStoreMixin:
             # token_hash는 절대 포함하지 않는다 — 초대 메타데이터만
             "org_memberships": [dict(r) for r in member_rows],
             "org_invitations": [dict(r) for r in invite_rows],
+            # spec 005 FR-017 — 동의 이력·본인 생성 runs/공유 링크 메타
+            "consent_records": [dict(r) for r in consent_rows],
+            "runs": [dict(r) for r in run_rows],
+            "share_links": [dict(r) for r in share_rows],
         }
 
-    def list_audit(self, limit: int = 200) -> list[dict[str, Any]]:
+    def list_audit(
+        self, limit: int = 200, *, include_platform: bool = False
+    ) -> list[dict[str, Any]]:
         """전체 audit_events 최신순 — 관리자 감사 타임라인용.
-        사용자-facing 조회라 ctx 조직으로 스코프한다(시스템 경로는 무필터)."""
-        frag, params = _org_filter()
+        사용자-facing 조회라 ctx 조직으로 스코프한다(시스템 경로는 무필터).
+        include_platform=True면 조직 필터를 적용하지 않는다 — 플랫폼
+        admin이 org_id='' 포함 전체 행을 조회할 때 사용한다."""
+        frag, params = ("", []) if include_platform else _org_filter()
         rows = self._conn.execute(
             "SELECT id,run_id,actor,action,object_ref,detail,created_at"  # noqa: S608
             " FROM audit_events"
@@ -514,6 +614,95 @@ class AdminStoreMixin:
             }
             for r in rows
         ]
+
+    # ---- audit keyset 페이지네이션/스트리밍 (spec 005 US3 / FR-019~020) ----
+    def iter_audit(
+        self,
+        *,
+        frm: str = "",
+        to: str = "",
+        actor: str = "",
+        action: str = "",
+        run_id: str = "",
+        target: str = "",
+        cursor: str = "",
+        batch: int = 500,
+        include_platform: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        """audit_events 필터 조회 제너레이터 — (created_at,id) DESC keyset.
+
+        GET /api/v1/audit의 필터 조회와 /api/v1/audit/export의 스트리밍이
+        공용으로 사용한다. cursor는 encode_audit_cursor가 만든 불투명
+        문자열로, OFFSET 스캔 없이 대용량 테이블에서도 batch 단위로만
+        fetch한다(상주 메모리 상한). 잘못된 cursor는 ValueError —
+        호출자(라우터)가 422로 변환한다. 행 형태는 list_audit와 동일.
+        include_platform=True면 조직 필터를 적용하지 않는다(플랫폼 admin)."""
+        conds: list[str] = []
+        params: list[Any] = []
+        frag, fparams = ("", []) if include_platform else _org_filter()
+        if frag:
+            conds.append(frag[len(" AND ") :])
+            params.extend(fparams)
+        if frm:
+            conds.append("created_at >= ?")
+            params.append(frm)
+        if to:
+            conds.append("created_at <= ?")
+            params.append(to)
+        if actor:
+            conds.append("actor = ?")
+            params.append(actor)
+        if action:
+            # action은 prefix 매칭 허용(FR-019) — LIKE 와일드카드는 이스케이프.
+            conds.append("action LIKE ? ESCAPE '\\'")
+            params.append(_audit_like_escape(action) + "%")
+        if run_id:
+            conds.append("run_id = ?")
+            params.append(run_id)
+        if target:
+            conds.append("object_ref = ?")
+            params.append(target)
+        last: tuple[str, str] | None = None
+        if cursor:
+            decoded = decode_audit_cursor(cursor)
+            if decoded is None:
+                raise ValueError("invalid audit cursor")
+            last = decoded
+        size = _clamp_limit(batch, 500, 2000)
+
+        def _gen() -> Iterator[dict[str, Any]]:
+            cur_last = last
+            while True:
+                cconds = list(conds)
+                cparams = list(params)
+                if cur_last is not None:
+                    cconds.append("(created_at < ? OR (created_at = ? AND id < ?))")
+                    cparams.extend([cur_last[0], cur_last[0], cur_last[1]])
+                where = " AND ".join(cconds)
+                rows = self._conn.execute(
+                    "SELECT id,run_id,actor,action,object_ref,detail,created_at"  # noqa: S608
+                    " FROM audit_events"
+                    + (" WHERE " + where if where else "")
+                    + " ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (*cparams, size),
+                ).fetchall()
+                if not rows:
+                    return
+                for r in rows:
+                    yield {
+                        "id": r["id"],
+                        "run_id": r["run_id"],
+                        "actor": r["actor"],
+                        "action": r["action"],
+                        "target": r["object_ref"],
+                        "detail": _loads(r["detail"]),
+                        "ts": r["created_at"],
+                    }
+                if len(rows) < size:
+                    return
+                cur_last = (rows[-1]["created_at"], rows[-1]["id"])
+
+        return _gen()
 
     # ---- team 뷰 (다중 사용자 활동 집계) ----
     def team_activity(self) -> list[dict[str, Any]]:

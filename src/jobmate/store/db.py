@@ -28,6 +28,7 @@ from .backups import BackupStoreMixin
 from .budgets import BudgetStoreMixin
 from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
+from .compliance import ComplianceStoreMixin
 from .costs import CostStoreMixin
 from .evals import EvalStoreMixin
 from .external_sync import ExternalSyncStoreMixin
@@ -42,6 +43,7 @@ from .pg_dialect import _is_pg_dsn, _PGConn
 from .pg_dialect import _pg_translate as _pg_translate
 from .projects import ProjectStoreMixin
 from .radar import RadarStoreMixin
+from .retention import RetentionStoreMixin
 from .routines import RoutineStoreMixin
 from .runs import RunStoreMixin
 from .schema_pg import SCHEMA_PG
@@ -60,6 +62,7 @@ class Store(
     BackupStoreMixin,
     RunStoreMixin,
     CommsStoreMixin,
+    ComplianceStoreMixin,
     RadarStoreMixin,
     UserStoreMixin,
     AgentSessionStoreMixin,
@@ -78,6 +81,7 @@ class Store(
     GovernanceStoreMixin,
     TaskCollabStoreMixin,
     RoutineStoreMixin,
+    RetentionStoreMixin,
     PermissionStoreMixin,
     ExternalSyncStoreMixin,
     OrgStoreMixin,

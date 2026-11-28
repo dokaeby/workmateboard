@@ -46,3 +46,50 @@ for _name in list(os.environ):
 # 존재하지 않는 경로로 고정한다(_token_path_for는 is_file() 실패 시 어댑터 생략).
 for _name in ("JOBMATE_GMAIL_TOKEN_PATH", "JOBMATE_CALENDAR_TOKEN_PATH"):
     os.environ[_name] = "/nonexistent/jobmate-test-token.json"
+
+# spec 005 설정 — 개발 .env/쉘 값이 테스트 기대(기본 off·버전 v1.0)를
+# 오염시키지 않게 빈 값으로 고정한다. Settings의 before-validator가
+# terms/privacy_version ''→'v1.0', consent_enforce ''→'off'로 복원하고
+# pii_mask ''는 off와 동일하게 동작한다.
+for _name in (
+    "JOBMATE_TERMS_VERSION",
+    "JOBMATE_PRIVACY_VERSION",
+    "JOBMATE_PRIVACY_POLICY_URL",
+    "JOBMATE_CONSENT_ENFORCE",
+    "JOBMATE_PII_MASK",
+):
+    os.environ[_name] = ""
+
+
+import pytest  # noqa: E402
+
+# get_settings()는 호출마다 load_dotenv()를 실행한다. lru_cache가 살아 있는
+# 동안은 1회뿐이지만, _clear_settings_cache가 테스트마다 캐시를 비우면
+# 재호출 시 .env가 다시 로드된다 — 이때 테스트 픽스처가 delenv로 지운
+# JOBMATE_API_KEY 등이 .env 실제값으로 되살아나 인증이 깨진다(회귀).
+# 최초 1회만 실제 로드하고 이후 호출은 no-op으로 만든다.
+import jobmate.config as _jobmate_config  # noqa: E402
+
+_dotenv_loaded = {"done": False}
+_dotenv_orig = _jobmate_config.load_dotenv
+
+
+def _load_dotenv_once(*args: object, **kwargs: object) -> bool:
+    if _dotenv_loaded["done"]:
+        return False
+    _dotenv_loaded["done"] = True
+    return bool(_dotenv_orig(*args, **kwargs))
+
+
+_jobmate_config.load_dotenv = _load_dotenv_once
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    """get_settings() lru_cache를 테스트마다 비운다 — monkeypatch.setenv로
+    바꾼 env가 다음 get_settings() 호출에 반영되게 한다."""
+    from jobmate.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()

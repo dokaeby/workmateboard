@@ -117,13 +117,14 @@
 - **FR-012**: 처리방침·이용약관 버전은 설정(env `JOBMATE_TERMS_VERSION`, `JOBMATE_PRIVACY_VERSION`, 기본값 예: `v1.0`)으로 관리하고, `GET /api/v1/auth/config` 응답에 현재 버전과 `privacy_policy_url`을 추가해야 한다(MUST).
 - **FR-013**: 버전 상향 시 재동의 흐름을 제공해야 한다(MUST). 사용자의 최신 consent_records 버전이 현재 설정 버전보다 낮으면 `GET /api/v1/auth/me` 응답에 `consent_required: true`와 부족 버전을 포함하고, `POST /api/v1/auth/consent`(세션 인증)로 재동의 시 새 consent_records 행을 추가한다. 재동의 강제 범위(읽기 전용 vs 쓰기 차단)는 설정 `JOBMATE_CONSENT_ENFORCE`(off/read_only/block)로 제어한다.
 - **FR-014**: 계정 삭제는 타입별 처리 매트릭스를 구현해야 한다(MUST). 최소 매트릭스:
-  - **hard delete**: `users`, `auth_sessions`, `email_verifications`, `run_comments`, `push_subscriptions`, `share_links`(본인 생성분), `inbox_items`(본인 소유), `dashboard_cards`(본인 생성분)
-  - **anonymize**: `runs.created_by`·`agent_events` 등 행위자 필드를 `deleted_user`로 치환(행은 업무 이력으로 보존), `audit_events.actor`는 기존과 동일하게 마스킹
+  - **hard delete**: `users`, `auth_sessions`, `email_verifications`, `password_reset_tokens`, `run_comments`, `mfa_*`, `api_keys`, `user_permissions`, `organization_members`/`org_invitations`, `consent_records`, `share_links`(본인 생성분), `dashboard_cards`(본인 생성분)
+  - **anonymize**: `runs.created_by`·`agent_events.actor` 등 행위자 필드를 `deleted_user`로 치환(행은 업무 이력으로 보존 — 비종결 run 포함), `audit_events.actor`는 기존과 동일하게 마스킹
   - **retain(법정/정책)**: `audit_events` 본인 행위 기록(기간은 FR-001 정책), `llm_usage`(비용 집계 익명 집계 — 행위자 미포함 확인), `message_extractions` 등 시스템 소유 데이터
-  - 각 유형의 분류 근거(법정 보관/분쟁 대비/시스템 무결성)를 코드 주석·문서에 명시해야 한다.
+  - **제외(스키마 한계 — 본인 귀속 식별 불가)**: `push_subscriptions`는 PK가 endpoint이고 소유자(user_id) 컬럼이 없으며, `inbox_items`는 조직 단위 broadcast로 사용자별 소유자 컬럼이 없다. 현재 스키마에서는 본인 데이터를 식별할 수 없으므로 삭제 매트릭스·export(FR-017) 모두에서 제외한다 — 소유자 컬럼 보강은 후속 스키마 변경 과제로 남긴다(알려진 한계, Assumptions 참조).
+  - 각 유형의 분류 근거(법정 보관/분쟁 대비/시스템 무결성/스키마 한계)를 코드 주석·문서에 명시해야 한다.
 - **FR-015**: 계정 삭제는 `store.exclusive()` 락 안에서 원자적으로 실행되어야 한다(MUST) — 현재 last-admin 체크와 동일 패턴 유지. 처리 결과를 `deletion_receipts` 테이블(id, user_id_hash, requested_at, completed_at, per-type counts JSON, status)에 기록하고 사용자에게 영수증 ID를 반환한다.
 - **FR-016**: 삭제 영수증에는 본인 이메일·PII를 포함하지 않아야 한다(MUST) — user_id의 해시와 유형별 건수만 포함.
-- **FR-017**: export(`GET /api/v1/auth/export`)를 완성해야 한다(MUST). 현재 반환(users/sessions/audit_events/run_comments/email_verifications)에 추가: `consent_records`, `push_subscriptions`(endpoint 제외 메타만), 본인 `created_by`인 runs 목록(id·workflow·상태·시각), 본인 생성 share_links 메타, inbox_items 본인 소유분. 비밀값(password_hash·token_hash·endpoint 원문)은 계속 제외.
+- **FR-017**: export(`GET /api/v1/auth/export`)를 완성해야 한다(MUST). 현재 반환(users/sessions/audit_events/run_comments/email_verifications)에 추가: `consent_records`, 본인 `created_by`인 runs 목록(id·workflow·상태·시각), 본인 생성 share_links 메타. `push_subscriptions`·`inbox_items`는 FR-014와 동일한 스키마 한계(소유자 컬럼 부재)로 본인 귀속을 식별할 수 없어 export에서도 제외한다. 비밀값(password_hash·token_hash·세션/푸시 endpoint 원문·share_links.token)은 계속 제외.
 - **FR-018**: export·삭제·재동의 등 개인정보 처리 행위는 모두 audit_events에 기록해야 한다(MUST) — `auth_data_export`(기존), `auth_account_delete`(기존), `auth_consent`(신규), `auth_account_delete_failed`(기존) 패턴 유지.
 
 #### 감사 로그 내보내기
@@ -191,11 +192,12 @@
 
 - 법정 보관 하한 365일(1년)은 개인정보보호법 접속기록 보관의 통상 기준을 따르며, 시행령·고시 세부(대규모/민감정보 시 2년)는 배포 전 법무 확인이 필요하다 — 스펙은 하한을 설정 상수로 두어 조정 가능하게 한다.
 - 계정 삭제는 "탈퇴"가 아닌 "계정 파기"로 해석 — 동의 이력(consent_records)도 파기 대상에 포함하되, 분쟁 대비가 필요한 audit_events는 actor 마스킹으로 처리한다.
-- 조직/타 사용자 데이터: 본인 생성 콘텐츠(share_links·cards·inbox_items)만 삭제하고, 타인이 본인 데이터를 참조하는 구조(예: 타인 run의 입력에 본인 이메일 포함)는 구조적 한계로 범위 외 — 문서에 명시.
+- 조직/타 사용자 데이터: 본인 생성 콘텐츠(share_links·cards)만 삭제하고, 타인이 본인 데이터를 참조하는 구조(예: 타인 run의 입력에 본인 이메일 포함)는 구조적 한계로 범위 외 — 문서에 명시. `inbox_items`는 조직 broadcast로 사용자 소유자가 아니라 본인 삭제 대상이 아니다(FR-014 제외 항목 참조).
 - purge 대상 백업: DB 백업 스냅샷의 보존은 15_백업_복구_가이드 정책을 따르며, 본 스펙은 라이브 DB purge만 다룬다.
 - PII 마스킹 기본값 off는 하위 호환을 위한 것이며, 상용 배포 체크리스트에서 on을 권장한다.
 - export 형식은 JSON 단일(현재 `/auth/export`와 동일) — CSV export는 audit 전용(FR-020)으로 한정.
 - `retention_policies` 오버라이드는 단일 인스턴스 SQLite/PG 공용 store 계층에 구현 — 멀티 인스턴스 환경의 분산 락은 범위 외.
+- `push_subscriptions`(PK=endpoint, 소유자 컬럼 없음)와 `inbox_items`(조직 단위 broadcast, 사용자 소유자 컬럼 없음)는 현재 스키마에서 본인 귀속을 식별할 수 없다 — 계정 삭제 매트릭스(FR-014)와 export(FR-017) 모두에서 제외하는 것으로 확정하고, 소유자 컬럼 추가는 후속 스키마 변경 과제로 남긴다. Google OAuth 가입은 별도 약관 동의 UI 단계가 없어 OAuth 플로우 내 암묵 동의로 consent_records를 기록한다(auth.py 주석 참조) — 버전은 현행 settings로 기록되므로 재동의 흐름은 동일하게 동작한다.
 
 ## Out of Scope
 

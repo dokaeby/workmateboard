@@ -1075,4 +1075,49 @@ CREATE TABLE IF NOT EXISTS backup_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_backup_runs_started ON backup_runs(started_at);
 
+
+
+-- spec 005 US1 — 데이터 보존 정책 override + purge 실행 이력 (플랫폼 레벨)
+CREATE TABLE IF NOT EXISTS retention_policies (
+  data_type TEXT PRIMARY KEY,
+  ttl_days INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'hard_delete',
+  updated_by TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS purge_runs (
+  id TEXT PRIMARY KEY,
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'running',
+  counts_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_purge_runs_started ON purge_runs(started_at);
+
+-- spec 005 US2 — 동의 이력(추가 전용) + 계정 삭제 영수증(해시 식별자만)
+CREATE TABLE IF NOT EXISTS consent_records (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  terms_version TEXT NOT NULL,
+  privacy_version TEXT NOT NULL,
+  agreed_at TEXT NOT NULL,
+  ip TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_consent_records_user ON consent_records(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS deletion_receipts (
+  id TEXT PRIMARY KEY,
+  user_id_hash TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  completed_at TEXT,
+  counts_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'completed'
+);
+CREATE INDEX IF NOT EXISTS idx_deletion_receipts_hash ON deletion_receipts(user_id_hash);
+
+
 """

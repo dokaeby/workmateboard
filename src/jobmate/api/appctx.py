@@ -1467,6 +1467,75 @@ def build_app_context(
         있으면 항상 적용."""
         return bool(api_key() or allowed_emails() or os.environ.get("VERCEL"))
 
+    # ---- 개인정보 동의/재동의 강제 (spec 005 US2, FR-013) ----
+    # block 모드에서도 항상 허용해야 하는 인증 경로 — 이 외의 인증된 API는
+    # 재동의 전까지 차단한다. /auth/me·/auth/config는 상태 조회라 항상 허용.
+    # /auth/export·/auth/account는 데이터 주체 권리(열람/파기) — 재동의
+    # 요구 상태에서도 반드시 통과해야 하므로 면제한다(안 그러면 사용자가
+    # 동의 갱신 전에 자신의 데이터를 확보·삭제할 길이 막힌다).
+    _CONSENT_EXEMPT_PATHS = frozenset(
+        {
+            "/api/v1/auth/consent",
+            "/api/v1/auth/config",
+            "/api/v1/auth/export",
+            "/api/v1/auth/account",
+            "/api/v1/auth/me",
+            "/api/v1/auth/logout",
+        }
+    )
+
+    def consent_missing_for_user(user: dict[str, Any]) -> list[str]:
+        """세션 사용자의 재동의 필요 항목 — 최신 consent_records 행의
+        terms/privacy 버전이 현행 settings보다 낮거나 동의 행이 없으면
+        ["terms:<ver>", "privacy:<ver>"] 형태로 반환(비어 있으면 최신)."""
+        return store.consent_missing_versions(
+            str(user.get("id") or ""),
+            settings.terms_version,
+            settings.privacy_version,
+        )
+
+    def consent_block_response(request: Request) -> JSONResponse | None:
+        """JOBMATE_CONSENT_ENFORCE(off|read_only|block)에 따른 재동의 강제.
+
+        미들웨어 배선 지점: app.py security_middleware에서
+        `ctx._org_access_block(request)` 검사 직후에 호출한다
+        (`block = ctx.consent_block_response(request)`; block이 not None이면
+        그 응답을 그대로 반환). _org_access_block과 동일한 "None이면 통과"
+        계약이다.
+
+        - off(기본): 항상 None — 제한 없음.
+        - read_only: 세션 사용자의 GET/HEAD/OPTIONS 외 요청만 403.
+        - block: 면제 경로(consent/config/me/logout/export/account)를
+          제외한 모든 요청 403. 면제 판정은 trailing slash를 정규화한
+          경로로 exact-match 한다 — `/auth/consent/` 같은 변형이
+          면제를 우회(fail-closed)하는 것을 막는다.
+        세션 사용자만 대상 — 머신 API 키·env 키·비인증 경로(webhook·공유·
+        cron)는 데이터 주체가 아니므로 기존 인증 모델을 따른다.
+        403 body: error.code="consent_required" + 최상위 consent_missing 목록."""
+        mode = str(getattr(settings, "consent_enforce", "off") or "off").strip().lower()
+        if mode not in ("read_only", "block"):
+            return None
+        user = _session_user(request)
+        if user is None:
+            return None
+        missing = consent_missing_for_user(user)
+        if not missing:
+            return None
+        # trailing slash 정규화 — 면제 경로의 "/" 변형이 exact-match를
+        # 빠져나가 차단되는(fail-closed) 것을 방지한다.
+        path = request.url.path.rstrip("/") or "/"
+        if path in _CONSENT_EXEMPT_PATHS:
+            return None
+        if mode == "read_only" and request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        return err(
+            403,
+            "consent_required",
+            "이용약관/개인정보처리방침이 업데이트되었습니다. 재동의가 필요합니다",
+            request,
+            extra={"consent_missing": missing},
+        )
+
     def _verify_url(request: Request, token: str) -> str:
         base = (settings.public_base_url or str(request.base_url)).rstrip("/")
         return f"{base}/api/v1/auth/verify?token={token}"

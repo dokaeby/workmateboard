@@ -204,6 +204,10 @@ def create_app(
             block = ctx._org_access_block(request)
             if block is not None:
                 return block
+            # spec 005 FR-013 — 재동의 요구(consent_enforce=read_only|block)
+            block = ctx.consent_block_response(request)
+            if block is not None:
+                return block
             response = await call_next(request)
         finally:
             if org_tok is not None:
@@ -343,6 +347,7 @@ def create_app(
     from .routers import permissions as _r_permissions
     from .routers import push as _r_push
     from .routers import radar as _r_radar
+    from .routers import retention as _r_retention
     from .routers import routines as _r_routines
     from .routers import runs as _r_runs
     from .routers import sessions as _r_sessions
@@ -375,6 +380,7 @@ def create_app(
     _r_health.register(app, ctx)
     _r_webhooks.register(app, ctx)
     _r_metrics.register(app, ctx)
+    _r_retention.register(app, ctx)
     return app
 
 

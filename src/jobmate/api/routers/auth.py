@@ -79,8 +79,28 @@ def register(app: FastAPI, ctx: Any) -> None:
     _issue_password_reset = ctx._issue_password_reset
     _signup_record = ctx._signup_record
     _signup_throttled = ctx._signup_throttled
+    _settings = ctx.settings
+    _consent_missing_for_user = ctx.consent_missing_for_user
     err = ctx.err
     store = ctx.store
+
+    def _record_signup_consent(user: dict[str, Any], request: Request) -> bool:
+        """spec 005 FR-011 — 가입 동의 이력 기록(비밀번호/Google 공용 헬퍼).
+
+        consent_records에 현행 terms/privacy 버전·요청 ip/ua를 남긴다.
+        기록 실패가 가입/로그인 자체를 깨지 않도록 best-effort — False 반환."""
+        try:
+            store.record_consent(
+                str(user["id"]),
+                _settings.terms_version,
+                _settings.privacy_version,
+                ip=request.client.host if request.client else "",
+                user_agent=str(request.headers.get("user-agent") or ""),
+            )
+            return True
+        except Exception:
+            logger.warning("consent record failed: user=%s", user.get("id"), exc_info=True)
+            return False
 
     def _reject_weak_password(request: Request, password: str, email: str) -> JSONResponse | None:
         """비밀번호 정책 위반 시 400 응답, 통과 시 None.
@@ -174,7 +194,16 @@ def register(app: FastAPI, ctx: Any) -> None:
             store.create_personal_org(user)
         except Exception:
             logger.warning("personal org creation failed: user=%s", user["id"], exc_info=True)
-        store.audit("", user["email"], "auth_signup", user["id"], {"terms_agreed": terms_agreed})
+        # spec 005 FR-011 — 동의 이력 기록. agree_terms=true면 로컬 개발
+        # 모드에서도 기록한다(기록 자체는 선택, '요구'만 _email_verification_required
+        # 게이트를 따른다). 기록 실패가 가입을 깨지 않도록 best-effort.
+        if terms_agreed:
+            _record_signup_consent(user, request)
+        audit_detail: dict[str, Any] = {"terms_agreed": terms_agreed}
+        if terms_agreed:
+            audit_detail["terms_version"] = _settings.terms_version
+            audit_detail["privacy_version"] = _settings.privacy_version
+        store.audit("", user["email"], "auth_signup", user["id"], audit_detail)
         logger.info("auth signup: user=%s", user["id"])
         verify_required = _email_verification_required()
         verify_sent = True
@@ -819,10 +848,22 @@ def register(app: FastAPI, ctx: Any) -> None:
                 )
             # 감사 기록은 actor 마스킹 전에 남긴다 — 삭제 후에도 행위가 추적된다.
             # delete가 실패하면 감사도 남기지 않기 위해 삭제 성공 후 기록한다.
+            # delete_user_cascade가 같은 tx에 deletion_receipts를 기록하므로
+            # 여기서는 해시로 영수증 id만 회수해 응답/감사에 포함한다(FR-015/016).
             counts = store.delete_user_cascade(uid)
-            store.audit("", email, "auth_account_delete", uid, {})
+            receipt = store.latest_deletion_receipt_for_hash(store.user_id_hash(uid))
+            receipt_id = str((receipt or {}).get("id") or "")
+            # actor는 'deleted_user' — cascade의 actor 마스킹 이후에 기록되므로
+            # 이메일을 그대로 쓰면 본인 PII가 audit_events에 잔존한다(SC-005).
+            store.audit(
+                "",
+                "deleted_user",
+                "auth_account_delete",
+                uid,
+                {"receipt_id": receipt_id} if receipt_id else {},
+            )
         logger.info("account deleted: user=%s removed=%s", uid, counts)
-        resp = JSONResponse({"status": "deleted", "removed": counts})
+        resp = JSONResponse({"status": "deleted", "removed": counts, "receipt_id": receipt_id})
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
@@ -843,9 +884,59 @@ def register(app: FastAPI, ctx: Any) -> None:
         )
 
     @app.get("/api/v1/auth/config")
-    def auth_config() -> dict[str, bool]:
-        """로그인 화면용 공개 설정 — 외부 노출 정보 없음."""
-        return {"google_enabled": bool(_google_oauth_env("CLIENT_ID"))}
+    def auth_config() -> dict[str, Any]:
+        """로그인 화면용 공개 설정 — 외부 노출 정보 없음.
+        spec 005 FR-012 — 현재 약관/방침 버전과 정책 URL을 함께 반환해
+        클라이언트가 동의 화면을 렌더링할 수 있게 한다."""
+        return {
+            "google_enabled": bool(_google_oauth_env("CLIENT_ID")),
+            "terms_version": _settings.terms_version,
+            "privacy_version": _settings.privacy_version,
+            "privacy_policy_url": _settings.privacy_policy_url,
+            "consent_enforce": str(_settings.consent_enforce or "off"),
+        }
+
+    @app.post("/api/v1/auth/consent")
+    def auth_consent(request: Request) -> JSONResponse:
+        """재동의(spec 005 FR-013) — 세션 인증. 현재 설정 버전으로 새
+        consent_records 행을 추가하고 auth_consent 감사를 남긴다.
+        body 불필요 — 동의 대상은 항상 서버가 아는 현행 버전이다."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        uid = str(user["id"])
+        email = str(user.get("email") or "-")
+        ip = request.client.host if request.client else ""
+        ua = str(request.headers.get("user-agent") or "")
+        try:
+            store.record_consent(
+                uid,
+                _settings.terms_version,
+                _settings.privacy_version,
+                ip=ip,
+                user_agent=ua,
+            )
+        except Exception:
+            logger.warning("consent record failed: user=%s", uid, exc_info=True)
+            return err(500, "consent_failed", "동의 기록에 실패했습니다", request)
+        store.audit(
+            "",
+            email,
+            "auth_consent",
+            uid,
+            {
+                "terms_version": _settings.terms_version,
+                "privacy_version": _settings.privacy_version,
+            },
+        )
+        logger.info("auth consent: user=%s", uid)
+        return JSONResponse(
+            {
+                "status": "consented",
+                "terms_version": _settings.terms_version,
+                "privacy_version": _settings.privacy_version,
+            }
+        )
 
     @app.get("/api/v1/auth/me")
     def auth_me(request: Request) -> JSONResponse:
@@ -866,7 +957,16 @@ def register(app: FastAPI, ctx: Any) -> None:
                     }
                 )
             return err(401, "unauthorized", "로그인이 필요합니다", request)
-        return JSONResponse({"user": _pub_user(user)})
+        # spec 005 FR-013 — 최신 동의가 현행 버전보다 낮으면 재동의 필요를
+        # 응답에 포함한다(enforce 모드와 무관하게 클라이언트가 항상 알 수 있게).
+        missing = _consent_missing_for_user(user)
+        return JSONResponse(
+            {
+                "user": _pub_user(user),
+                "consent_required": bool(missing),
+                "consent_missing": missing,
+            }
+        )
 
     @app.get("/api/v1/auth/google")
     def auth_google(request: Request) -> Any:
@@ -993,6 +1093,7 @@ def register(app: FastAPI, ctx: Any) -> None:
                     store.audit("", email, "auth_google_claim_unverified", user["id"], {})
                     logger.info("google login claimed unverified account: user=%s", user["id"])
                 store.link_google_sub(user["id"], gsub)
+        new_signup = False
         if user is None:
             # Google이 이메일 소유권을 증명했으므로 인증 완료로 간주
             user = store.create_user(email, "", name, gsub, email_verified=True)
@@ -1004,11 +1105,28 @@ def register(app: FastAPI, ctx: Any) -> None:
                 store.create_personal_org(user)
             except Exception:
                 logger.warning("personal org creation failed: user=%s", user["id"], exc_info=True)
+            new_signup = True
+            # spec 005 FR-011 — Google 가입은 별도 약관 동의 화면 단계가
+            # 없다. OAuth 플로우 안에서 이용약관/방침 링크가 노출되고 인증
+            # 진행 자체가 동의 행위로 간주되는 암묵 동의로 기록한다
+            # (제품 결정 — 코드 주석으로 명시). 버전은 현행 settings로
+            # 기록하므로 이후 버전 상향 시 재동의(FR-013)가 정상 동작한다.
+            _record_signup_consent(user, request)
             logger.info("auth signup via google: user=%s", user["id"])
         else:
             # 기존 계정에 Google 연결 — 이메일 인증 완료 처리
             store.set_user_email_verified(user["id"])
-        store.audit("", email, "auth_login_google", user["id"], {})
+        # 신규 가입은 auth_signup 상당의 감사 detail에 동의 버전을 남긴다 —
+        # 재동의 추적 시 어느 버전에 동의하고 가입했는지 감사에서 확인 가능.
+        audit_detail: dict[str, Any] = {}
+        if new_signup:
+            audit_detail = {
+                "signup": True,
+                "method": "google",
+                "terms_version": _settings.terms_version,
+                "privacy_version": _settings.privacy_version,
+            }
+        store.audit("", email, "auth_login_google", user["id"], audit_detail)
         logger.info("auth login via google: user=%s", user["id"])
         mfa = store.get_mfa_secret(user["id"])
         if mfa is not None and mfa.get("status") == "active":

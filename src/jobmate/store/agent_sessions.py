@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ..services.redaction import mask_pii
 from . import orgctx
 from .util import _clamp_limit, _dt, _iso, _now
 
@@ -70,6 +71,13 @@ class AgentSessionStoreMixin:
         now_dt = _now()
         now = _iso(now_dt)
         oid = orgctx.org_for_write(org_id)
+        # spec 005 US4/FR-027 — 관찰 이벤트 doing/ask/ended_summary의 PII를
+        # 저장 경계에서 마스킹한다. pii_mask=off(기본)면 mask_pii가 원문을
+        # 그대로 반환한다. eff 계산 전에 적용해 agent_sessions 컬럼과
+        # agent_session_events 전이 이벤트 양쪽에 동일하게 반영된다.
+        doing = mask_pii(doing) if doing else doing
+        ask = mask_pii(ask) if ask else ask
+        ended_summary = mask_pii(ended_summary) if ended_summary else ended_summary
         artifacts_json = (
             json.dumps(artifacts, ensure_ascii=False) if artifacts is not None else None
         )
@@ -566,6 +574,10 @@ class AgentSessionStoreMixin:
 
         now_dt = _now()
         now = _iso(now_dt)
+        # PII 마스킹 — doing/project는 자유 텍스트라 세션 push 경계에서
+        # 마스킹한다. pii_mask=off(기본)면 mask_pii가 원문을 그대로 반환한다.
+        doing = mask_pii(doing) if doing else doing
+        project = mask_pii(project) if project else project
         # org 귀속: 명시 > agent_sessions 부모 > ctx — push 경로(ctx='')에서도
         # 세션 소유 조직으로 활동이 기록된다.
         oid = (org_id or "").strip()

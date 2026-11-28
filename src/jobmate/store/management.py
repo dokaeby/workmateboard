@@ -15,6 +15,7 @@ import uuid
 from typing import Any
 
 from ..models import TaskPriority, TaskStatus
+from ..services.redaction import mask_pii
 from . import orgctx
 from .util import _clamp_limit, _iso, _now
 
@@ -425,6 +426,9 @@ class ManagementStoreMixin:
                 },
                 ensure_ascii=False,
             )
+        # spec 005 US4/FR-027 — PII 마스킹은 저장 경계에서 1회 적용.
+        # pii_mask=off(기본)면 원문 그대로. actor 등 식별 필드는 대상 아님.
+        detail_json = mask_pii(detail_json)
         # org_id 해석(FR-013) — 부모(task/run/agent)의 org를 우선 전파하고,
         # 없으면 명시 인자 → 요청 컨텍스트 순.
         oid = ""
@@ -452,7 +456,7 @@ class ManagementStoreMixin:
                         (task_id or "").strip()[:64] or None,
                         (run_id or "").strip()[:64] or None,
                         actor[:200],
-                        summary.strip()[:200],
+                        mask_pii(summary.strip())[:200],
                         detail_json,
                         occurred_at or now,
                         oid,

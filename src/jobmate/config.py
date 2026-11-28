@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import ModelConfig
@@ -120,6 +121,36 @@ class Settings(BaseSettings):
     sentry_environment: str = ""  # 기본 settings.mode
     metrics_token: str = Field(default="", repr=False)  # JOBMATE_METRICS_TOKEN
 
+    # spec 005 — 데이터 규정 (동의/재동의/PII 마스킹)
+    terms_version: str = "v1.0"  # JOBMATE_TERMS_VERSION
+    privacy_version: str = "v1.0"  # JOBMATE_PRIVACY_VERSION
+    privacy_policy_url: str = ""  # JOBMATE_PRIVACY_POLICY_URL
+    consent_enforce: str = "off"  # JOBMATE_CONSENT_ENFORCE: off|read_only|block
+    pii_mask: str = "off"  # JOBMATE_PII_MASK: off|on — on 시 관찰 이벤트/로그 PII 마스킹
+
+    @field_validator("terms_version", "privacy_version", mode="before")
+    @classmethod
+    def _empty_version_to_default(cls, v: Any, info: ValidationInfo) -> Any:
+        """빈 문자열 env(JOBMATE_TERMS_VERSION= 등)는 필드 기본값으로 복원.
+
+        ''가 그대로 저장되면 consent_missing_versions의 버전 비교가
+        영구 불일치해 모든 사용자가 재동의 루프에 갇힌다(hard lockout).
+        """
+        if isinstance(v, str) and not v.strip():
+            return "v1.0"
+        return v
+
+    @field_validator("consent_enforce", mode="before")
+    @classmethod
+    def _consent_enforce_valid(cls, v: Any) -> Any:
+        """off|read_only|block 외 값은 'off'로 폴백.
+
+        강제 모드는 opt-in 안전장치 — 오타 난 env 값이 'block'으로 해석돼
+        전체 사용자를 잠그는 것보다 'off'(제한 없음)로 열어두는 편이
+        fail-safe다. 오설정은 배포 체크리스트/로그로 별도 감지한다."""
+        s = str(v or "off").strip().lower()
+        return s if s in ("off", "read_only", "block") else "off"
+
     def model_for(self, role: str, tier: str = "default") -> ModelConfig:
         """역할별 오버라이드 → 티어 기본값 순으로 ModelConfig를 만든다.
         debug 모드에서는 tier와 무관하게 항상 default(gemini)만 사용한다."""
@@ -151,17 +182,39 @@ class Settings(BaseSettings):
         )
 
 
+class _PIIMaskingFormatter(logging.Formatter):
+    """spec 005 FR-027 — 로그 포맷터 PII 마스킹.
+
+    pii_mask=on일 때 configure_logging이 이 포맷터를 선택한다. format()
+    출력 전체(레벨/로거명 포함)에 mask_pii를 적용한다 — mask_pii 자체가
+    설정 게이트를 가지므로 여기서 다시 게이트하지 않는다. config를 넘겨
+    get_settings() 폴백과 무관하게 주입된 settings를 따른다."""
+
+    def __init__(self, settings: Settings, fmt: str) -> None:
+        super().__init__(fmt)
+        self._pii_settings = settings
+
+    def format(self, record: logging.LogRecord) -> str:
+        from .services.redaction import mask_pii
+
+        msg = super().format(record)
+        return mask_pii(msg, self._pii_settings)
+
+
 def configure_logging(settings: Settings) -> None:
     """mode별 로깅 레벨. debug=DEBUG, release=INFO (DEBUG 출력 숨김).
-    토큰/비밀값은 어느 레벨에서도 로깅하지 않는다(호출부 책임)."""
-    import logging
-
+    토큰/비밀값은 어느 레벨에서도 로깅하지 않는다(호출부 책임).
+    pii_mask=on이면 로그 메시지 본문에 PII 마스킹 포맷터를 적용한다(FR-027)."""
     level = logging.DEBUG if settings.mode == "debug" else logging.INFO
     logger = logging.getLogger("jobmate")
     logger.setLevel(level)
     if not logger.handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+        if str(getattr(settings, "pii_mask", "") or "") == "on":
+            handler.setFormatter(_PIIMaskingFormatter(settings, fmt))
+        else:
+            handler.setFormatter(logging.Formatter(fmt))
         logger.addHandler(handler)
     logger.propagate = False
 
