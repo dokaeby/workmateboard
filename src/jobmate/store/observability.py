@@ -548,3 +548,458 @@ class ObservabilityStoreMixin:
             return int(row["n"] or 0) if row is not None else 0
         except (TypeError, ValueError):
             return 0
+
+    # ================= spec 011 US1 — 관제센터 집계 =================
+    # notifications/inbox·runs/stage_runs·agent_sessions/llm_usage 기반.
+    # 없는 컬럼(severity/progress/heartbeat 전용 필드 등)은 추정하지 않고
+    # null 또는 필드 생략으로 처리한다.
+
+    _FUNNEL_STAGE_LIMIT = 50000  # 윈도우 내 stage_run 스캔 상한(초과 시 하한 근사)
+    _AGENTS_LIVE_LIMIT = 100
+    _SWARM_MAX_RUNS = 25  # days 모드에서 그래프에 포함할 최근 run 수
+    _SWARM_STAGE_ROW_LIMIT = 2000  # _swarm_stage_rows 총 스캔 상한(메모리 바운드)
+    _SWARM_NODE_LIMIT = 100
+
+    # agent_sessions.status(외부 브릿지 어휘) → 관제센터 §5.4 상태 집합.
+    # 스키마에 planning/thinking/executing_tool을 생성하는 경로는 없지만
+    # 브릿지가 그대로 보내면 패스스루로 보존한다. 미지 값은 idle로 수렴.
+    _SESSION_STATUS_MAP = {
+        "working": "running",
+        "run": "running",
+        "running": "running",
+        "decision": "waiting",
+        "waiting": "waiting",
+        "waiting_approval": "waiting",
+        "rest": "idle",
+        "idle": "idle",
+        "ended": "completed",
+        "completed": "completed",
+        "done": "completed",
+        "error": "failed",
+        "failed": "failed",
+        "paused": "paused",
+        "blocked": "blocked",
+        "planning": "planning",
+        "thinking": "thinking",
+        "executing_tool": "executing_tool",
+    }
+
+    # stage_run.status 중 "실제 실행에 진입"한 상태 — pending/skipped는 제외.
+    _EXECUTING_STAGE_STATUSES = ("running", "succeeded", "failed")
+
+    def observability_notifications(self, days: int) -> dict[str, Any]:
+        """알림함 집계 — inbox_items kind='notification' 기준.
+
+        open=미읽음(read=0), resolved=읽음(read=1). inbox_items에는
+        severity 컬럼이 없어 by_severity는 반환하지 않는다(스펙 허용).
+        notifications 테이블 행은 GET /inbox의 sync_notifications_to_inbox
+        미러링을 통해 kind='notification'으로 반영되므로 여기서 별도
+        집계하면 이중 계산된다 — 알림함 화면과 동일한 소스를 쓴다."""
+        days = max(1, min(int(days), 365))
+        # notifications → inbox_items 미러링은 GET /inbox에서만 동기화되므로
+        # 여기서도 보장한다(멱등 — dedupe_key=notif:{id}).
+        self.sync_notifications_to_inbox()
+        now = _now()
+        cutoff = _iso(now - timedelta(days=days))
+        frag, params = _org_filter()
+        conds = ["kind='notification'", "created_at >= ?"]
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+        rows = self._conn.execute(
+            "SELECT substr(created_at,1,10) AS d, COUNT(*) AS n,"  # noqa: S608
+            " COALESCE(SUM(CASE WHEN read=0 THEN 1 ELSE 0 END),0) AS open_n,"
+            " COALESCE(SUM(CASE WHEN read=1 THEN 1 ELSE 0 END),0) AS resolved_n"
+            " FROM inbox_items WHERE " + " AND ".join(conds) + " GROUP BY d",
+            (cutoff, *params),
+        ).fetchall()
+        by_day = {str(r["d"]): r for r in rows}
+        total = open_n = resolved_n = 0
+        series: list[dict[str, Any]] = []
+        # 최근 days일(UTC 일 단위) 버킷을 0으로 채운 뒤 실측값을 덮어쓴다.
+        start_day = (now - timedelta(days=days - 1)).date()
+        for i in range(days):
+            d = (start_day + timedelta(days=i)).isoformat()
+            r = by_day.get(d)
+            n = int(r["n"] or 0) if r else 0
+            total += n
+            if r:
+                open_n += int(r["open_n"] or 0)
+                resolved_n += int(r["resolved_n"] or 0)
+            series.append({"t": f"{d}T00:00:00Z", "count": n})
+        frag_r, params_r = _org_filter()
+        conds_r = ["kind='notification'"]
+        if frag_r:
+            conds_r.append(frag_r.strip().removeprefix("AND").strip())
+        recent_rows = self._conn.execute(
+            "SELECT id,title,created_at,read FROM inbox_items"  # noqa: S608
+            " WHERE " + " AND ".join(conds_r) + " ORDER BY created_at DESC LIMIT 20",
+            tuple(params_r),
+        ).fetchall()
+        recent = [
+            {
+                "id": str(r["id"]),
+                "title": str(r["title"] or ""),
+                "created_at": str(r["created_at"] or ""),
+                "status": "open" if not int(r["read"] or 0) else "resolved",
+            }
+            for r in recent_rows
+        ]
+        return {
+            "days": days,
+            "total": total,
+            "open": open_n,
+            "resolved": resolved_n,
+            "series": series,
+            "recent": recent,
+        }
+
+    def observability_funnel(self, days: int, workflow: str = "") -> dict[str, Any]:
+        """실행 퍼널 — runs/stage_runs에서 단계별 도달 run 수를 유도.
+
+        - received: 윈도우 내 생성된 run 수
+        - planned: entry가 아닌 stage_run이 1개 이상 있는 run 수
+          (워크플로 spec의 entry 단계를 제외 — spec 미해석 시 모든
+          stage_key를 비엔트리로 간주하는 보수적 폴백)
+        - assigned: 비엔트리 stage_run이 실제 실행 상태
+          (running/succeeded/failed — pending/skipped 제외)인 run 수
+        - executed: status='completed'로 성공 종료한 run 수
+
+        workflow 지정 시 해당 workflow_key로 한정한다."""
+        days = max(1, min(int(days), 365))
+        cutoff = _iso(_now() - timedelta(days=days))
+        wf = (workflow or "").strip()[:100]
+        frag, params = _org_filter("r")
+        wf_frag = " AND r.workflow_key=?" if wf else ""
+        wf_params: list[Any] = [wf] if wf else []
+
+        def _run_count(extra: str = "") -> int:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM runs r"  # noqa: S608
+                " WHERE r.created_at >= ?" + frag + wf_frag + extra,
+                (cutoff, *params, *wf_params),
+            ).fetchone()
+            try:
+                return int(row["n"] or 0) if row is not None else 0
+            except (TypeError, ValueError):
+                return 0
+
+        received = _run_count()
+        executed = _run_count(" AND r.status='completed'")
+
+        rows = self._conn.execute(
+            "SELECT sr.run_id, sr.stage_key, sr.status, r.workflow_key"  # noqa: S608
+            " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
+            " WHERE r.created_at >= ?" + frag + wf_frag + " LIMIT ?",
+            (cutoff, *params, *wf_params, self._FUNNEL_STAGE_LIMIT),
+        ).fetchall()
+
+        # workflow_key별 entry stage_key — spec 003 커스텀 spec도 조직
+        # 컨텍스트로 해석된다. 미해석("" )은 비엔트리 판정에서 제외하지 않는다.
+        from ..workflows.resolver import resolve_workflow_spec
+
+        entry_by_wf: dict[str, str] = {}
+
+        def _entry(wf_key: str) -> str:
+            if wf_key not in entry_by_wf:
+                try:
+                    spec = resolve_workflow_spec(self, wf_key)
+                    entry_by_wf[wf_key] = spec.entry if spec is not None else ""
+                except Exception:
+                    entry_by_wf[wf_key] = ""
+            return entry_by_wf[wf_key]
+
+        planned: set[str] = set()
+        assigned: set[str] = set()
+        for r in rows:
+            rid = str(r["run_id"] or "")
+            entry = _entry(str(r["workflow_key"] or ""))
+            if entry and str(r["stage_key"] or "") == entry:
+                continue  # entry stage — 계획 수립 이전 단계
+            planned.add(rid)
+            if str(r["status"] or "") in self._EXECUTING_STAGE_STATUSES:
+                assigned.add(rid)
+
+        return {
+            "days": days,
+            "workflow": wf,
+            "stages": [
+                {"key": "received", "label": "요청 수신", "count": received},
+                {"key": "planned", "label": "계획 수립", "count": len(planned)},
+                {"key": "assigned", "label": "작업 분배", "count": len(assigned)},
+                {"key": "executed", "label": "실행", "count": executed},
+            ],
+        }
+
+    @staticmethod
+    def _live_agent_status(raw: Any) -> str:
+        """agent_sessions.status → §5.4 상태 집합. 미지 값은 idle."""
+        key = str(raw or "").strip().lower()
+        return ObservabilityStoreMixin._SESSION_STATUS_MAP.get(key, "idle")
+
+    def observability_agents_live(self) -> dict[str, Any]:
+        """라이브 에이전트/세션 카드 — agent_sessions 최신 활동 순.
+
+        agent_sessions의 org 필터 규약을 따른다('' 공유 행은 전 조직에
+        노출 — 브릿지가 env 키로 푸시하는 플랫폼 세션). 모델/진행률/
+        tool_calls/sub_agents/비용은 세션 스키마에 대응 컬럼이 없어
+        null로 반환한다 — llm_usage는 세션 키가 없어 세션별 조인이
+        불가능하고, 비용은 stage_run→run 경로에만 존재한다.
+        last_heartbeat_at은 전용 컬럼이 없어 last_event_at(브릿지가
+        보낸 마지막 이벤트 시각)을 사용한다."""
+        oid = orgctx.current_org_id()
+        frag = " WHERE (org_id=? OR org_id='')" if oid else ""
+        params: list[Any] = [oid] if oid else []
+        rows = self._conn.execute(
+            "SELECT id,tool,session_key,project,title,status,doing,ask,"  # noqa: S608
+            " tokens_in,tokens_out,last_event_at,created_at,updated_at"
+            " FROM agent_sessions"
+            + frag
+            + " ORDER BY COALESCE(last_event_at, updated_at, created_at) DESC"
+            " LIMIT ?",
+            (*params, self._AGENTS_LIVE_LIMIT),
+        ).fetchall()
+        now = _now()
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            created = _aware(_dt(r["created_at"]))
+            elapsed = max(0, int((now - created).total_seconds())) if created else None
+            ti, to_ = r["tokens_in"], r["tokens_out"]
+            tokens = (int(ti or 0) + int(to_ or 0)) if (ti is not None or to_ is not None) else None
+            heartbeat = str(r["last_event_at"] or r["updated_at"] or r["created_at"] or "")
+            items.append(
+                {
+                    "id": f"{r['tool']}:{r['session_key']}",
+                    "session_key": str(r["session_key"] or ""),
+                    "name": str(r["title"] or r["session_key"] or r["tool"] or ""),
+                    "role": str(r["tool"] or ""),
+                    "model": None,
+                    "status": self._live_agent_status(r["status"]),
+                    "current_task": str(r["doing"] or ""),
+                    "progress_pct": None,
+                    "started_at": str(r["created_at"] or ""),
+                    "elapsed_s": elapsed,
+                    "tokens": tokens,
+                    "cost_usd": None,
+                    "tool_calls": None,
+                    "sub_agents": None,
+                    "last_heartbeat_at": heartbeat,
+                    "project": str(r["project"] or ""),
+                }
+            )
+        return {"count": len(items), "items": items}
+
+    # ---- spec 011 US1: swarm 노드/엣지 ----
+    def _swarm_run_row(self, run_id: str) -> dict[str, Any] | None:
+        frag, params = _org_filter("r")
+        row = self._conn.execute(
+            "SELECT r.id, r.workflow_key, r.agent_id, r.status, r.project,"  # noqa: S608
+            " r.created_at, r.updated_at FROM runs r WHERE r.id=?" + frag,
+            (run_id, *params),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _swarm_stage_rows(self, run_ids: list[str]) -> dict[str, list[Any]]:
+        """run_id → stage_runs 행(실행 순 정렬). stage_runs는 org_id가
+        없어 runs 조인으로 조직을 판정한다."""
+        if not run_ids:
+            return {}
+        frag, params = _org_filter("r")
+        marks = ",".join("?" for _ in run_ids)
+        rows = self._conn.execute(
+            "SELECT sr.id, sr.run_id, sr.stage_key, sr.attempt, sr.status,"  # noqa: S608
+            " sr.model, sr.tokens_in, sr.tokens_out, sr.started_at,"
+            " sr.finished_at, sr.error, r.workflow_key"
+            " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
+            " WHERE sr.run_id IN ("
+            + marks
+            + ")"
+            + frag
+            + " ORDER BY sr.run_id, sr.started_at, sr.attempt LIMIT ?",
+            (*run_ids, *params, self._SWARM_STAGE_ROW_LIMIT),
+        ).fetchall()
+        out: dict[str, list[Any]] = {}
+        for r in rows:
+            out.setdefault(str(r["run_id"]), []).append(r)
+        return out
+
+    def _swarm_agent_names(self, workflow_key: str) -> dict[str, str]:
+        """workflow spec의 stage_key → agent(AgentSpec 키) 매핑.
+        spec 미해석 시 빈 맵 — node.agent는 빈 문자열."""
+        try:
+            from ..workflows.resolver import resolve_workflow_spec
+
+            spec = resolve_workflow_spec(self, workflow_key)
+        except Exception:
+            return {}
+        if spec is None:
+            return {}
+        return {s.key: (s.agent or "") for s in spec.stages if s.agent}
+
+    @staticmethod
+    def _swarm_latency_ms(started: Any, finished: Any) -> int | None:
+        s, f = _aware(_dt(started)), _aware(_dt(finished))
+        if s is None or f is None:
+            return None
+        return int(max(0.0, (f - s).total_seconds() * 1000))
+
+    def _swarm_run_node(self, run: dict[str, Any]) -> dict[str, Any]:
+        agent_label = ""
+        aid = str(run.get("agent_id") or "")
+        if aid:
+            try:
+                agent = self.get_agent(aid)
+                agent_label = str((agent or {}).get("name") or aid)
+            except Exception:
+                agent_label = aid
+        created = _aware(_dt(run.get("created_at")))
+        updated = _aware(_dt(run.get("updated_at")))
+        duration = (
+            int((updated - created).total_seconds() * 1000)
+            if created and updated and updated >= created
+            else None
+        )
+        status = str(run.get("status") or "")
+        return {
+            "id": f"run:{run['id']}",
+            "run_id": str(run["id"]),
+            "label": str(run.get("workflow_key") or run["id"]),
+            "kind": "run",
+            "workflow": str(run.get("workflow_key") or ""),
+            "agent": agent_label,
+            "status": status,
+            "progress_pct": 100 if status == "completed" else None,
+            "tokens": None,
+            "latency_ms": duration,
+            "error_count": 0,
+        }
+
+    def _swarm_stage_node(self, r: Any, agent_by_stage: dict[str, str]) -> dict[str, Any]:
+        stage_key = str(r["stage_key"] or "")
+        status = str(r["status"] or "")
+        ti, to_ = int(r["tokens_in"] or 0), int(r["tokens_out"] or 0)
+        return {
+            "id": f"stage:{r['id']}",
+            "run_id": str(r["run_id"]),
+            "stage_key": stage_key,
+            "attempt": int(r["attempt"] or 0),
+            "label": stage_key,
+            "kind": "stage",
+            "agent": agent_by_stage.get(stage_key) or "",
+            "status": status,
+            # 진행률은 저장되지 않는다 — 성공 종료만 100으로 표시하고
+            # 그 외는 null(실행 중 진행률을 추정하지 않는다).
+            "progress_pct": 100 if status == "succeeded" else None,
+            "tokens": ti + to_,
+            "latency_ms": self._swarm_latency_ms(r["started_at"], r["finished_at"]),
+            "error_count": 1 if str(r["error"] or "") else 0,
+        }
+
+    def _swarm_run_graph(
+        self,
+        run: dict[str, Any],
+        stage_rows: list[Any],
+        agent_by_stage: dict[str, str],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """run 1건의 노드/엣드 — run 노드를 부모로, stage_run을 실행
+        순(started_at, attempt)으로 직렬 연결하고 각 stage_key의 첫
+        실행에 run→stage 'spawn' 엣지를 둔다."""
+        nodes = [self._swarm_run_node(run)]
+        node_ids: list[str] = []
+        for r in stage_rows:
+            node = self._swarm_stage_node(r, agent_by_stage)
+            nodes.append(node)
+            node_ids.append(node["id"])
+        edges: list[dict[str, Any]] = []
+        run_node_id = nodes[0]["id"]
+        seen_keys: set[str] = set()
+        prev_id = ""
+        for r, nid in zip(stage_rows, node_ids, strict=True):
+            key = str(r["stage_key"] or "")
+            if key not in seen_keys:
+                seen_keys.add(key)
+                edges.append({"source": run_node_id, "target": nid, "kind": "spawn"})
+            if prev_id:
+                edges.append({"source": prev_id, "target": nid, "kind": "sequence"})
+            prev_id = nid
+        return nodes, edges
+
+    def observability_swarm(self, run_id: str = "", days: int = 7) -> dict[str, Any]:
+        """노드/엣지 그래프 — run_id 지정 시 해당 run, 아니면 최근 활성 run.
+
+        days 모드는 updated_at 기준 최근 _SWARM_MAX_RUNS개 run을 대상으로
+        노드가 _SWARM_NODE_LIMIT을 넘으면 run 단위로 제외하고 나머지를
+        '…' 클러스터 노드 1개로 요약한다(엣지는 포함된 노드 사이에만)."""
+        run_id = (run_id or "").strip()
+        if run_id:
+            run = self._swarm_run_row(run_id)
+            if run is None:
+                return {"nodes": [], "edges": []}
+            stage_map = self._swarm_stage_rows([run_id])
+            stages = stage_map.get(run_id, [])
+            # run 모드도 노드 상한 적용 — 초과분은 클러스터 노드로 요약
+            truncated = 0
+            if len(stages) + 1 > self._SWARM_NODE_LIMIT:
+                truncated = len(stages) - (self._SWARM_NODE_LIMIT - 2)
+                stages = stages[: self._SWARM_NODE_LIMIT - 2]
+            agent_by_stage = self._swarm_agent_names(str(run.get("workflow_key") or ""))
+            rn, re_ = self._swarm_run_graph(run, stages, agent_by_stage)
+            if truncated:
+                rn.append(
+                    {
+                        "id": "cluster:truncated",
+                        "label": "…",
+                        "kind": "cluster",
+                        "count": truncated,
+                        "status": "",
+                    }
+                )
+            return {"nodes": rn, "edges": re_}
+
+        days = max(1, min(int(days), 365))
+        cutoff = _iso(_now() - timedelta(days=days))
+        frag, params = _org_filter("r")
+        runs = [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT r.id, r.workflow_key, r.agent_id, r.status, r.project,"  # noqa: S608
+                " r.created_at, r.updated_at FROM runs r"
+                " WHERE r.updated_at >= ?" + frag + " ORDER BY r.updated_at DESC LIMIT ?",
+                (cutoff, *params, self._SWARM_MAX_RUNS),
+            ).fetchall()
+        ]
+        run_ids = [str(r["id"]) for r in runs]
+        stage_map = self._swarm_stage_rows(run_ids)
+        # workflow_key별 agent 매핑 캐시
+        agent_cache: dict[str, dict[str, str]] = {}
+
+        def _agents(wf_key: str) -> dict[str, str]:
+            if wf_key not in agent_cache:
+                agent_cache[wf_key] = self._swarm_agent_names(wf_key)
+            return agent_cache[wf_key]
+
+        nodes: list[dict[str, Any]] = []
+        edges: list[dict[str, Any]] = []
+        overflow = 0
+        for run in runs:
+            rid = str(run["id"])
+            stages = stage_map.get(rid, [])
+            cost = 1 + len(stages)
+            if len(nodes) + cost > self._SWARM_NODE_LIMIT:
+                overflow += 1
+                continue
+            wf_key = str(run.get("workflow_key") or "")
+            rn, re_ = self._swarm_run_graph(run, stages, _agents(wf_key))
+            # 이미 방출된 노드 id와의 엣지 소스/타겟은 run 내부에 한정되므로 그대로 병합
+            nodes.extend(rn)
+            edges.extend(re_)
+        if overflow:
+            nodes.append(
+                {
+                    "id": "cluster:overflow",
+                    "label": "…",
+                    "kind": "cluster",
+                    "count": overflow,
+                    "status": "",
+                }
+            )
+        return {"nodes": nodes, "edges": edges}

@@ -85,3 +85,40 @@ def register(app: FastAPI, ctx: Any) -> None:
             return gate
         items = store.list_anomaly_events(days=days)
         return JSONResponse(content={"days": max(1, min(int(days), 365)), "items": items})
+
+    # ---- spec 011 US1 — 관제센터 모듈 집계 ----
+
+    @app.get("/api/v1/observability/notifications")
+    def observability_notifications(request: Request, days: int = 7) -> JSONResponse:
+        """알림함 집계 — 총량/open/resolved + 일별 시계열 + 최근 알림."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content=store.observability_notifications(days))
+
+    @app.get("/api/v1/observability/funnel")
+    def observability_funnel(request: Request, days: int = 7, workflow: str = "") -> JSONResponse:
+        """실행 퍼널 — received→planned→assigned→executed 단계별 도달 수."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content=store.observability_funnel(days, workflow))
+
+    @app.get("/api/v1/observability/agents/live")
+    def observability_agents_live(request: Request) -> JSONResponse:
+        """활성 에이전트/세션 카드 — agent_sessions 최신 활동 순."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content=store.observability_agents_live())
+
+    @app.get("/api/v1/observability/swarm")
+    def observability_swarm(request: Request, run_id: str = "", days: int = 7) -> JSONResponse:
+        """노드/엣지 그래프 — run_id 지정 시 해당 run, 아니면 최근 활성 run."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        # get_run은 org 바인딩 조회 — 다른 조직/미존재 run은 404로 수렴.
+        if run_id and store.get_run(run_id) is None:
+            return err(404, "not_found", "run not found", request)
+        return JSONResponse(content=store.observability_swarm(run_id, days))
