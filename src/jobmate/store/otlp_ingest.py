@@ -11,6 +11,7 @@ token_hash를 응답 dict에서 제거한다.
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -58,6 +59,7 @@ def external_span_json(
         attrs = _loads(attrs)
     if not isinstance(attrs, dict):
         attrs = {}
+    attrs = _json_safe(attrs)
     return {
         "id": row.get("id"),
         "trace_id": row.get("trace_id") or "",
@@ -69,6 +71,75 @@ def external_span_json(
         "ended_at": row.get("ended_at"),
         "run_id": row.get("run_id") or "",
         "attributes": {str(k): _truncate_attr_value(v, attr_limit) for k, v in attrs.items()},
+    }
+
+
+# external_logs.body 응답 절단 상한 — 저장값은 건드리지 않는다.
+_LOG_BODY_LIMIT = 4096
+
+
+def _json_safe(v: Any) -> Any:
+    """비유한 float(NaN/±Inf) → None. strict JSON 응답 오염 방지 —
+    레거시 행이나 PG REAL에 저장된 NaN도 읽기 경로에서 정규화한다."""
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    if isinstance(v, dict):
+        return {str(k): _json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    return v
+
+
+def _attrs_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """attributes 컬럼(JSON 문자열 또는 dict) → dict."""
+    attrs = row.get("attributes")
+    if isinstance(attrs, str):
+        attrs = _loads(attrs)
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _attrs_json(attrs: Any) -> str:
+    """attributes → 저장용 JSON. 비유한 float는 _json_safe로 정규화."""
+    if isinstance(attrs, str):
+        return attrs
+    return json.dumps(_json_safe(attrs if isinstance(attrs, dict) else {}), ensure_ascii=False)
+
+
+def external_metric_json(
+    row: dict[str, Any], *, attr_limit: int = _ATTR_VALUE_LIMIT
+) -> dict[str, Any]:
+    """external_metrics 행 → API 응답 dict(spec 009 US1 계약 필드)."""
+    attrs = _json_safe(_attrs_dict(row))
+    return {
+        "id": row.get("id"),
+        "metric_name": row.get("metric_name") or "",
+        "metric_type": row.get("metric_type") or "",
+        "value": _json_safe(row.get("value")),
+        "unit": row.get("unit") or "",
+        "attributes": {str(k): _truncate_attr_value(v, attr_limit) for k, v in attrs.items()},
+        "timestamp": row.get("timestamp"),
+    }
+
+
+def external_log_json(
+    row: dict[str, Any], *, attr_limit: int = _ATTR_VALUE_LIMIT
+) -> dict[str, Any]:
+    """external_logs 행 → API 응답 dict(spec 009 US2 계약 필드).
+    body는 응답 시 _LOG_BODY_LIMIT자로 절단한다."""
+    attrs = _json_safe(_attrs_dict(row))
+    body = str(row.get("body") or "")
+    if len(body) > _LOG_BODY_LIMIT:
+        body = body[:_LOG_BODY_LIMIT]
+    return {
+        "id": row.get("id"),
+        "trace_id": row.get("trace_id") or "",
+        "span_id": row.get("span_id") or "",
+        "severity": row.get("severity") or "",
+        "severity_number": row.get("severity_number"),
+        "severity_text": str(attrs.get("severityText") or ""),
+        "body": body,
+        "attributes": {str(k): _truncate_attr_value(v, attr_limit) for k, v in attrs.items()},
+        "timestamp": row.get("timestamp"),
     }
 
 
@@ -161,12 +232,7 @@ class OtlpIngestStoreMixin:
         created = 0
         with self.tx() as c:
             for r in rows:
-                attrs = r.get("attributes")
-                attrs_json = (
-                    attrs
-                    if isinstance(attrs, str)
-                    else json.dumps(attrs if isinstance(attrs, dict) else {}, ensure_ascii=False)
-                )
+                attrs_json = _attrs_json(r.get("attributes"))
                 c.execute(
                     "INSERT INTO external_spans"
                     "(id,org_id,trace_id,span_id,parent_span_id,name,kind,"
@@ -227,5 +293,137 @@ class OtlpIngestStoreMixin:
             + frag
             + " ORDER BY started_at LIMIT ?",
             (run_id, *params, _clamp_limit(limit, 200, 500)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- external_metrics (spec 009 US1) ----
+    def insert_external_metrics(self, rows: list[dict[str, Any]]) -> int:
+        """외부 메트릭 데이터포인트 벌크 insert.
+        rows 항목: metric_name, metric_type, value, unit, attributes(dict),
+        timestamp, org_id(명시 시 그 조직, 아니면 ctx)."""
+        if not rows:
+            return 0
+        now = _iso(_now())
+        created = 0
+        with self.tx() as c:
+            for r in rows:
+                attrs_json = _attrs_json(r.get("attributes"))
+                raw_value = r.get("value")
+                try:
+                    value = float(raw_value) if raw_value is not None else None
+                except (TypeError, ValueError):
+                    value = None
+                if value is not None and not math.isfinite(value):
+                    value = None
+                c.execute(
+                    "INSERT INTO external_metrics"
+                    "(id,org_id,metric_name,metric_type,value,unit,attributes,"
+                    "timestamp,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(r.get("id") or uuid.uuid4().hex)[:64],
+                        orgctx.org_for_write(str(r.get("org_id") or "") or None),
+                        str(r.get("metric_name") or "")[:500],
+                        str(r.get("metric_type") or "")[:40],
+                        value,
+                        str(r.get("unit") or "")[:100],
+                        attrs_json,
+                        str(r.get("timestamp") or now),
+                        now,
+                    ),
+                )
+                created += 1
+        return created
+
+    def list_external_metrics(
+        self,
+        *,
+        days: int = 7,
+        metric_name: str = "",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """org 스코프 외부 메트릭 목록 — 최신 timestamp 순."""
+        days = max(1, min(int(days), 90))
+        cutoff = _iso(_now() - timedelta(days=days))
+        frag, params = _org_filter()
+        conds = ["timestamp >= ?"]
+        qparams: list[Any] = [cutoff]
+        if metric_name:
+            conds.append("metric_name=?")
+            qparams.append(str(metric_name)[:500])
+        rows = self._conn.execute(
+            "SELECT * FROM external_metrics WHERE "  # noqa: S608
+            + " AND ".join(conds)
+            + frag
+            + " ORDER BY timestamp DESC LIMIT ?",
+            (*qparams, *params, _clamp_limit(limit, 200, 1000)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- external_logs (spec 009 US2) ----
+    def insert_external_logs(self, rows: list[dict[str, Any]]) -> int:
+        """외부 로그 레코드 벌크 insert.
+        rows 항목: trace_id, span_id, severity, severity_number, body,
+        attributes(dict), timestamp, org_id(명시 시 그 조직, 아니면 ctx)."""
+        if not rows:
+            return 0
+        now = _iso(_now())
+        created = 0
+        with self.tx() as c:
+            for r in rows:
+                attrs_json = _attrs_json(r.get("attributes"))
+                sev_num = r.get("severity_number")
+                try:
+                    sev_num_i = int(sev_num) if sev_num is not None else None
+                except (TypeError, ValueError):
+                    sev_num_i = None
+                body = str(r.get("body") or "")[:8192]
+                c.execute(
+                    "INSERT INTO external_logs"
+                    "(id,org_id,trace_id,span_id,severity,severity_number,body,"
+                    "attributes,timestamp,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(r.get("id") or uuid.uuid4().hex)[:64],
+                        orgctx.org_for_write(str(r.get("org_id") or "") or None),
+                        str(r.get("trace_id") or "")[:128],
+                        str(r.get("span_id") or "")[:128],
+                        str(r.get("severity") or "")[:40],
+                        sev_num_i,
+                        body,
+                        attrs_json,
+                        str(r.get("timestamp") or now),
+                        now,
+                    ),
+                )
+                created += 1
+        return created
+
+    def list_external_logs(
+        self,
+        *,
+        days: int = 7,
+        trace_id: str = "",
+        severity: str = "",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """org 스코프 외부 로그 목록 — 최신 timestamp 순."""
+        days = max(1, min(int(days), 90))
+        cutoff = _iso(_now() - timedelta(days=days))
+        frag, params = _org_filter()
+        conds = ["timestamp >= ?"]
+        qparams: list[Any] = [cutoff]
+        if trace_id:
+            conds.append("trace_id=?")
+            qparams.append(str(trace_id)[:128])
+        if severity:
+            conds.append("severity=?")
+            qparams.append(str(severity).upper()[:40])
+        rows = self._conn.execute(
+            "SELECT * FROM external_logs WHERE "  # noqa: S608
+            + " AND ".join(conds)
+            + frag
+            + " ORDER BY timestamp DESC LIMIT ?",
+            (*qparams, *params, _clamp_limit(limit, 200, 1000)),
         ).fetchall()
         return [dict(r) for r in rows]

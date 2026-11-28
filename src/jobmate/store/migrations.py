@@ -70,6 +70,8 @@ _ORG_SCOPED_TABLES = (
     # spec 008 — OTLP 인제스트/외부 스팬/온라인 평가/리포트 구독(조직 리소스).
     "otlp_ingest_tokens",
     "external_spans",
+    "external_metrics",
+    "external_logs",
     "eval_schedules",
     "report_subscriptions",
 )

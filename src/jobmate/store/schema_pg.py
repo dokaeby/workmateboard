@@ -1276,4 +1276,44 @@ CREATE TABLE IF NOT EXISTS report_subscriptions (
 );
 CREATE INDEX IF NOT EXISTS idx_report_subs_org ON report_subscriptions(org_id, enabled);
 
+
+
+
+-- spec 009 US1 — 외부 OTLP 메트릭(jobMate 밖 계측). 같은 ingest 토큰 인증.
+CREATE TABLE IF NOT EXISTS external_metrics (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  metric_name TEXT NOT NULL,
+  metric_type TEXT NOT NULL DEFAULT '',
+  value DOUBLE PRECISION,
+  unit TEXT NOT NULL DEFAULT '',
+  attributes TEXT NOT NULL DEFAULT '{}',
+  timestamp TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_external_metrics_org_ts
+  ON external_metrics(org_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_external_metrics_name
+  ON external_metrics(org_id, metric_name, timestamp);
+
+-- spec 009 US2 — 외부 OTLP 로그.
+CREATE TABLE IF NOT EXISTS external_logs (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  trace_id TEXT NOT NULL DEFAULT '',
+  span_id TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT '',
+  severity_number INTEGER,
+  body TEXT NOT NULL DEFAULT '',
+  attributes TEXT NOT NULL DEFAULT '{}',
+  timestamp TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_external_logs_org_ts
+  ON external_logs(org_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_external_logs_trace
+  ON external_logs(org_id, trace_id);
+CREATE INDEX IF NOT EXISTS idx_external_logs_severity
+  ON external_logs(org_id, severity, timestamp);
+
 """

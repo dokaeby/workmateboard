@@ -1,6 +1,6 @@
-"""spec 008 US1 — OTLP/HTTP JSON 인제스트 + ingest 토큰 관리 라우트.
+"""spec 008 US1 + spec 009 — OTLP/HTTP JSON 인제스트 + ingest 토큰 관리 라우트.
 
-POST /api/v1/otlp/v1/traces — OTLP JSON span 수집. 인증은 세션/API 키가
+POST /api/v1/otlp/v1/{traces,metrics,logs} — OTLP JSON 수집. 인증은 세션/API 키가
 아니라 전용 ingest 토큰(otlp_ingest_tokens.token_hash = sha256) —
 Authorization: Bearer <token> 또는 x-jobmate-ingest-key 헤더.
 토큰의 org_id로 orgctx.org_scope를 열어 스팬을 해당 조직에 귀속한다.
@@ -9,8 +9,9 @@ GET/POST /api/v1/otlp/tokens, POST /{id}/revoke — lead 이상(_lead_gate).
 토큰 원문은 발급 응답에 1회만 포함되고 token_hash는 어떤 응답에도
 나가지 않는다.
 
-GET /api/v1/observability/external-spans — lead 이상 조회(org 스코프는
-store의 orgctx 필터가 강제; sibling observability 엔드포인트와 동일 게이트).
+GET /api/v1/observability/external-spans|external-metrics|external-logs —
+lead 이상 조회(org 스코프는 store의 orgctx 필터가 강제; sibling
+observability 엔드포인트와 동일 게이트).
 
 주의: 보안 미들웨어(app.py)는 /api/*에 세션/키 인증을 요구한다 —
 인제스트 클라이언트가 Bearer ingest 토큰만 보내는 배포에서는
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import secrets
 from datetime import UTC, datetime
@@ -34,16 +36,23 @@ from pydantic import BaseModel, Field
 
 from ...security import hash_token
 from ...store import orgctx
-from ...store.otlp_ingest import external_span_json
+from ...store.otlp_ingest import (
+    external_log_json,
+    external_metric_json,
+    external_span_json,
+)
 from ...store.util import _iso, _now
 
 logger = logging.getLogger("jobmate.api")
 
 # ---- 인제스트 가드 ----
 _MAX_SPANS_PER_REQUEST = 1000
+# spec 009 — metrics 데이터포인트/로그 레코드 각각의 요청당 상한.
+_MAX_SIGNAL_POINTS_PER_REQUEST = 5000
 _MAX_BODY_BYTES = 8 * 1024 * 1024
 _MAX_ATTRS_PER_SPAN = 64
 _MAX_ATTR_VALUE_CHARS = 4096
+_LOG_BODY_CHARS = 8 * 1024  # external_logs.body 인제스트 상한
 _INGEST_RATE_PER_MIN = 120  # 토큰당 분당 요청 상한(인메모리, 인스턴스 단위)
 
 # 민감 attribute 키 — 세그먼트 단위 매칭 후 메트릭 접미사 예외 적용.
@@ -128,8 +137,12 @@ def _otlp_attr_value(v: Any, _depth: int = 0) -> Any:
     dict를 기대). 모든 문자열은 _MAX_ATTR_VALUE_CHARS로 절단.
     중첩은 _MAX_ATTR_DEPTH까지 — 초과 시 문자열 repr로 절단 저장."""
     if _depth >= _MAX_ATTR_DEPTH:
+        if isinstance(v, float) and not math.isfinite(v):
+            return _clip_str(str(v))
         return _clip_str(str(v)) if not isinstance(v, (int, float, bool)) else v
     if not isinstance(v, dict):
+        if isinstance(v, float) and not math.isfinite(v):
+            return _clip_str(str(v))
         return _clip_str(str(v)) if not isinstance(v, (int, float, bool)) else v
     if "stringValue" in v:
         return _clip_str(str(v.get("stringValue")))
@@ -144,9 +157,11 @@ def _otlp_attr_value(v: Any, _depth: int = 0) -> Any:
     if "doubleValue" in v:
         raw = v.get("doubleValue")
         try:
-            return float(str(raw))
+            f = float(str(raw))
         except (TypeError, ValueError):
             return _clip_str(str(raw))
+        # NaN/Infinity는 strict JSON을 깨므로 문자열로 보존
+        return f if math.isfinite(f) else _clip_str(str(raw))
     if "arrayValue" in v:
         vals = (v.get("arrayValue") or {}).get("values") or []
         try:
@@ -173,10 +188,11 @@ def _otlp_attr_value(v: Any, _depth: int = 0) -> Any:
         return ""
 
 
-def _span_attributes(span: dict[str, Any]) -> dict[str, Any]:
-    """span.attributes → 평탄 dict. 민감 키 제외, 64개·값 4KB 상한."""
+def _otlp_attributes(obj: dict[str, Any]) -> dict[str, Any]:
+    """OTLP key-value 리스트(span/dataPoint/logRecord 공용) → 평탄 dict.
+    민감 키 제외, 64개·값 4KB 상한."""
     attrs: dict[str, Any] = {}
-    for item in span.get("attributes") or []:
+    for item in obj.get("attributes") or []:
         if len(attrs) >= _MAX_ATTRS_PER_SPAN:
             break
         if not isinstance(item, dict):
@@ -289,7 +305,7 @@ def _process_otlp_body(store: Any, body: bytes, token_row: dict[str, Any]) -> tu
             if not span_id:
                 rejected += 1
                 continue
-            attrs = _span_attributes(sp)
+            attrs = _otlp_attributes(sp)
             run_hint = ""
             for k, v in attrs.items():
                 if k.lower() == "jobmate.run_id":
@@ -323,6 +339,263 @@ def _process_otlp_body(store: Any, body: bytes, token_row: dict[str, Any]) -> tu
     return "ok", {"accepted": accepted, "rejected": rejected}
 
 
+# ---- spec 009: metrics/logs 파싱 ----
+
+# OTLP severityNumber → 표준 severity 이름. 범위: 1-4 TRACE, 5-8 DEBUG,
+# 9-12 INFO, 13-16 WARN, 17-20 ERROR, 21-24 FATAL (severityText 없을 때 폴백).
+_SEVERITY_NUMBER_NAMES = {
+    **{i: "TRACE" for i in range(1, 5)},
+    **{i: "DEBUG" for i in range(5, 9)},
+    **{i: "INFO" for i in range(9, 13)},
+    **{i: "WARN" for i in range(13, 17)},
+    **{i: "ERROR" for i in range(17, 21)},
+    **{i: "FATAL" for i in range(21, 25)},
+}
+
+# metric 블록 키 → 저장용 metric_type. 한 metric이 여러 종류를 가질 수 있어
+# 등장 순서대로 각각 펼친다.
+_METRIC_KIND_MAP = (
+    ("gauge", "gauge"),
+    ("sum", "sum"),
+    ("histogram", "histogram"),
+    ("summary", "summary"),
+    ("exponentialHistogram", "exponential_histogram"),
+)
+
+
+def _iter_otlp_metric_points(payload: Any) -> list[dict[str, Any]]:
+    """OTLP JSON → 평탄화된 데이터포인트 리스트.
+    항목: {name, unit, type, dp, metric} — resource 속성은 span과 마찬가지로
+    현재 스키마가 지원하지 않아 병합하지 않는다."""
+    points: list[dict[str, Any]] = []
+    if not isinstance(payload, dict):
+        return points
+    for rm in payload.get("resourceMetrics") or []:
+        if not isinstance(rm, dict):
+            continue
+        for sm in rm.get("scopeMetrics") or []:
+            if not isinstance(sm, dict):
+                continue
+            for m in sm.get("metrics") or []:
+                if not isinstance(m, dict):
+                    continue
+                name = str(m.get("name") or "")[:500]
+                unit = str(m.get("unit") or "")[:100]
+                for kind_key, mtype in _METRIC_KIND_MAP:
+                    block = m.get(kind_key)
+                    if not isinstance(block, dict):
+                        continue
+                    for dp in block.get("dataPoints") or []:
+                        if isinstance(dp, dict):
+                            points.append(
+                                {"name": name, "unit": unit, "type": mtype, "dp": dp, "metric": m}
+                            )
+    return points
+
+
+def _iter_otlp_log_records(payload: Any) -> list[dict[str, Any]]:
+    """OTLP JSON → logRecord dict 리스트(구조 결손은 관대하게 건너뜀)."""
+    records: list[dict[str, Any]] = []
+    if not isinstance(payload, dict):
+        return records
+    for rl in payload.get("resourceLogs") or []:
+        if not isinstance(rl, dict):
+            continue
+        for sl in rl.get("scopeLogs") or []:
+            if not isinstance(sl, dict):
+                continue
+            for rec in sl.get("logRecords") or []:
+                if isinstance(rec, dict):
+                    records.append(rec)
+    return records
+
+
+def _finite_or_none(v: Any) -> float | int | None:
+    """수치 변환 + 비유한(NaN/±Inf) 거부 — 비유한 값은 JSON 응답을 오염시킨다."""
+    try:
+        f = float(str(v))
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _dp_numeric_value(dp: dict[str, Any]) -> float | int | None:
+    """gauge/sum 데이터포인트의 asDouble/asInt → 수치. 없거나 비유한이면 None."""
+    if "asDouble" in dp:
+        return _finite_or_none(dp.get("asDouble"))
+    if "asInt" in dp:
+        try:
+            return int(str(dp.get("asInt")))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _metric_row(item: dict[str, Any], oid: str) -> dict[str, Any] | None:
+    """평탄화된 데이터포인트 → external_metrics insert row. 값이 없으면 None."""
+    dp = item["dp"]
+    mtype = item["type"]
+    attrs = _otlp_attributes(dp)
+    value: float | int | None
+    if mtype == "histogram":
+        # 버킷 원문 대신 요약만 저장 — value=count, attributes에 합계/개수/temporality.
+        # aggregationTemporality는 데이터포인트가 아니라 histogram 블록 레벨 필드다.
+        value = dp.get("count")
+        try:
+            value = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            value = None
+        attrs["sum"] = _finite_or_none(dp.get("sum"))
+        attrs["bucket_count"] = len(dp.get("bucketCounts") or [])
+        hist_block = item["metric"].get("histogram")
+        attrs["temporality"] = (
+            hist_block.get("aggregationTemporality") if isinstance(hist_block, dict) else None
+        )
+    elif mtype in ("summary", "exponential_histogram"):
+        value = dp.get("count")
+        try:
+            value = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            value = None
+        if mtype == "exponential_histogram":
+            exp_block = item["metric"].get("exponentialHistogram")
+            attrs["temporality"] = (
+                exp_block.get("aggregationTemporality") if isinstance(exp_block, dict) else None
+            )
+            attrs["sum"] = _finite_or_none(dp.get("sum"))
+    else:
+        value = _dp_numeric_value(dp)
+        if mtype == "sum":
+            sum_block = item["metric"].get("sum") or {}
+            if isinstance(sum_block, dict):
+                attrs["isMonotonic"] = bool(sum_block.get("isMonotonic"))
+                attrs["aggregationTemporality"] = sum_block.get("aggregationTemporality")
+    if value is None:
+        return None
+    return {
+        "metric_name": item["name"],
+        "metric_type": mtype,
+        "value": value,
+        "unit": item["unit"],
+        "attributes": attrs,
+        "timestamp": _nanos_iso(dp.get("timeUnixNano")) or _iso(_now()),
+        "org_id": oid,
+    }
+
+
+def _log_body_text(v: Any) -> str:
+    """logRecord.body(AnyValue) → 문자열, _LOG_BODY_CHARS 상한."""
+    if isinstance(v, dict) and "stringValue" in v:
+        return _clip_str(str(v.get("stringValue")), _LOG_BODY_CHARS)
+    return _clip_str(str(_otlp_attr_value(v)), _LOG_BODY_CHARS)
+
+
+def _log_row(rec: dict[str, Any], oid: str) -> dict[str, Any]:
+    """logRecord → external_logs insert row."""
+    sev_num_raw = rec.get("severityNumber")
+    try:
+        sev_num = int(str(sev_num_raw)) if sev_num_raw is not None else None
+    except (TypeError, ValueError):
+        sev_num = None
+    # severityNumber가 있으면 표준 버킷명을 우선 — severityText는 표현이
+    # 제각각("warning"/"WARN"/"err")이라 필터 매칭이 불가능해진다.
+    # severityText 원문은 attributes.severityText로 보존한다.
+    sev_num_name = _SEVERITY_NUMBER_NAMES.get(sev_num or 0, "")
+    sev_text_raw = str(rec.get("severityText") or "").strip()
+    attrs = _otlp_attributes(rec)
+    if sev_text_raw:
+        attrs.setdefault("severityText", sev_text_raw[:40])
+    severity = sev_num_name or sev_text_raw.upper()[:40]
+    return {
+        "trace_id": str(rec.get("traceId") or rec.get("trace_id") or "")[:128],
+        "span_id": str(rec.get("spanId") or rec.get("span_id") or "")[:128],
+        "severity": severity,
+        "severity_number": sev_num,
+        "body": _log_body_text(rec.get("body")),
+        "attributes": attrs,
+        "timestamp": (
+            _nanos_iso(rec.get("timeUnixNano"))
+            or _nanos_iso(rec.get("observedTimeUnixNano"))
+            or _iso(_now())
+        ),
+        "org_id": oid,
+    }
+
+
+def _process_otlp_metrics_body(
+    store: Any, body: bytes, token_row: dict[str, Any]
+) -> tuple[str, Any]:
+    """metrics 인제스트 본문 파싱 + external_metrics 쓰기 — 동기 작업."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return "error", (400, "invalid_json", "request body is not valid JSON")
+
+    points = _iter_otlp_metric_points(payload)
+    if len(points) > _MAX_SIGNAL_POINTS_PER_REQUEST:
+        return "error", (
+            413,
+            "too_many_datapoints",
+            f"data point count exceeds {_MAX_SIGNAL_POINTS_PER_REQUEST}",
+        )
+
+    oid = str(token_row.get("org_id") or "")
+    accepted = 0
+    rejected = 0
+    rows: list[dict[str, Any]] = []
+    with orgctx.org_scope(oid):
+        for item in points:
+            row = _metric_row(item, oid)
+            if row is None:
+                rejected += 1
+            else:
+                rows.append(row)
+        accepted = store.insert_external_metrics(rows)
+        store.touch_otlp_ingest_token(str(token_row["id"]))
+    logger.info(
+        "otlp metrics ingest org=%s token=%s accepted=%d rejected=%d",
+        oid,
+        str(token_row.get("id") or "")[:12],
+        accepted,
+        rejected,
+    )
+    return "ok", {"accepted": accepted, "rejected": rejected}
+
+
+def _process_otlp_logs_body(store: Any, body: bytes, token_row: dict[str, Any]) -> tuple[str, Any]:
+    """logs 인제스트 본문 파싱 + external_logs 쓰기 — 동기 작업."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return "error", (400, "invalid_json", "request body is not valid JSON")
+
+    records = _iter_otlp_log_records(payload)
+    if len(records) > _MAX_SIGNAL_POINTS_PER_REQUEST:
+        return "error", (
+            413,
+            "too_many_records",
+            f"log record count exceeds {_MAX_SIGNAL_POINTS_PER_REQUEST}",
+        )
+
+    oid = str(token_row.get("org_id") or "")
+    accepted = 0
+    rejected = 0
+    rows: list[dict[str, Any]] = []
+    with orgctx.org_scope(oid):
+        for rec in records:
+            rows.append(_log_row(rec, oid))
+        accepted = store.insert_external_logs(rows)
+        store.touch_otlp_ingest_token(str(token_row["id"]))
+    logger.info(
+        "otlp logs ingest org=%s token=%s accepted=%d rejected=%d",
+        oid,
+        str(token_row.get("id") or "")[:12],
+        accepted,
+        rejected,
+    )
+    return "ok", {"accepted": accepted, "rejected": rejected}
+
+
 def register(app: FastAPI, ctx: Any) -> None:
     store = ctx.store
     err = ctx.err
@@ -333,28 +606,73 @@ def register(app: FastAPI, ctx: Any) -> None:
     _otlp_ingest_hits: dict[str, list[float]] = {}
     _otlp_auth_fail_hits: dict[str, list[float]] = {}
 
-    # ---- US1: OTLP ingest ----
-    @app.post("/api/v1/otlp/v1/traces")
-    async def otlp_ingest(request: Request) -> JSONResponse:
+    def _auth_ingest(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
+        """ingest 토큰 인증 — traces/metrics/logs 세 엔드포인트 공용.
+        반환: (token_row, None) 또는 (None, 에러 응답)."""
         cred = _ingest_credential(request)
         if not cred:
-            return err(401, "unauthorized", "ingest token required", request)
+            return None, err(401, "unauthorized", "ingest token required", request)
         token_row = store.find_otlp_ingest_token_by_hash(hash_token(cred))
         if token_row is None or token_row.get("revoked_at"):
             # 실패 인증 브루트포스 억제 — 클라이언트 IP당 분당 30회.
             ip = request.client.host if request.client else "-"
             if _rate_hit(_otlp_auth_fail_hits, f"ip:{ip}", 60.0, 30):
-                return err(429, "rate_limited", "too many failed ingest auth attempts", request)
+                return None, err(
+                    429, "rate_limited", "too many failed ingest auth attempts", request
+                )
             logger.warning("otlp ingest auth failed path=%s", request.url.path)
-            return err(401, "unauthorized", "invalid or revoked ingest token", request)
+            return None, err(401, "unauthorized", "invalid or revoked ingest token", request)
         if _rate_hit(_otlp_ingest_hits, f"tok:{token_row['id']}", 60.0, _INGEST_RATE_PER_MIN):
-            return err(429, "rate_limited", "ingest rate limit exceeded", request)
+            return None, err(429, "rate_limited", "ingest rate limit exceeded", request)
+        return token_row, None
+
+    # ---- US1: OTLP ingest ----
+    @app.post("/api/v1/otlp/v1/traces")
+    async def otlp_ingest(request: Request) -> JSONResponse:
+        token_row, failure = _auth_ingest(request)
+        if failure is not None:
+            return failure
+        assert token_row is not None  # failure가 None이면 토큰 행은 항상 존재
 
         body = await _read_body_capped(request)
         if body is None:
             return err(413, "payload_too_large", "request body too large", request)
         # JSON 파싱 + 스팬 정규화 + sqlite 쓰기는 동기 — 스레드로 오프로드.
         kind, payload = await run_in_threadpool(_process_otlp_body, store, body, token_row)
+        if kind == "error":
+            status, code, message = payload
+            return err(status, code, message, request)
+        return JSONResponse(content=payload)
+
+    # ---- spec 009 US1: OTLP metrics ingest ----
+    @app.post("/api/v1/otlp/v1/metrics")
+    async def otlp_ingest_metrics(request: Request) -> JSONResponse:
+        token_row, failure = _auth_ingest(request)
+        if failure is not None:
+            return failure
+        assert token_row is not None  # failure가 None이면 토큰 행은 항상 존재
+
+        body = await _read_body_capped(request)
+        if body is None:
+            return err(413, "payload_too_large", "request body too large", request)
+        kind, payload = await run_in_threadpool(_process_otlp_metrics_body, store, body, token_row)
+        if kind == "error":
+            status, code, message = payload
+            return err(status, code, message, request)
+        return JSONResponse(content=payload)
+
+    # ---- spec 009 US2: OTLP logs ingest ----
+    @app.post("/api/v1/otlp/v1/logs")
+    async def otlp_ingest_logs(request: Request) -> JSONResponse:
+        token_row, failure = _auth_ingest(request)
+        if failure is not None:
+            return failure
+        assert token_row is not None  # failure가 None이면 토큰 행은 항상 존재
+
+        body = await _read_body_capped(request)
+        if body is None:
+            return err(413, "payload_too_large", "request body too large", request)
+        kind, payload = await run_in_threadpool(_process_otlp_logs_body, store, body, token_row)
         if kind == "error":
             status, code, message = payload
             return err(status, code, message, request)
@@ -435,5 +753,52 @@ def register(app: FastAPI, ctx: Any) -> None:
             content={
                 "days": clamped_days,
                 "items": [external_span_json(r) for r in rows],
+            }
+        )
+
+    # ---- spec 009 US1: 외부 메트릭 조회 (lead+) ----
+    @app.get("/api/v1/observability/external-metrics")
+    def list_external_metrics(
+        request: Request,
+        days: int = 7,
+        metric_name: str = "",
+        limit: int = 200,
+    ) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        clamped_days = max(1, min(int(days), 90))
+        clamped_limit = max(1, min(int(limit), 1000))
+        rows = store.list_external_metrics(
+            days=clamped_days, metric_name=metric_name, limit=clamped_limit
+        )
+        return JSONResponse(
+            content={
+                "days": clamped_days,
+                "items": [external_metric_json(r) for r in rows],
+            }
+        )
+
+    # ---- spec 009 US2: 외부 로그 조회 (lead+) ----
+    @app.get("/api/v1/observability/external-logs")
+    def list_external_logs(
+        request: Request,
+        days: int = 7,
+        trace_id: str = "",
+        severity: str = "",
+        limit: int = 200,
+    ) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        clamped_days = max(1, min(int(days), 90))
+        clamped_limit = max(1, min(int(limit), 1000))
+        rows = store.list_external_logs(
+            days=clamped_days, trace_id=trace_id, severity=severity, limit=clamped_limit
+        )
+        return JSONResponse(
+            content={
+                "days": clamped_days,
+                "items": [external_log_json(r) for r in rows],
             }
         )
