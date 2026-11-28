@@ -203,6 +203,30 @@ def build_app_context(
         user = store.get_session_user(hash_token(token), idle_days=_session_idle_days())
         return user if user and email_allowed(user["email"]) else None
 
+    def _request_org_id(request: Request) -> str:
+        """요청의 조직 컨텍스트(spec 003 US3, NFR-001).
+
+        세션 사용자는 current_org_id — 멤버십을 재검증하고 stale이면
+        기본 조직으로 복귀한다. API 키 행위자는 소유 사용자의
+        기본 조직(FR-016 예외). env 키·로컬 오픈 모드는 기본 조직 —
+        명시적 폴백이 아니라 단일 테넌트 호환 경로다."""
+        user = _session_user(request)
+        if user is not None:
+            uid = str(user["id"])
+            oid = str(user.get("current_org_id") or "")
+            # 멤버십 이탈·조직 삭제 후 stale 컨텍스트는 기본 조직으로 복귀
+            if oid and store.get_org_membership(oid, uid) is not None:
+                return oid
+            return store.user_default_org_id(uid)
+        ka = _db_api_key(request)
+        if ka is not None:
+            owner = str(ka.get("owner_user_id") or "")
+            if owner:
+                return store.user_default_org_id(owner)
+        # env 키/무인증 로컬 — 첫 번째 활성 조직(대개 default 백필 조직)
+        orgs = store.list_organizations()
+        return str(orgs[0]["id"]) if orgs else ""
+
     def _normalize_role(role: Any) -> str:
         """role 정규화 — member|lead|admin. 레거시 'user'는 member로 취급."""
         r = str(role or "").strip().lower()

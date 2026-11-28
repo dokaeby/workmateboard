@@ -92,31 +92,78 @@ class MigrationStoreMixin:
         ② 조직이 하나도 없으면 default 조직 생성 + 기존 users 전원 멤버 등록,
         ③ current_org_id가 빈 세션을 기본 조직으로 채운다."""
         self._ensure_columns("auth_sessions", {"current_org_id": "TEXT NOT NULL DEFAULT ''"})
+        # spec 003 US3/FR-013 — 조직 스코프 테이블의 org_id 컬럼 보강
+        # (신규 DB는 SCHEMA가 생성, 기존 DB는 여기서 ALTER).
+        _ORG_SCOPED_TABLES = (
+            "runs",
+            "projects",
+            "tasks",
+            "agents",
+            "goals",
+            "evals",
+            "custom_workflows",
+            "workflow_revisions",
+            "connectors",
+            "routines",
+            "agent_permissions",
+            "agent_events",
+            "task_comments",
+            "task_artifacts",
+            "cost_events",
+            "approval_requests",
+            "recovery_actions",
+            "budget_policies",
+            "budget_incidents",
+            "inbox_items",
+            "notifications",
+            "reports",
+            "playbooks",
+            "dashboard_cards",
+            "share_links",
+            "workflow_schedules",
+            "triggers",
+            "event_links",
+            "llm_usage",
+            "scheduled_events",
+            "notification_jobs",
+            "message_extractions",
+            "email_summaries",
+            "agent_sessions",
+            "session_activity",
+            "audit_events",
+        )
+        for _t in _ORG_SCOPED_TABLES:
+            try:
+                self._ensure_columns(_t, {"org_id": "TEXT NOT NULL DEFAULT ''"})
+            except Exception as e:
+                logger.warning("org_id column ensure failed on %s: %s", _t, e)
         try:
             n_orgs = self._conn.execute("SELECT COUNT(*) AS n FROM organizations").fetchone()["n"]
             if n_orgs == 0:
+                # 사용자가 없어도 default 조직은 생성한다 — API 키/로컬 모드로
+                # 먼저 생긴 행이 존재하지 않는 조직 id로 백필되는 것을 막기 위함.
+                now = _iso(_now())
+                with self.tx() as c:
+                    c.execute(
+                        "INSERT INTO organizations(id,name,slug,kind,status,"
+                        "created_by,created_at,updated_at)"
+                        " VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            "defaultorg01",
+                            "Default",
+                            "default",
+                            "team",
+                            "active",
+                            "",
+                            now,
+                            now,
+                        ),
+                    )
                 users = self._conn.execute(
                     "SELECT id,email,display_name,role,created_at FROM users"
                     " ORDER BY created_at ASC, id ASC"
                 ).fetchall()
                 if users:
-                    now = _iso(_now())
-                    with self.tx() as c:
-                        c.execute(
-                            "INSERT INTO organizations(id,name,slug,kind,status,"
-                            "created_by,created_at,updated_at)"
-                            " VALUES(?,?,?,?,?,?,?,?)",
-                            (
-                                "defaultorg01",
-                                "Default",
-                                "default",
-                                "team",
-                                "active",
-                                "",
-                                now,
-                                now,
-                            ),
-                        )
                     # spec FR-015 — 가장 먼저 생성된 admin=org_owner,
                     # 나머지 admin=org_admin, member=member.
                     # admin이 없으면 최초 사용자를 owner로(조직 고아 방지).
@@ -138,6 +185,36 @@ class MigrationStoreMixin:
                             " WHERE current_org_id='' OR current_org_id IS NULL"
                         )
                     logger.info("org backfill: default org + %d members", len(users))
+                else:
+                    logger.info("org backfill: default org (no users yet)")
+            # spec FR-015③ — org_id=''인 기존 행을 기본 조직으로 백필.
+            # 활성 조직이 하나도 없으면(전부 soft-delete) 백필을 건너뛰어
+            # 존재하지 않는 조직 id를 찍지 않는다.
+            r = self._conn.execute(
+                "SELECT id FROM organizations WHERE status != 'deleted' ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            default_oid = str(r["id"]) if r else ""
+            if default_oid:
+                with self.tx() as c:
+                    for _t in _ORG_SCOPED_TABLES:
+                        try:
+                            c.execute(
+                                f"UPDATE {_t} SET org_id=? WHERE org_id=''",  # noqa: S608
+                                (default_oid,),
+                            )
+                        except Exception as e:
+                            logger.warning("org_id backfill failed on %s: %s", _t, e)
+            # spec 003 US3 — 조직 스코프 조회용 인덱스. SCHEMA의
+            # CREATE TABLE IF NOT EXISTS는 기존 DB에 컬럼을 추가하지 않으므로
+            # 인덱스는 컬럼 보강 이후인 여기서 생성한다(신규 DB도 동일 경로).
+            for _t in _ORG_SCOPED_TABLES:
+                try:
+                    with self.tx() as c:
+                        c.execute(
+                            f"CREATE INDEX IF NOT EXISTS idx_{_t}_org ON {_t}(org_id)"  # noqa: S608
+                        )
+                except Exception as e:
+                    logger.warning("org index failed on %s: %s", _t, e)
         except Exception as e:
             logger.warning("org backfill failed: %s", e)
 

@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS runs (
   agent_id TEXT,
   goal_id TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 
@@ -56,7 +58,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   action TEXT NOT NULL,
   object_ref TEXT NOT NULL DEFAULT '',
   detail TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id);
 
@@ -72,7 +76,9 @@ CREATE TABLE IF NOT EXISTS event_links (
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_links_msg ON event_links(gmail_message_id);
 
@@ -86,7 +92,9 @@ CREATE TABLE IF NOT EXISTS notifications (
   source_url TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  sent_at TEXT
+  sent_at TEXT,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 
 CREATE TABLE IF NOT EXISTS automation_state (
@@ -105,6 +113,7 @@ CREATE TABLE IF NOT EXISTS message_extractions (
   retry_at TEXT NOT NULL DEFAULT '',
   source_text TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (source_provider, source_id)
 );
 
@@ -127,7 +136,9 @@ CREATE TABLE IF NOT EXISTS scheduled_events (
   reason TEXT NOT NULL DEFAULT '',
   source_refs TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_events_status ON scheduled_events(status);
 CREATE INDEX IF NOT EXISTS idx_scheduled_events_source
@@ -142,7 +153,9 @@ CREATE TABLE IF NOT EXISTS notification_jobs (
   delivered_at TEXT,
   error_message TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_notification_jobs_fire ON notification_jobs(fire_at);
 
@@ -194,6 +207,7 @@ CREATE TABLE IF NOT EXISTS email_summaries (
   summary TEXT NOT NULL DEFAULT '',
   message_at TEXT NOT NULL DEFAULT '',
   checked_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (source_provider, source_id)
 );
 
@@ -308,6 +322,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   last_event_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
   UNIQUE(tool, session_key)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
@@ -332,7 +347,9 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   model TEXT NOT NULL,
   tokens_in INTEGER NOT NULL DEFAULT 0,
   tokens_out INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
 
@@ -345,7 +362,9 @@ CREATE TABLE IF NOT EXISTS workflow_schedules (
   enabled INTEGER NOT NULL DEFAULT 1,
   last_run_at TEXT,
   next_run_at TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_next ON workflow_schedules(next_run_at);
 
@@ -357,7 +376,9 @@ CREATE TABLE IF NOT EXISTS inbox_items (
   link TEXT NOT NULL DEFAULT '',
   read INTEGER NOT NULL DEFAULT 0,
   dedupe_key TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_items_created ON inbox_items(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_items_dedupe
@@ -370,7 +391,9 @@ CREATE TABLE IF NOT EXISTS session_activity (
   status TEXT NOT NULL DEFAULT '',
   doing TEXT,
   project TEXT,
-  recorded_at TEXT NOT NULL
+  recorded_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_session_activity_key
   ON session_activity(tool, session_key, recorded_at);
@@ -379,7 +402,9 @@ CREATE TABLE IF NOT EXISTS reports (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_reports_kind ON reports(kind, created_at);
 
@@ -390,7 +415,9 @@ CREATE TABLE IF NOT EXISTS playbooks (
   workflow TEXT NOT NULL,
   input TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 
 -- run_comments: run/diff 토론
@@ -414,7 +441,9 @@ CREATE TABLE IF NOT EXISTS connectors (
   has_token INTEGER NOT NULL DEFAULT 0,
   last_fetch_at TEXT,
   last_error TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 
 -- custom_workflows: 비주얼 빌더로 만든 WorkflowSpec 영속화
@@ -425,7 +454,9 @@ CREATE TABLE IF NOT EXISTS custom_workflows (
   spec TEXT NOT NULL,
   created_at TEXT NOT NULL,
   latest_revision INTEGER NOT NULL DEFAULT 0,
-  updated_at TEXT
+  updated_at TEXT,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 
 -- workflow_revisions: WorkflowSpec append-only 버전 이력 (Paperclip document
@@ -439,6 +470,7 @@ CREATE TABLE IF NOT EXISTS workflow_revisions (
   note TEXT NOT NULL DEFAULT '',
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
   UNIQUE(name, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_revisions_name ON workflow_revisions(name);
@@ -451,7 +483,9 @@ CREATE TABLE IF NOT EXISTS triggers (
   action TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   last_fired_at TEXT,
-  last_error TEXT NOT NULL DEFAULT ''
+  last_error TEXT NOT NULL DEFAULT '',
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 
 -- trigger_fires: trigger+session+state 전이당 1회 발사의 멱등 기록
@@ -475,7 +509,9 @@ CREATE TABLE IF NOT EXISTS share_links (
   payload TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
   expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 
 -- dashboard_cards: 사용자 등록 webhook/JSON 위젯
@@ -486,7 +522,9 @@ CREATE TABLE IF NOT EXISTS dashboard_cards (
   json_path TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_by TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 
 -- projects: 팀장 프로젝트 마스터 — 세션/run의 project 태그와 ci 매칭
@@ -505,7 +543,9 @@ CREATE TABLE IF NOT EXISTS projects (
   workspace_path TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT
+  updated_at TEXT,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
 
@@ -521,6 +561,7 @@ CREATE TABLE IF NOT EXISTS budget_policies (
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
   UNIQUE(scope_type, scope_id)
 );
 
@@ -537,7 +578,9 @@ CREATE TABLE IF NOT EXISTS budget_incidents (
   status TEXT NOT NULL DEFAULT 'open',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  resolved_at TEXT
+  resolved_at TEXT,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_budget_incidents_policy
   ON budget_incidents(policy_id, status);
@@ -578,7 +621,9 @@ CREATE TABLE IF NOT EXISTS agents (
   last_seen_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_agents_reports_to ON agents(reports_to);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
@@ -595,7 +640,9 @@ CREATE TABLE IF NOT EXISTS goals (
   target_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
@@ -610,7 +657,9 @@ CREATE TABLE IF NOT EXISTS evals (
   status TEXT NOT NULL DEFAULT 'active',
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_evals_name_lower ON evals(lower(name));
 CREATE INDEX IF NOT EXISTS idx_evals_status ON evals(status);
@@ -647,7 +696,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   checkout_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_agent_id);
@@ -665,7 +716,9 @@ CREATE TABLE IF NOT EXISTS agent_events (
   summary TEXT NOT NULL DEFAULT '',
   detail TEXT NOT NULL DEFAULT '{}',
   occurred_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, created_at);
@@ -700,7 +753,9 @@ CREATE TABLE IF NOT EXISTS cost_events (
   pricing_source TEXT NOT NULL DEFAULT '',
   pricing_version TEXT NOT NULL DEFAULT '',
   occurred_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_cost_events_agent ON cost_events(agent_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_cost_events_task ON cost_events(task_id, occurred_at);
@@ -727,7 +782,9 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   decision_comment TEXT NOT NULL DEFAULT '',
   decided_at TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_run ON approval_requests(run_id);
@@ -749,7 +806,9 @@ CREATE TABLE IF NOT EXISTS recovery_actions (
   resolution_note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  resolved_at TEXT
+  resolved_at TEXT,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_recovery_actions_status ON recovery_actions(status);
 CREATE INDEX IF NOT EXISTS idx_recovery_actions_source
@@ -765,7 +824,9 @@ CREATE TABLE IF NOT EXISTS task_comments (
   body TEXT NOT NULL,
   content_type TEXT NOT NULL DEFAULT 'text',
   created_at TEXT NOT NULL,
-  edited_at TEXT
+  edited_at TEXT,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 
@@ -781,7 +842,9 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
   size_bytes BIGINT,
   metadata TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_task_artifacts_task ON task_artifacts(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_artifacts_run ON task_artifacts(run_id);
@@ -802,7 +865,9 @@ CREATE TABLE IF NOT EXISTS routines (
   last_run_at TEXT,
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+
 );
 CREATE INDEX IF NOT EXISTS idx_routines_enabled_next ON routines(enabled, next_run_at);
 
@@ -827,6 +892,7 @@ CREATE TABLE IF NOT EXISTS agent_permissions (
   scope_type TEXT NOT NULL DEFAULT 'global',
   scope_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
   UNIQUE(agent_id, capability, scope_type, scope_id, effect)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_permissions_agent ON agent_permissions(agent_id);
@@ -935,5 +1001,6 @@ CREATE TABLE IF NOT EXISTS org_invitations (
 CREATE INDEX IF NOT EXISTS idx_org_invites_lookup
   ON org_invitations(org_id, email, status);
 CREATE INDEX IF NOT EXISTS idx_org_invites_email ON org_invitations(email);
+
 
 """
