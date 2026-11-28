@@ -21,6 +21,7 @@ import SystemHealth from "./components/SystemHealth";
 import UsersAdmin from "./components/UsersAdmin";
 import AccountSection from "./components/AccountSection";
 import PushSection from "./components/PushSection";
+import OtlpSection from "./components/OtlpSection";
 
 
 const SIDEBAR_ITEMS: SidebarMenuItem[] = NAV_ITEMS
@@ -387,6 +388,9 @@ export default function SettingsPage() {
 
       {/* ══ 푸시 알림 ══ */}
       <PushSection />
+
+      {/* ══ OTLP 인제스트 토큰 ══ */}
+      <OtlpSection />
 
       {/* ══ 시스템 상태 + 사용자 관리 (admin) ══ */}
       <div ref={setSystemEl}>

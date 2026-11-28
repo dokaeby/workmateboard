@@ -14,6 +14,7 @@ import {
 import { EvalForm } from "./form";
 import { ScoreBadge } from "./runs";
 import { EvalDetail } from "./detail";
+import { OnlineEvals } from "./online";
 import "./i18n";
 
 /** 워크플로 키 후보 — 내장 /workflows + 커스텀 /workflows/custom 병합 (triggers와 동일 패턴). */
@@ -180,6 +181,9 @@ export default function EvalsPage() {
           );
         })}
       </div>
+
+      {/* spec 008 US2 — 온라인 평가 스케줄 */}
+      <OnlineEvals workflowKeys={workflowKeys.data || []} />
     </div>
   );
 }

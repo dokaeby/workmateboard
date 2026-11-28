@@ -9,6 +9,7 @@ import { useAppStore } from "../../shared/store/appStore";
 import { useI18n, tx, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
+import ReportSubsCard from "./subscriptions";
 import "./i18n";
 
 
@@ -22,6 +23,7 @@ const KIND_TONE: Record<string, "muted" | "ok" | "warn" | "err" | "accent"> = {
   budget_alert: "warn",
   budget: "warn",
   recovery: "warn",
+  eval: "warn", // 온라인 평가 불합격 (spec 008)
 };
 
 // 링크의 ?view= 파라미터 → ViewKey (레거시 VIEW_ALIASES: reports→inbox)
@@ -55,6 +57,9 @@ function inboxItemTitle(it: InboxItem, t: TFn): string {
   ) {
     return tx(t, "inbox.t.budget", { pct: m[1], month: m[2] }, title);
   }
+  if ((m = title.match(/^온라인 평가 불합격: (.+)$/))) {
+    return tx(t, "inbox.t.evalFail", { name: m[1] }, title);
+  }
   if (kind === "report") {
     if ((m = title.match(/^(.+?) 리포트 \(트리거\)$/))) {
       return tx(t, "inbox.t.reportTrigger", { kind: RPT_KIND_EN[m[1]] || m[1] }, title);
@@ -68,7 +73,7 @@ function inboxItemTitle(it: InboxItem, t: TFn): string {
 
 function kindLabel(kind: string, t: (k: string, f?: string) => string): string {
   const key = `k.${kind || "notification"}`;
-  const known = ["notification", "session_attention", "approval", "schedule", "report", "budget_alert", "budget", "recovery"];
+  const known = ["notification", "session_attention", "approval", "schedule", "report", "budget_alert", "budget", "recovery", "eval"];
   return known.includes(kind) ? t(key, kind) : kind || t("k.notification", "알림");
 }
 
@@ -534,6 +539,7 @@ export default function InboxPage() {
       </Card>
       <AskCard />
       <ReportsCard />
+      <ReportSubsCard />
       <CardsCard />
     </div>
   );

@@ -30,6 +30,22 @@ interface TimelineStage {
 interface RunTimeline {
   run_id?: string;
   stages?: TimelineStage[];
+  // spec 008 US1 — OTLP로 수집된 외부 스팬 (jobmate.run_id 링크된 것만 표시)
+  external_spans?: ExternalSpan[];
+}
+
+/** 외부 계측 스팬 — OTLP ingest 결과. attributes는 gen_ai / llm 시맨틱 컨벤션. */
+interface ExternalSpan {
+  id?: string;
+  trace_id?: string;
+  span_id?: string;
+  parent_span_id?: string | null;
+  name?: string;
+  kind?: string;
+  started_at?: string;
+  ended_at?: string | null;
+  run_id?: string | null;
+  attributes?: Record<string, unknown>;
 }
 
 const REPLAY_STEP_MS = 800;
@@ -72,24 +88,70 @@ const RUN_FILTERS = [
   { key: "waiting_review", label: "tr.stWaitingReview" },
 ] as const;
 
-/** 워터폴 바 위치 — started/finished ISO를 전체 span 대비 %로 변환. */
-function barGeom(stages: TimelineStage[]) {
-  const times = stages
-    .map((s) => ({ start: s.started_at ? Date.parse(s.started_at) : NaN, end: s.finished_at ? Date.parse(s.finished_at) : NaN }))
+/** 워터폴 바 위치 — started/finished ISO를 전체 span 대비 %로 변환.
+ *  stage와 외부 스팬을 같은 시간축에 올리기 위해 최소 형태만 요구한다. */
+function barGeom(
+  items: { started_at?: string; finished_at?: string; ended_at?: string | null; duration_ms?: number | null }[],
+) {
+  // stage는 finished_at, 외부 스팬은 ended_at을 종료 시각으로 쓴다.
+  const endOf = (s: { finished_at?: string; ended_at?: string | null }) =>
+    s.finished_at || s.ended_at || "";
+  const times = items
+    .map((s) => ({ start: s.started_at ? Date.parse(s.started_at) : NaN, end: endOf(s) ? Date.parse(endOf(s)) : NaN }))
     .filter((x) => isFinite(x.start));
   if (!times.length) return null;
   const t0 = Math.min(...times.map((x) => x.start));
   const t1 = Math.max(...times.map((x) => (isFinite(x.end) && x.end > x.start ? x.end : x.start + (x.end - x.start || 0))));
   const span = Math.max(1, t1 - t0);
-  return (s: TimelineStage) => {
+  return (s: { started_at?: string; finished_at?: string; ended_at?: string | null; duration_ms?: number | null }) => {
     const st = s.started_at ? Date.parse(s.started_at) : NaN;
-    const en = s.finished_at ? Date.parse(s.finished_at) : NaN;
+    const endRaw = endOf(s);
+    const en = endRaw ? Date.parse(endRaw) : NaN;
     if (!isFinite(st)) return null;
     const left = ((st - t0) / span) * 100;
     const dur = isFinite(en) && en > st ? en - st : (Number(s.duration_ms) || 0);
     const width = Math.max(1.5, (dur / span) * 100);
     return { left: Math.min(98, left), width: Math.min(100 - Math.min(98, left), width) };
   };
+}
+
+/** 외부 스팬 attributes 요약 — gen_ai / llm 시맨틱 컨벤션에서
+ *  model·토큰·비용을 골라 툴팁용 한 줄 문자열로 만든다. */
+const EXT_ATTR_KEYS: [string, string][] = [
+  ["gen_ai.request.model", "model"], ["gen_ai.model", "model"], ["llm.model", "model"],
+  ["gen_ai.response.model", "resp_model"],
+  ["gen_ai.usage.input_tokens", "in"], ["llm.usage.input_tokens", "in"],
+  ["gen_ai.usage.output_tokens", "out"], ["llm.usage.output_tokens", "out"],
+  ["gen_ai.usage.total_tokens", "tok"], ["llm.usage.total_tokens", "tok"],
+  ["gen_ai.usage.cost", "cost"], ["llm.usage.cost", "cost"],
+];
+
+function extAttrSummary(s: ExternalSpan): string {
+  const attrs = s.attributes || {};
+  const parts: string[] = [];
+  let model = "", tin = "", tout = "", cost = "";
+  for (const [key, label] of EXT_ATTR_KEYS) {
+    const v = attrs[key];
+    if (v == null || v === "") continue;
+    const txt = String(v);
+    if (label === "model" || label === "resp_model") { if (!model) model = txt; continue; }
+    if (label === "in") { tin = txt; continue; }
+    if (label === "out") { tout = txt; continue; }
+    if (label === "cost") { cost = txt; continue; }
+    parts.push(`${key}=${txt}`);
+  }
+  const tok = tin || tout
+    ? `${tin ? Number(tin).toLocaleString() + " in" : ""}${tin && tout ? " / " : ""}${tout ? Number(tout).toLocaleString() + " out" : ""}`
+    : "";
+  const head = [model, tok, cost ? usd(Number(cost)) : ""].filter(Boolean).join(" · ");
+  return [head, ...parts].filter(Boolean).join(" · ") || "-";
+}
+
+function extDurMs(s: ExternalSpan): number | null {
+  const st = s.started_at ? Date.parse(s.started_at) : NaN;
+  const en = s.ended_at ? Date.parse(s.ended_at) : NaN;
+  if (!isFinite(st)) return null;
+  return isFinite(en) && en > st ? en - st : null;
 }
 
 function StageDetail({ s }: { s: TimelineStage }) {
@@ -145,7 +207,9 @@ function Timeline({ runId }: { runId: string }) {
     refetchInterval: 15000,
   });
   const stages = useMemo(() => data?.stages || [], [data]);
-  const geom = useMemo(() => barGeom(stages), [stages]);
+  const extSpans = useMemo(() => data?.external_spans || [], [data]);
+  // 외부 스팬도 같은 시간축에 올리기 위해 geom은 두 목록을 합쳐 계산한다
+  const geom = useMemo(() => barGeom([...stages, ...extSpans]), [stages, extSpans]);
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [playing, setPlaying] = useState(false);
@@ -193,41 +257,49 @@ function Timeline({ runId }: { runId: string }) {
 
   if (isLoading) return <Spinner />;
   if (error) return <ErrorBox message={error instanceof Error ? error.message : String(error)} onRetry={() => refetch()} />;
-  if (!stages.length) return <Empty>{t("tr.noStages", "이 run에 기록된 stage가 없습니다")}</Empty>;
+  if (!stages.length && !extSpans.length) return <Empty>{t("tr.noStages", "이 run에 기록된 stage가 없습니다")}</Empty>;
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
         <span>{t("tr.stagesCount", "stage {n}개").replace("{n}", String(stages.length))}</span>
+        {extSpans.length > 0 && (
+          <Badge tone="accent">{t("tr.extCount", "외부 스팬 {n}개").replace("{n}", String(extSpans.length))}</Badge>
+        )}
         {hasCost && <span>· {t("tr.totalCost", "총 비용")} {usd(totalCost)}</span>}
         <span>· {t("tr.totalTokens", "총 토큰")} {totalTokens.toLocaleString()}</span>
-        <span className="flex-1" />
-        <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => setAll(expanded.size < stages.length)}>
-          {expanded.size < stages.length ? t("tr.expandAll", "모두 펼치기") : t("tr.collapseAll", "모두 접기")}
-        </Button>
-        {!playing && playIdx < 0 && (
-          <Button className="px-2.5 py-0.5 text-xs" onClick={() => { setPlayIdx(-1); setPlaying(true); }}>
-            ▶ {t("tr.replay", "재생")}
-          </Button>
-        )}
-        {playing && (
-          <Button variant="secondary" className="px-2.5 py-0.5 text-xs" onClick={() => setPlaying(false)}>
-            ⏸ {t("tr.replayStop", "정지")}
-          </Button>
-        )}
-        {!playing && playIdx >= stages.length && (
-          <Button variant="secondary" className="px-2.5 py-0.5 text-xs" onClick={() => { setPlayIdx(-1); setExpanded(new Set()); }}>
-            ↺ {t("tr.replayReset", "처음부터")}
-          </Button>
-        )}
-        {!playing && playIdx >= 0 && playIdx < stages.length && (
-          <Button className="px-2.5 py-0.5 text-xs" onClick={() => setPlaying(true)}>
-            ▶ {t("tr.replay", "재생")}
-          </Button>
+        {/* stage가 없으면(external span만 있는 run) 재생/펼치기 컨트롤은 숨긴다 */}
+        {stages.length > 0 && (
+          <>
+            <span className="flex-1" />
+            <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => setAll(expanded.size < stages.length)}>
+              {expanded.size < stages.length ? t("tr.expandAll", "모두 펼치기") : t("tr.collapseAll", "모두 접기")}
+            </Button>
+            {!playing && playIdx < 0 && (
+              <Button className="px-2.5 py-0.5 text-xs" onClick={() => { setPlayIdx(-1); setPlaying(true); }}>
+                ▶ {t("tr.replay", "재생")}
+              </Button>
+            )}
+            {playing && (
+              <Button variant="secondary" className="px-2.5 py-0.5 text-xs" onClick={() => setPlaying(false)}>
+                ⏸ {t("tr.replayStop", "정지")}
+              </Button>
+            )}
+            {!playing && playIdx >= stages.length && (
+              <Button variant="secondary" className="px-2.5 py-0.5 text-xs" onClick={() => { setPlayIdx(-1); setExpanded(new Set()); }}>
+                ↺ {t("tr.replayReset", "처음부터")}
+              </Button>
+            )}
+            {!playing && playIdx >= 0 && playIdx < stages.length && (
+              <Button className="px-2.5 py-0.5 text-xs" onClick={() => setPlaying(true)}>
+                ▶ {t("tr.replay", "재생")}
+              </Button>
+            )}
+          </>
         )}
       </div>
-      {playing && <div className="text-xs text-accent">{t("tr.replaying", "재생 중")} — {playIdx + 1}/{stages.length}</div>}
-      {!playing && playIdx >= stages.length && <div className="text-xs text-ok">{t("tr.replayDone", "재생 완료")}</div>}
+      {stages.length > 0 && playing && <div className="text-xs text-accent">{t("tr.replaying", "재생 중")} — {playIdx + 1}/{stages.length}</div>}
+      {stages.length > 0 && !playing && playIdx >= stages.length && <div className="text-xs text-ok">{t("tr.replayDone", "재생 완료")}</div>}
 
       {/* 재생 중 현재 단계 IO 패널 */}
       {replayStage && (
@@ -287,6 +359,56 @@ function Timeline({ runId }: { runId: string }) {
             );
           })}
         </div>
+
+        {/* 외부 스팬 — OTLP 인제스트된 계측. stage와 같은 시간축, 보라색 바로 구분 */}
+        {extSpans.length > 0 && (
+          <div className="mt-3 border-t border-border pt-2">
+            <div className="mb-1 flex items-center gap-1.5 px-1 text-xs font-semibold text-muted">
+              <svg className="h-3.5 w-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
+              </svg>
+              {t("tr.extSpans", "외부 스팬")}
+              <span className="font-normal">{t("tr.extSpansHint", "OTLP로 수집된 외부 계측")}</span>
+            </div>
+            <div className="space-y-1">
+              {extSpans.map((s, i) => {
+                const g = geom ? geom(s) : null;
+                const dur = extDurMs(s);
+                const key = s.id || `${s.trace_id || ""}:${s.span_id || i}`;
+                return (
+                  <div key={key} className="rounded-md border border-dashed border-accent-border bg-accent-soft/40">
+                    <div
+                      className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs"
+                      title={extAttrSummary(s)}
+                    >
+                      <Badge tone="accent">ext</Badge>
+                      <span className="min-w-0 flex-1 truncate font-medium text-ink">
+                        {s.name || s.span_id || "?"}
+                        {s.kind ? <span className="ml-1 text-muted">· {s.kind}</span> : null}
+                      </span>
+                      {s.trace_id && (
+                        <span className="hidden max-w-32 truncate font-mono text-muted sm:inline" title={s.trace_id}>
+                          {s.trace_id.slice(0, 12)}
+                        </span>
+                      )}
+                      <span className="shrink-0 text-muted">{dur != null ? fmtMs(dur) : "-"}</span>
+                    </div>
+                    {g && (
+                      <div className="relative mx-2 mb-1.5 h-2.5 overflow-hidden rounded bg-surface-hover">
+                        <div
+                          className="absolute top-0 h-full rounded bg-violet-500/80"
+                          style={{ left: `${g.left}%`, width: `${g.width}%` }}
+                          title={`${s.name || ""} · ${fmtTs(s.started_at)} · ${extAttrSummary(s)}`}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );
