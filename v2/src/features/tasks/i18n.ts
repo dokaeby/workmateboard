@@ -78,6 +78,18 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.close": "닫기",
     "common.refresh": "새로고침",
     "common.loading": "로딩…",
+    // spec 014 US4 — KPI/퍼널/진행 중 카드
+    "tasks.kpi.total": "전체 작업",
+    "tasks.kpi.active": "진행 중",
+    "tasks.kpi.attention": "승인·차단",
+    "tasks.kpi.done": "완료",
+    "tasks.kpi.sub": "최근 200건 기준",
+    "tasks.funnel.title": "실행 퍼널",
+    "tasks.funnel.note": "최근 30일 · received→executed",
+    "tasks.funnel.empty": "퍼널 데이터가 없습니다",
+    "tasks.funnel.unavailable": "퍼널 데이터를 불러오지 못했습니다",
+    "tasks.active.title": "진행 중 작업",
+    "tasks.active.elapsed": "경과",
   },
   en: {
     "tasks.title": "Tasks",
@@ -154,6 +166,18 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "common.close": "Close",
     "common.refresh": "Refresh",
     "common.loading": "Loading…",
+    // spec 014 US4 — KPI/funnel/active cards
+    "tasks.kpi.total": "All tasks",
+    "tasks.kpi.active": "In progress",
+    "tasks.kpi.attention": "Approval/blocked",
+    "tasks.kpi.done": "Done",
+    "tasks.kpi.sub": "last 200 items",
+    "tasks.funnel.title": "Run funnel",
+    "tasks.funnel.note": "last 30 days · received→executed",
+    "tasks.funnel.empty": "No funnel data",
+    "tasks.funnel.unavailable": "Could not load funnel data",
+    "tasks.active.title": "Active tasks",
+    "tasks.active.elapsed": "elapsed",
   },
 };
 

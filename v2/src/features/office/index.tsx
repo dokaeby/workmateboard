@@ -12,7 +12,7 @@ import {
   AttentionStrip, CostSection, ErrorSection, KpiCard, LiveRuns, SessionsSection,
 } from "./sections";
 import { ExternalTelemetry } from "./telemetry";
-import { FunnelSection, LiveAgentsSection, NotificationsSection, SwarmSection } from "./observability";
+import { FunnelSection, LiveAgentsSection, NotificationsSection, SwarmSection, ToolStatsSection } from "./observability";
 import "./i18n";
 
 function fmtSecs(v: number | null | undefined): string {
@@ -212,6 +212,11 @@ export default function OfficePage() {
       </div>
       <div id="office-swarm" className="scroll-mt-4">
         <SwarmSection />
+      </div>
+
+      {/* spec 012 — Tool 호출 통계 */}
+      <div id="office-toolstats" className="scroll-mt-4">
+        <ToolStatsSection />
       </div>
 
       {/* 외부 텔레메트리 — OTLP metrics/logs (lead+ 전용) */}

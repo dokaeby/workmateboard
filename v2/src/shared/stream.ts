@@ -11,7 +11,7 @@
  * 재발급 포함 재연결. document.hidden이어도 연결·무효화는 유지한다
  * (백그라운드 탭 갱신 목적; 서버 heartbeat가 연결을 유지).
  */
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiPost } from "./api/client";
 
@@ -47,6 +47,47 @@ function subscribeSse(fn: () => void): () => void {
 /** 헤더/상태등용 SSE 상태 구독 훅. */
 export function useSseStatus(): SseStatus {
   return useSyncExternalStore(subscribeSse, () => sseStatus);
+}
+
+/**
+ * SSE 데이터 이벤트 버스 — spec 013 US2 Bottom Event Dock용.
+ * useSseInvalidation이 여는 단일 EventSource 연결을 재사용한다
+ * (두 번째 연결을 만들지 않는다). 서버 이벤트: snapshot/run/stage/session.
+ * data는 JSON 파싱 결과(파싱 실패 시 null) — 행의 "ts" 필드는 서버가 제거해
+ * 보낸다. 구독자는 반드시 자기 렌더 경로에서만 사용하고, 해제는 자동.
+ */
+export interface SseEvent {
+  event: "snapshot" | "run" | "stage" | "session" | string;
+  data: unknown;
+}
+
+type SseEventHandler = (e: SseEvent) => void;
+const sseEventListeners = new Set<SseEventHandler>();
+
+export function subscribeSseEvents(fn: SseEventHandler): () => void {
+  sseEventListeners.add(fn);
+  return () => {
+    sseEventListeners.delete(fn);
+  };
+}
+
+function emitSseEvent(event: string, ev: Event) {
+  let data: unknown = null;
+  try {
+    data = JSON.parse((ev as MessageEvent).data);
+  } catch {
+    data = null;
+  }
+  for (const fn of sseEventListeners) fn({ event, data });
+}
+
+/** SSE 이벤트 구독 훅 — handler는 ref로 유지해 매 렌더 재구독하지 않는다. */
+export function useSseEvents(handler: SseEventHandler): void {
+  const ref = useRef(handler);
+  useEffect(() => {
+    ref.current = handler;
+  });
+  useEffect(() => subscribeSseEvents((e) => ref.current(e)), []);
 }
 
 /** run/stage 이벤트가 건드리는 queryKey prefix 목록 (invalidateQueries는 prefix 매칭). */
@@ -115,11 +156,11 @@ export function useSseInvalidation(enabled = true): void {
         es?.close();
         es = new EventSource(url);
         es.onopen = () => setSseStatus({ state: "online" });
-        es.addEventListener("run", () => { markEvent(); schedule(RUN_KEYS); });
-        es.addEventListener("stage", () => { markEvent(); schedule(RUN_KEYS); });
-        es.addEventListener("session", () => { markEvent(); schedule(SESSION_KEYS); });
+        es.addEventListener("run", (ev) => { markEvent(); schedule(RUN_KEYS); emitSseEvent("run", ev); });
+        es.addEventListener("stage", (ev) => { markEvent(); schedule(RUN_KEYS); emitSseEvent("stage", ev); });
+        es.addEventListener("session", (ev) => { markEvent(); schedule(SESSION_KEYS); emitSseEvent("session", ev); });
         // 연결 직후 전체 스냅샷 — 활성 쿼리 1회 무효화로 최신 상태 반영
-        es.addEventListener("snapshot", () => { markEvent(); schedule(ALL_KEYS); });
+        es.addEventListener("snapshot", (ev) => { markEvent(); schedule(ALL_KEYS); emitSseEvent("snapshot", ev); });
         es.onerror = () => {
           // 서버 종료/토큰 만료 — 자동 재연결 대신 닫고 10초 후 재발급 재접속
           es?.close();

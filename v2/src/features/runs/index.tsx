@@ -8,14 +8,73 @@ import "./i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
 import { useAppStore } from "../../shared/store/appStore";
-import { useRunsList, useRunDetail, useRunDiff, useRunAudit } from "./hooks";
+import { useRunsList, useRunDetail, useRunDiff, useRunAudit, useDebounced } from "./hooks";
 
 
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "err" | "accent" | "muted"> = {
   succeeded: "ok", completed: "ok", running: "accent", queued: "muted",
   waiting_approval: "warn", waiting_review: "warn", failed: "err", rejected: "err",
+  cancelled: "muted", budget_exhausted: "err", needs_human: "warn",
 };
+
+// spec 012 US3 — /runs status 파라미터 어휘 (store/_STATS_FAILED·_RETRYABLE 기준)
+const FILTER_STATUSES = [
+  "queued", "running", "waiting_approval", "completed",
+  "failed", "cancelled", "rejected", "budget_exhausted", "needs_human",
+] as const;
+const FILTER_DAYS = ["7", "30", "90"] as const;
+const inputCls = "rounded-md border border-border bg-surface px-2 py-1 text-xs text-ink placeholder:text-muted";
+
+function RunsFilterBar({ status, days, q, agent, onStatus, onDays, onQ, onAgent }: {
+  status: string; days: string; q: string; agent: string;
+  onStatus: (v: string) => void; onDays: (v: string) => void;
+  onQ: (v: string) => void; onAgent: (v: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-3">
+      <select
+        value={status}
+        onChange={(e) => onStatus(e.target.value)}
+        aria-label={t("runs.filter.status", "상태")}
+        className={inputCls}
+      >
+        <option value="">{t("runs.filter.all", "전체")}</option>
+        {FILTER_STATUSES.map((s) => (
+          <option key={s} value={s}>{t(`runs.status.${s}`, s)}</option>
+        ))}
+      </select>
+      <select
+        value={days}
+        onChange={(e) => onDays(e.target.value)}
+        aria-label={t("runs.filter.days", "기간")}
+        className={inputCls}
+      >
+        <option value="">{t("runs.filter.allDays", "전체 기간")}</option>
+        {FILTER_DAYS.map((d) => (
+          <option key={d} value={d}>{t(`common.last${d}`, `최근 ${d}일`)}</option>
+        ))}
+      </select>
+      <input
+        type="search"
+        value={q}
+        onChange={(e) => onQ(e.target.value)}
+        placeholder={t("runs.filter.q", "워크플로/제목 검색")}
+        aria-label={t("runs.filter.q", "워크플로/제목 검색")}
+        className={`${inputCls} w-48 max-w-full`}
+      />
+      <input
+        type="search"
+        value={agent}
+        onChange={(e) => onAgent(e.target.value)}
+        placeholder={t("runs.filter.agent", "에이전트 ID")}
+        aria-label={t("runs.filter.agent", "에이전트 ID")}
+        className={`${inputCls} w-40 max-w-full font-mono`}
+      />
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status: string }) {
   return <Badge tone={STATUS_TONE[status] ?? "muted"}>{status}</Badge>;
@@ -237,6 +296,8 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
   const { data: run, isLoading, error, refetch } = useRunDetail(runId);
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
+  // 승인/거절은 lead+ 전용 — member에게는 버튼 자체를 숨긴다(403 alert 방지)
+  const canApprove = roleAllows2(useAppStore((s) => s.role), "lead");
 
   const decide = async (decision: "approve" | "reject") => {
     setBusy(true);
@@ -280,7 +341,7 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
         {run.goal_id && <><dt>{t("runs.goal", "목표")}</dt><dd className="truncate font-mono">{run.goal_id}</dd></>}
         {run.error && <><dt>{t("runs.error", "오류")}</dt><dd className="text-err">{run.error}</dd></>}
       </dl>
-      {run.status === "waiting_approval" && (
+      {run.status === "waiting_approval" && canApprove && (
         <div className="flex gap-2">
           <Button className="px-3 py-1 text-xs" disabled={busy} onClick={() => decide("approve")}>
             {t("appr.approve", "승인")}
@@ -377,7 +438,16 @@ export default function RunsPage() {
     () => new URLSearchParams(window.location.search).get("run"),
   );
   const [showNew, setShowNew] = useState(false);
-  const { data, isLoading, error, refetch } = useRunsList();
+  // spec 012 US3 — 목록 필터 (q/agent는 300ms 디바운스 후 쿼리 파라미터로 전달)
+  const [fStatus, setFStatus] = useState("");
+  const [fDays, setFDays] = useState("");
+  const [fQ, setFQ] = useState("");
+  const [fAgent, setFAgent] = useState("");
+  const debQ = useDebounced(fQ.trim());
+  const debAgent = useDebounced(fAgent.trim());
+  const { data, isLoading, error, refetch } = useRunsList({
+    status: fStatus, days: fDays, q: debQ, agent: debAgent,
+  });
   const role = useAppStore((s) => s.role);
 
   return (
@@ -391,6 +461,10 @@ export default function RunsPage() {
       </PageHead>
       {showNew && <NewRunForm onDone={() => setShowNew(false)} />}
       <RunStatsCard />
+      <RunsFilterBar
+        status={fStatus} days={fDays} q={fQ} agent={fAgent}
+        onStatus={setFStatus} onDays={setFDays} onQ={setFQ} onAgent={setFAgent}
+      />
       <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_360px]">
         <Card>
           {isLoading && <Spinner />}

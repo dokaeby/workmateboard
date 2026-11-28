@@ -7,6 +7,7 @@ import { apiGet, ApiError } from "../../shared/api/client";
 import { useI18n } from "../../shared/i18n";
 import { Badge, Button, Card, Empty, Spinner, ErrorBox } from "../../shared/ui";
 import { fmtTs, jsonSummary } from "../../shared/lib/format";
+import { maskSecrets } from "../../shared/lib/redact";
 import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import type {
   ExternalLog, ExternalLogsResponse, ExternalMetric, ExternalMetricsResponse,
@@ -94,7 +95,7 @@ function MetricTable({ items, isLoading, isFetching, error, onRetry }: {
           {items.map((m, i) => (
             <tr key={m.id ?? i} className="border-t border-border">
               <td className="max-w-64 truncate py-1.5 pr-2 font-mono text-ink"
-                  title={`${m.metric_name || "-"}${m.attributes ? `\n${jsonSummary(m.attributes)}` : ""}`}>
+                  title={`${m.metric_name || "-"}${m.attributes ? `\n${maskSecrets(jsonSummary(m.attributes))}` : ""}`}>
                 {m.metric_name || "-"}
               </td>
               <td className="py-1.5 pr-2">
@@ -140,7 +141,7 @@ function LogTable({ items, isLoading, isFetching, error, onRetry }: {
         <tbody>
           {items.map((l, i) => {
             const sev = severityOf(l);
-            const body = String(l.body ?? "-");
+            const body = maskSecrets(String(l.body ?? "-"));
             const trace = String(l.trace_id || "");
             return (
               <tr key={l.id ?? i} className="border-t border-border align-top">
@@ -173,9 +174,11 @@ export function ExternalTelemetry() {
   const [metricName, setMetricName] = useState("");
   const [traceId, setTraceId] = useState("");
   const [severity, setSeverity] = useState("");
+  const [logQuery, setLogQuery] = useState("");
   const debMetric = useDebounced(metricName.trim());
   const debTrace = useDebounced(traceId.trim());
   const debSeverity = useDebounced(severity);
+  const debLogQuery = useDebounced(logQuery.trim(), 300);
 
   const metricsQ = useQuery({
     queryKey: ["observability", "external-metrics", days, debMetric],
@@ -187,9 +190,9 @@ export function ExternalTelemetry() {
     retry: false,
   });
   const logsQ = useQuery({
-    queryKey: ["observability", "external-logs", days, debTrace, debSeverity],
+    queryKey: ["observability", "external-logs", days, debTrace, debSeverity, debLogQuery],
     queryFn: () => apiGet<ExternalLogsResponse>(
-      `/observability/external-logs?days=${encodeURIComponent(days)}&limit=100${debTrace ? `&trace_id=${encodeURIComponent(debTrace)}` : ""}${debSeverity ? `&severity=${encodeURIComponent(debSeverity)}` : ""}`,
+      `/observability/external-logs?days=${encodeURIComponent(days)}&limit=100${debTrace ? `&trace_id=${encodeURIComponent(debTrace)}` : ""}${debSeverity ? `&severity=${encodeURIComponent(debSeverity)}` : ""}${debLogQuery ? `&q=${encodeURIComponent(debLogQuery)}` : ""}`,
     ),
     enabled: canLead && tab === "logs",
     staleTime: 30000,
@@ -261,6 +264,14 @@ export function ExternalTelemetry() {
               <div className="mb-2 flex flex-wrap gap-2">
                 <input
                   type="search"
+                  value={logQuery}
+                  onChange={(e) => setLogQuery(e.target.value)}
+                  placeholder={t("office.extTelemetry.filterQuery", "본문·심각도 검색")}
+                  aria-label={t("office.extTelemetry.filterQuery", "본문·심각도 검색")}
+                  className={`${inputCls} w-56 max-w-full`}
+                />
+                <input
+                  type="search"
                   value={traceId}
                   onChange={(e) => setTraceId(e.target.value)}
                   placeholder={t("office.extTelemetry.filterTrace", "trace_id 필터")}
@@ -279,6 +290,12 @@ export function ExternalTelemetry() {
                   ))}
                 </select>
               </div>
+              {!logsQ.isLoading && !logsQ.error && (
+                <div className="mb-1 text-[10px] text-muted">
+                  {t("office.extTelemetry.logCount", "{n}건")
+                    .replace("{n}", String(logItems.length))}
+                </div>
+              )}
               <LogTable
                 items={logItems}
                 isLoading={logsQ.isLoading}

@@ -13,6 +13,9 @@ import { Header } from "./components/Header";
 import { GlobalHeader } from "./components/GlobalHeader";
 import { MobileBar } from "./components/MobileBar";
 import { LoginOverlay } from "./components/LoginOverlay";
+import { InspectorPanel } from "./components/InspectorPanel";
+import { EventDock } from "./components/EventDock";
+import { CommandPalette } from "./components/CommandPalette";
 
 registerI18n(APP_I18N, { core: true });
 
@@ -36,7 +39,7 @@ async function fetchPrefs(): Promise<Prefs> {
 }
 
 export default function App() {
-  const { view, setView, role, setRole, setPrefs } = useAppStore();
+  const { view, setView, role, setRole, setPrefs, setPaletteOpen } = useAppStore();
   const [unauth, setUnauth] = useState(false);
   // 로그인 오버레이를 X로 닫은 상태 — 앱 셸은 유지하고 배너로 재유도
   const [authDismissed, setAuthDismissed] = useState(false);
@@ -86,6 +89,18 @@ export default function App() {
   // 미인증/로그아웃 상태에서는 연결하지 않는다 (401 재시도 루프 방지).
   useSseInvalidation(!unauth && me.data != null);
 
+  // spec 013 US3 — Cmd/Ctrl+K Command Palette 전역 핫키
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(!useAppStore.getState().paletteOpen);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setPaletteOpen]);
+
   // 401 이벤트 → role 초기화 + 로그인 화면 유도
   useEffect(() => {
     const onUnauth = () => { setRole(null); setUnauth(true); };
@@ -111,12 +126,18 @@ export default function App() {
       <Header />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col pb-16 lg:pb-0">
           <main className="min-w-0 flex-1 overflow-y-auto pb-16 lg:pb-0">
             <ViewLoader view={view} />
           </main>
+          {/* spec 013 US2 — 하단 실시간 이벤트 도크 */}
+          <EventDock />
         </div>
+        {/* spec 013 US1 — 우측 Inspector 패널 (모바일은 전체화면 오버레이) */}
+        <InspectorPanel />
       </div>
+      {/* spec 013 US3 — Command Palette (Cmd+K) */}
+      <CommandPalette />
       <MobileBar />
       {/* 로그인 오버레이를 닫은 상태 — 하단 배너로 재로그인 유도 (레거시 #auth-needed 패리티) */}
       {needsAuth && authDismissed && (

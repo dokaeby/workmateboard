@@ -10,7 +10,7 @@ import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import { TrendArea } from "./charts";
 import { StatusBadge } from "./sections";
 import {
-  useObsFunnel, useObsLiveAgents, useObsNotifications, useObsSwarm,
+  useObsFunnel, useObsLiveAgents, useObsNotifications, useObsSwarm, useObsToolStats,
 } from "./queries";
 import type {
   ObsLiveAgent, ObsSwarmEdge, ObsSwarmNode,
@@ -564,6 +564,145 @@ export function SwarmSection() {
         {() => (
           !nodes.length ? <Empty>{t("office.swarm.empty", "표시할 스웜 데이터가 없습니다")}</Empty>
             : <SwarmGraph nodes={nodes} edges={edges} />
+        )}
+      </QueryGate>
+    </Card>
+  );
+}
+
+// ---------- Tool 호출 통계 (spec 012 US2) ----------
+
+function fmtMs(v: number | null | undefined): string {
+  const n = Number(v);
+  if (v == null || !isFinite(n)) return "-";
+  return n >= 1000 ? `${(n / 1000).toFixed(2)}s` : `${n.toFixed(1)}ms`;
+}
+
+/** error_rate는 계약상 비율(0~1). 백엔드가 %로 보내는 경우(>1)도 그대로 표시되도록
+ *  1 이하면 ×100 해서 %로 환산한다. */
+function errorRatePct(v: number | null | undefined): number | null {
+  const n = Number(v);
+  if (v == null || !isFinite(n)) return null;
+  return n <= 1 ? n * 100 : n;
+}
+
+function fmtErrorRate(v: number | null | undefined): string {
+  const pct = errorRatePct(v);
+  return pct == null ? "-" : `${pct.toFixed(2)}%`;
+}
+
+export function ToolStatsSection() {
+  const { t } = useI18n();
+  const [days, setDays] = useState("7");
+  const q = useObsToolStats(Number(days));
+  const role = useAppStore((s) => s.role);
+
+  const byKind = useMemo(
+    () => (Array.isArray(q.data?.by_kind) ? q.data.by_kind : []),
+    [q.data],
+  );
+  const byName = useMemo(
+    () => (Array.isArray(q.data?.by_name) ? q.data.by_name : []),
+    [q.data],
+  );
+  const kindMax = Math.max(1e-9, ...byKind.map((x) => Number(x.count) || 0));
+
+  return (
+    <Card
+      title={t("office.toolStats.title", "Tool 호출 통계")}
+      actions={<DaysSelect days={days} setDays={setDays} label={t("office.toolStats.daysAria", "조회 기간")} />}
+    >
+      <QueryGate q={q} forbidden={t("office.toolStats.forbidden", "권한 부족 — Tool 통계는 lead 역할에서 확인할 수 있습니다")} blocked={!roleAllows("lead", role)}>
+        {(d) => (
+          <>
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              <div className="rounded-lg border border-border bg-surface-hover px-2.5 py-1.5">
+                <div className="text-[10px] text-muted">{t("office.toolStats.totalCalls", "총 호출")}</div>
+                <div className="text-base font-semibold tabular-nums text-ink">
+                  {Number(d.total_calls ?? 0).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-lg border border-border bg-surface-hover px-2.5 py-1.5">
+                <div className="text-[10px] text-muted">{t("office.toolStats.errorRate", "오류율")}</div>
+                <div className={`text-base font-semibold tabular-nums ${
+                  (errorRatePct(d.error_rate) ?? 0) > 5 ? "text-err" : "text-ink"
+                }`}>
+                  {fmtErrorRate(d.error_rate)}
+                </div>
+              </div>
+            </div>
+
+            {byKind.length > 0 && (
+              <>
+                <div className="mb-1 text-[11px] font-medium text-muted">
+                  {t("office.toolStats.byKind", "유형별 비중")}
+                </div>
+                <div className="mb-3 space-y-1.5">
+                  {byKind.map((k, i) => {
+                    const count = Number(k.count) || 0;
+                    const width = Math.max(1.5, (count / kindMax) * 100);
+                    const label = k.kind || t("office.toolStats.kindEmpty", "(미분류)");
+                    return (
+                      <div key={k.kind || i} className="flex items-center gap-2">
+                        <span className="w-20 flex-none truncate font-mono text-[10px] text-muted" title={label}>
+                          {label}
+                        </span>
+                        <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-hover">
+                          <div className="h-full rounded-full bg-accent/80" style={{ width: `${width}%` }} />
+                        </div>
+                        <span className="w-16 flex-none text-right text-[10px] tabular-nums text-muted">
+                          {count.toLocaleString()}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <div className="mb-1 text-[11px] font-medium text-muted">
+              {t("office.toolStats.byName", "이름별 통계")}
+            </div>
+            {!byName.length ? (
+              <Empty>{t("office.toolStats.empty", "기간 내 Tool 호출 데이터가 없습니다")}</Empty>
+            ) : (
+              <div className="max-h-72 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-surface">
+                    <tr className="text-left text-muted">
+                      <th className="pb-1.5 pr-2">{t("office.toolStats.col.name", "이름")}</th>
+                      <th className="pb-1.5 pr-2">{t("office.toolStats.col.kind", "유형")}</th>
+                      <th className="pb-1.5 pr-2 text-right">{t("office.toolStats.col.count", "호출")}</th>
+                      <th className="pb-1.5 pr-2 text-right">{t("office.toolStats.col.errors", "오류")}</th>
+                      <th className="pb-1.5 text-right">{t("office.toolStats.col.avgMs", "평균 소요")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {byName.map((n, i) => {
+                      const errs = Number(n.error_count) || 0;
+                      return (
+                        <tr key={n.name || i} className="border-t border-border">
+                          <td className="max-w-48 truncate py-1.5 pr-2 font-mono text-ink" title={n.name || "-"}>
+                            {n.name || "-"}
+                          </td>
+                          <td className="py-1.5 pr-2">
+                            {n.kind
+                              ? <Badge tone="accent">{n.kind}</Badge>
+                              : <span className="text-muted">-</span>}
+                          </td>
+                          <td className="py-1.5 pr-2 text-right tabular-nums">{(Number(n.count) || 0).toLocaleString()}</td>
+                          <td className={`py-1.5 pr-2 text-right tabular-nums ${errs > 0 ? "text-err" : "text-muted"}`}>
+                            {errs.toLocaleString()}
+                          </td>
+                          <td className="py-1.5 text-right tabular-nums text-muted">{fmtMs(n.avg_duration_ms)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </QueryGate>
     </Card>

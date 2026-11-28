@@ -8,8 +8,8 @@ import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import type {
   LlmStats, ObsAnomaliesResponse, ObsApprovalsResponse, ObsCostsResponse,
   ObsErrorsResponse, ObsFunnelResponse, ObsLiveAgentsResponse,
-  ObsNotificationsResponse, ObsSwarmResponse, RunListItem, RunStats,
-  SessionRow, UsageSummary,
+  ObsNotificationsResponse, ObsSwarmResponse, ObsToolStatsResponse,
+  RunListItem, RunStats, SessionRow, UsageSummary,
 } from "./types";
 
 const opt = { retry: false } as const;
@@ -131,6 +131,17 @@ export function useObsSwarm(days: number) {
   return useQuery({
     queryKey: ["observability", "swarm", "office", days],
     queryFn: () => apiGet<ObsSwarmResponse>(`/observability/swarm?days=${days}`),
+    ...opt,
+    ...gate,
+  });
+}
+
+/** spec 012 US2 — Tool Call 통계 (lead 전용, 60s 폴링). */
+export function useObsToolStats(days: number) {
+  const gate = useObsGate(60000);
+  return useQuery({
+    queryKey: ["observability", "tool-stats", "office", days],
+    queryFn: () => apiGet<ObsToolStatsResponse>(`/observability/tool-stats?days=${days}`),
     ...opt,
     ...gate,
   });

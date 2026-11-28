@@ -21,6 +21,12 @@ interface SessionRow extends AgentSession {
   ended_summary?: string;
   created_at?: string;
   event_at?: string;
+  /** spec 012 US1 — 브릿지 세션 필드 (없으면 null 유지, 추정 금지). */
+  model?: string | null;
+  progress_pct?: number | null;
+  cost_usd?: number | null;
+  tool_calls?: number | null;
+  sub_agents?: number | null;
 }
 
 interface TimelineItem {

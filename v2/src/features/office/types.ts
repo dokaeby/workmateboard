@@ -127,6 +127,12 @@ export interface SessionRow extends AgentSession {
   created_at?: string;
   last_event_at?: string;
   updated_at?: string;
+  /** spec 012 US1 — 브릿지 세션 필드 (없으면 null 유지, 추정 금지). */
+  model?: string | null;
+  progress_pct?: number | null;
+  cost_usd?: number | null;
+  tool_calls?: number | null;
+  sub_agents?: number | null;
 }
 
 /** spec 009 — OTLP 외부 텔레메트리 (external_metrics / external_logs). */
@@ -176,7 +182,7 @@ export interface ObsLiveAgent {
   id?: string;
   name?: string;
   role?: string;
-  model?: string;
+  model?: string | null;
   status?: string;
   current_task?: string;
   progress_pct?: number | null;
@@ -207,3 +213,22 @@ export interface ObsSwarmNode {
 }
 export interface ObsSwarmEdge { source?: string; target?: string; kind?: string }
 export interface ObsSwarmResponse { nodes?: ObsSwarmNode[]; edges?: ObsSwarmEdge[] }
+
+/** spec 012 US2 — GET /observability/tool-stats?days=N.
+ *  백엔드 병렬 개발 중 — 404/오류 시 섹션 단위 강등(QueryGate 패턴). */
+export interface ObsToolStatByName {
+  name?: string;
+  kind?: string;
+  count?: number;
+  error_count?: number;
+  avg_duration_ms?: number | null;
+}
+export interface ObsToolStatByKind { kind?: string; count?: number }
+export interface ObsToolStatsResponse {
+  days?: number;
+  total_calls?: number;
+  by_name?: ObsToolStatByName[];
+  by_kind?: ObsToolStatByKind[];
+  /** 비율(0~1) — 예: 0.02 = 2%. */
+  error_rate?: number | null;
+}

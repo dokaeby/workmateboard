@@ -378,6 +378,67 @@ export interface AgentSession {
   tokens_out?: number;
 }
 
+/** GET /observability/external-logs 항목 — spec 009 US2 (lead+). */
+export interface ExternalLog {
+  id?: string | number;
+  trace_id?: string | null;
+  span_id?: string | null;
+  severity?: string | null;
+  severity_text?: string | null;
+  severity_number?: number | null;
+  body?: string | null;
+  attributes?: Record<string, unknown> | null;
+  timestamp?: string;
+}
+export interface ExternalLogsResponse { items?: ExternalLog[] }
+
+/** GET /runs/{id} 상세 — appctx.run_detail 계약. */
+export interface RunDetail {
+  id: string;
+  workflow?: string;
+  version?: string;
+  status?: string;
+  trace_id?: string;
+  error?: string | null;
+  input?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+  project?: string | null;
+  agent_id?: string | null;
+  goal_id?: string | null;
+  cost_usd?: number | null;
+  coalesced_count?: number;
+  stages?: StageRun[];
+  approvals?: {
+    stage_key?: string; decision?: string; decided_by?: string;
+    decided_at?: string; comment?: string;
+  }[];
+  audit?: Record<string, unknown>[];
+  wakeups?: { id?: string; source?: string; status?: string; coalesced_count?: number; created_at?: string }[];
+}
+
+/** GET /runs/{id}/timeline — observability.py 계약 (lead+). */
+export interface RunTimelineResponse {
+  run_id?: string;
+  stages?: Record<string, unknown>[];
+  external_spans?: Record<string, unknown>[];
+}
+
+/** GET /agent-sessions/{key}/history — lead_sessions.session_history 계약. */
+export interface SessionHistoryResponse {
+  events?: Record<string, unknown>[];
+  timeline?: {
+    at?: string;
+    from_state?: string;
+    to_state?: string;
+    text?: string;
+    duration_s?: number | null;
+  }[];
+  stats?: Record<string, unknown>;
+  summary?: string;
+}
+
 export interface Prefs {
   sidebar_menu?: Record<string, boolean>;
   radar_interval?: string;

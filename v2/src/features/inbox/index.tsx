@@ -1,14 +1,16 @@
 /** 알림 인박스 — GET /inbox 목록 + 읽음 처리 + unread-count 폴링.
  * 레거시 index.html의 loadInboxList/updateInboxBadge를 React Query로 이행. */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { InboxItem, ViewKey } from "../../shared/api/types";
-import { useAppStore } from "../../shared/store/appStore";
+import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import { useI18n, tx, type TFn } from "../../shared/i18n";
 import { PageHead, Card, Empty, Spinner, ErrorBox, Button, Badge } from "../../shared/ui";
 import { safeUrl } from "../../shared/lib/format";
+import { TrendArea } from "../office/charts";
+import { useObsNotifications } from "../office/queries";
 import ReportSubsCard from "./subscriptions";
 import "./i18n";
 
@@ -405,17 +407,102 @@ function CardsCard() {
   );
 }
 
+/* ── spec 014 US1 — KPI 행 + 발생 추이 + 필터 가능한 알림 테이블 ──
+ * lead: /observability/notifications?days=7 집계(읽음=open/resolved 아님 —
+ *       알림 kind='notification'만, resolved=읽음). member: 불러온 inbox
+ *       항목에서 클라이언트 집계(표본=최근 50건, KPI sub에 명시). */
+function InboxKpis({ items }: { items: InboxItem[] }) {
+  const { t } = useI18n();
+  const role = useAppStore((s) => s.role);
+  const isLead = roleAllows("lead", role);
+  const obsQ = useObsNotifications(7);
+
+  const memberStats = useMemo(() => {
+    const open = items.filter((i) => !i.read).length;
+    return { total: items.length, open, resolved: items.length - open };
+  }, [items]);
+
+  const stats = isLead && obsQ.data
+    ? { total: Number(obsQ.data.total) || 0, open: Number(obsQ.data.open) || 0, resolved: Number(obsQ.data.resolved) || 0 }
+    : memberStats;
+  const sub = isLead
+    ? t("inbox.kpi.subObs", "최근 7일 · 알림 kind 기준")
+    : t("inbox.kpi.subList", "불러온 항목 기준 (최대 50건)");
+
+  const cards: { key: string; label: string; value: number; tone: "muted" | "warn" | "ok" }[] = [
+    { key: "total", label: t("inbox.kpi.total", "전체"), value: stats.total, tone: "muted" },
+    { key: "open", label: t("inbox.kpi.open", "미해결"), value: stats.open, tone: "warn" },
+    { key: "resolved", label: t("inbox.kpi.resolved", "해결"), value: stats.resolved, tone: "ok" },
+  ];
+  const toneCls = { muted: "text-ink", warn: "text-warn", ok: "text-ok" } as const;
+
+  return (
+    <div className="mb-3 grid grid-cols-3 gap-2">
+      {cards.map((c) => (
+        <div key={c.key} className="rounded-lg border border-border bg-surface-hover px-2.5 py-1.5">
+          <div className="text-[10px] text-muted">{c.label}</div>
+          <div className={`text-base font-semibold tabular-nums ${toneCls[c.tone]}`}>{c.value.toLocaleString()}</div>
+          <div className="truncate text-[10px] text-muted">{sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InboxTrend({ items }: { items: InboxItem[] }) {
+  const { t } = useI18n();
+  const role = useAppStore((s) => s.role);
+  const isLead = roleAllows("lead", role);
+  const obsQ = useObsNotifications(7);
+
+  const points = useMemo(() => {
+    if (isLead && obsQ.data?.series) {
+      return (Array.isArray(obsQ.data.series) ? obsQ.data.series : [])
+        .map((p) => ({ label: String(p.t || "").slice(5, 10), value: Number(p.count) || 0 }))
+        .filter((p) => p.label);
+    }
+    // member — 불러온 항목의 created_at 일자 버킷
+    const buckets = new Map<string, number>();
+    for (const it of items) {
+      const d = String(it.created_at || "").slice(0, 10);
+      if (d) buckets.set(d, (buckets.get(d) || 0) + 1);
+    }
+    return [...buckets.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([d, n]) => ({ label: d.slice(5), value: n }));
+  }, [isLead, obsQ.data, items]);
+
+  return (
+    <div className="mb-3 rounded-lg border border-border bg-surface-hover/50 px-3 py-2">
+      <div className="mb-1 text-[11px] font-medium text-muted">
+        {t("inbox.trend", "발생 추이")}
+        <span className="ml-1 font-normal">
+          {isLead ? t("inbox.trendSubObs", "최근 7일") : t("inbox.trendSubList", "불러온 항목 기준")}
+        </span>
+      </div>
+      {isLead && obsQ.isLoading ? <Spinner /> : (
+        <TrendArea
+          points={points}
+          height={72}
+          empty={t("inbox.trendEmpty", "기간 내 알림이 없습니다")}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function InboxPage() {
   const { t } = useI18n();
   const setView = useAppStore((s) => s.setView);
   const qc = useQueryClient();
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | "unread" | "read">("all");
+  const [kindFilter, setKindFilter] = useState("all");
+  const [kw, setKw] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const listQ = useQuery({
-    queryKey: ["inbox", unreadOnly],
-    queryFn: () =>
-      apiGet<InboxItem[]>(`/inbox?limit=50${unreadOnly ? "&unread_only=true" : ""}`),
+    queryKey: ["inbox"],
+    queryFn: () => apiGet<InboxItem[]>("/inbox?limit=50"),
     refetchInterval: 30000,
   });
   const countQ = useQuery({
@@ -424,8 +511,26 @@ export default function InboxPage() {
     refetchInterval: 15000,
   });
 
-  const items = Array.isArray(listQ.data) ? listQ.data : [];
+  const items = useMemo(() => (Array.isArray(listQ.data) ? listQ.data : []), [listQ.data]);
   const unreadCount = countQ.data?.count ?? items.filter((i) => !i.read).length;
+
+  const kinds = useMemo(
+    () => [...new Set(items.map((i) => String(i.kind || "notification")))].sort(),
+    [items],
+  );
+  const filtered = useMemo(() => {
+    const needle = kw.trim().toLowerCase();
+    return items.filter((it) => {
+      if (statusFilter === "unread" && it.read) return false;
+      if (statusFilter === "read" && !it.read) return false;
+      if (kindFilter !== "all" && String(it.kind || "notification") !== kindFilter) return false;
+      if (needle) {
+        const hay = [it.title, it.body, it.kind, it.link].map((x) => String(x || "").toLowerCase()).join(" ");
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [items, statusFilter, kindFilter, kw]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["inbox"] });
@@ -474,19 +579,12 @@ export default function InboxPage() {
   return (
     <div className="mx-auto max-w-3xl p-4">
       <PageHead
-        title={t("inbox.title", "알림")}
+        title={t("inbox.title", "알림 & 공지")}
         desc={t("inbox.desc", "세션 주의·승인·일정·리포트 알림")}
       >
         <Badge tone={unreadCount > 0 ? "accent" : "muted"}>
           {t("inbox.unread", "읽지 않음")} {unreadCount}{t("inbox.countUnit", "건")}
         </Badge>
-        <Button
-          variant={unreadOnly ? "primary" : "secondary"}
-          className="text-xs"
-          onClick={() => setUnreadOnly((v) => !v)}
-        >
-          {unreadOnly ? t("inbox.unread", "읽지 않음") : t("inbox.all", "전체")}
-        </Button>
         <Button variant="secondary" className="text-xs" onClick={readAll}>
           {t("inbox.readAll", "모두 읽음")}
         </Button>
@@ -494,7 +592,46 @@ export default function InboxPage() {
           {t("common.refresh", "새로고침")}
         </Button>
       </PageHead>
+
+      <InboxKpis items={items} />
+      <InboxTrend items={items} />
+
       <Card>
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as "all" | "unread" | "read")}
+            aria-label={t("inbox.fStatus", "상태 필터")}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+          >
+            <option value="all">{t("inbox.fAll", "전체 상태")}</option>
+            <option value="unread">{t("inbox.unread", "읽지 않음")}</option>
+            <option value="read">{t("inbox.fRead", "읽음")}</option>
+          </select>
+          <select
+            value={kindFilter}
+            onChange={(e) => setKindFilter(e.target.value)}
+            aria-label={t("inbox.fKind", "유형 필터")}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+          >
+            <option value="all">{t("inbox.fAllKind", "전체 유형")}</option>
+            {kinds.map((k) => (
+              <option key={k} value={k}>{kindLabel(k, t)}</option>
+            ))}
+          </select>
+          <input
+            value={kw}
+            onChange={(e) => setKw(e.target.value)}
+            placeholder={t("inbox.fKw", "제목·본문 검색")}
+            autoComplete="off"
+            className="min-w-40 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+          />
+          <span className="text-[11px] tabular-nums text-muted">
+            {t("inbox.fCount", "{shown}/{total}건")
+              .replace("{shown}", String(filtered.length))
+              .replace("{total}", String(items.length))}
+          </span>
+        </div>
         {listQ.isLoading && <Spinner />}
         {listQ.error && (
           <ErrorBox
@@ -502,40 +639,65 @@ export default function InboxPage() {
             onRetry={() => listQ.refetch()}
           />
         )}
-        {listQ.data && !items.length && (
-          <Empty>{unreadOnly ? t("inbox.emptyUnread", "읽지 않은 알림이 없습니다") : t("inbox.empty", "알림이 없습니다")}</Empty>
+        {listQ.data && !filtered.length && (
+          <Empty>
+            {items.length
+              ? t("inbox.fEmpty", "필터에 맞는 알림이 없습니다")
+              : t("inbox.empty", "알림이 없습니다")}
+          </Empty>
         )}
-        {items.map((it) => {
-          const kind = it.kind || "notification";
-          const when = (it.created_at || "").slice(0, 16).replace("T", " ");
-          return (
-            <button
-              key={String(it.id)}
-              type="button"
-              onClick={() => openItem(it)}
-              disabled={busyId === String(it.id)}
-              className={`block w-full border-b border-border px-1 py-3 text-left last:border-0 transition-colors hover:bg-surface-hover ${
-                it.read ? "" : "bg-accent-soft/40"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                {!it.read && <span className="h-2 w-2 shrink-0 rounded-full bg-accent" />}
-                <Badge tone={KIND_TONE[kind] || "muted"}>{kindLabel(kind, t)}</Badge>
-                <span className={`min-w-0 flex-1 truncate text-sm ${it.read ? "text-ink-2" : "font-semibold text-ink"}`}>
-                  {inboxItemTitle(it, t) || t("inbox.noTitle", "(제목 없음)")}
-                </span>
-                <span className="shrink-0 text-xs text-muted">{when}</span>
-              </div>
-              {it.body ? <div className="mt-1 line-clamp-2 text-xs text-muted">{it.body}</div> : null}
-              {it.link ? (
-                <div className="mt-1 flex items-center gap-1 text-xs text-accent">
-                  {t("inbox.open", "열기")}
-                  <span className="truncate">{it.link}</span>
-                </div>
-              ) : null}
-            </button>
-          );
-        })}
+        {filtered.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-[11px] text-muted">
+                  <th className="w-16 py-1.5 pr-3 font-medium">{t("inbox.colStatus", "상태")}</th>
+                  <th className="w-24 py-1.5 pr-3 font-medium">{t("inbox.colKind", "유형")}</th>
+                  <th className="py-1.5 pr-3 font-medium">{t("inbox.colTitle", "제목")}</th>
+                  <th className="w-36 py-1.5 font-medium whitespace-nowrap">{t("inbox.colTime", "시각")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((it) => {
+                  const kind = it.kind || "notification";
+                  const when = (it.created_at || "").slice(0, 16).replace("T", " ");
+                  return (
+                    <tr
+                      key={String(it.id)}
+                      onClick={() => openItem(it)}
+                      className={`cursor-pointer border-b border-border align-top last:border-0 transition-colors hover:bg-surface-hover ${
+                        it.read ? "" : "bg-accent-soft/30"
+                      } ${busyId === String(it.id) ? "opacity-50" : ""}`}
+                    >
+                      <td className="py-2 pr-3">
+                        <Badge tone={it.read ? "muted" : "accent"}>
+                          {it.read ? t("inbox.fRead", "읽음") : t("inbox.unread", "읽지 않음")}
+                        </Badge>
+                      </td>
+                      <td className="py-2 pr-3">
+                        <Badge tone={KIND_TONE[kind] || "muted"}>{kindLabel(kind, t)}</Badge>
+                      </td>
+                      <td className="max-w-0 py-2 pr-3">
+                        <div className={`truncate text-sm ${it.read ? "text-ink-2" : "font-semibold text-ink"}`}>
+                          {!it.read && <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-accent align-middle" />}
+                          {inboxItemTitle(it, t) || t("inbox.noTitle", "(제목 없음)")}
+                        </div>
+                        {it.body ? <div className="mt-0.5 line-clamp-1 text-xs text-muted">{it.body}</div> : null}
+                        {it.link ? (
+                          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-accent">
+                            {t("inbox.open", "열기")}
+                            <span className="truncate">{it.link}</span>
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="py-2 text-right text-[11px] whitespace-nowrap text-muted tabular-nums">{when}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
       <AskCard />
       <ReportsCard />

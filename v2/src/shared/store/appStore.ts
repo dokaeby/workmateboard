@@ -8,16 +8,26 @@ import type { Prefs, Role, ViewKey } from "../api/types";
 
 export const ROLE_RANK: Record<Role, number> = { member: 0, lead: 1, admin: 2 };
 
+/** Inspector 패널 대상 — spec 013 US1. 세션 상태만(영속화 없음). */
+export interface InspectorTarget {
+  kind: "run" | "agent" | "session" | "trace";
+  id: string;
+}
+
 interface AppState {
   view: ViewKey;
   role: Role | null;          // null = /auth/me 로드 전
   prefs: Prefs | null;
   sidebarOpen: boolean;       // 모바일 드로어
+  inspector: InspectorTarget | null;  // 우측 Inspector 패널 대상
+  paletteOpen: boolean;       // Command Palette (Cmd+K)
   setView: (v: ViewKey) => void;
   setRole: (r: Role | null) => void;
   setPrefs: (p: Prefs | null) => void;
   toggleSidebar: () => void;
   setSidebarOpen: (b: boolean) => void;
+  setInspector: (t: InspectorTarget | null) => void;
+  setPaletteOpen: (b: boolean) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -25,11 +35,15 @@ export const useAppStore = create<AppState>((set) => ({
   role: null,
   prefs: null,
   sidebarOpen: false,
+  inspector: null,
+  paletteOpen: false,
   setView: (view) => set({ view }),
   setRole: (role) => set({ role }),
   setPrefs: (prefs) => set({ prefs }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+  setInspector: (inspector) => set({ inspector }),
+  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
 }));
 
 export function roleAllows(min: "member" | "lead" | "admin", role: Role | null): boolean {

@@ -27,9 +27,18 @@ function LogoutButton() {
 /** 데스크톱 상단바 액션 — 레거시 .header-actions (푸시/설정/로그아웃) 이식. */
 export function HeaderActions() {
   const { t } = useI18n();
-  const { setView } = useAppStore();
+  const { setView, setPaletteOpen } = useAppStore();
   return (
     <>
+      {/* spec 013 US3 — Command Palette 오픈 버튼 (⌘K와 동일) */}
+      <button
+        className="rounded-md p-2 text-muted transition-colors hover:bg-surface-hover"
+        onClick={() => setPaletteOpen(true)}
+        title={t("hdr.search", "검색 (⌘K)")}
+        aria-label={t("hdr.search", "검색 (⌘K)")}
+      >
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
       <PushButton />
       <button
         className="rounded-md p-2 text-muted transition-colors hover:bg-surface-hover"
