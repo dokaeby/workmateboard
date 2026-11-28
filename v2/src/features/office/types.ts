@@ -128,3 +128,28 @@ export interface SessionRow extends AgentSession {
   last_event_at?: string;
   updated_at?: string;
 }
+
+/** spec 009 — OTLP 외부 텔레메트리 (external_metrics / external_logs). */
+export interface ExternalMetric {
+  id?: string | number;
+  metric_name?: string;
+  metric_type?: string;
+  value?: number | string | null;
+  unit?: string;
+  attributes?: Record<string, unknown> | null;
+  timestamp?: string;
+}
+export interface ExternalMetricsResponse { items?: ExternalMetric[] }
+
+export interface ExternalLog {
+  id?: string | number;
+  trace_id?: string | null;
+  span_id?: string | null;
+  severity?: string | null;
+  severity_text?: string | null;
+  severity_number?: number | null;
+  body?: string | null;
+  attributes?: Record<string, unknown> | null;
+  timestamp?: string;
+}
+export interface ExternalLogsResponse { items?: ExternalLog[] }

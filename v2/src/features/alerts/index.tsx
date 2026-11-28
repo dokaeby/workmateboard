@@ -396,7 +396,7 @@ export default function AlertsPage() {
                       </div>
                     </td>
                     <td className="py-1.5 pr-3 text-xs text-muted">
-                      {r.last_fired_at ? `${fmtTs(r.last_fired_at)} (${fmtAge(Math.max(0, (Date.now() - Date.parse(r.last_fired_at)) / 1000))})` : t("al.never", "없음")}
+                      {r.last_fired_at ? `${fmtTs(r.last_fired_at)} (${fmtAge(Math.max(0, ((rules.dataUpdatedAt || 0) - Date.parse(r.last_fired_at)) / 1000))})` : t("al.never", "없음")}
                     </td>
                     <td className="py-1.5 pr-3 text-right text-xs text-ink">
                       {/* fires count 필드는 서버가 제공하면 표시, 없으면 - */}

@@ -216,12 +216,14 @@ function Timeline({ runId }: { runId: string }) {
   const [playIdx, setPlayIdx] = useState(-1);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // run 변경 시 재생 상태 리셋
-  useEffect(() => {
+  // run 변경 시 재생 상태 리셋 — 렌더 중 조정 패턴(effect setState 회피)
+  const [prevRunId, setPrevRunId] = useState(runId);
+  if (prevRunId !== runId) {
+    setPrevRunId(runId);
     setPlaying(false);
     setPlayIdx(-1);
     setExpanded(new Set());
-  }, [runId]);
+  }
 
   useEffect(() => {
     if (!playing) {

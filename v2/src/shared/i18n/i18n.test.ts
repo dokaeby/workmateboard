@@ -13,7 +13,7 @@ import { registerI18n, i18nDicts, tr, setLang } from "./index";
 import { STR as APP_STR } from "../../app/i18n";
 import "../ui"; // shared/ui 프리미티브의 core 사전 등록
 
-// feature/*\/i18n.ts + app/i18n.ts + office\/board\/i18n.ts — STR을 export하는 모듈.
+// feature/*\/i18n.ts + app/i18n.ts — STR을 export하는 모듈.
 // app/i18n.ts는 App.tsx에서 core로 등록하므로 여기서 동일하게 등록한다.
 const modules = import.meta.glob<{ STR?: { ko: Record<string, string>; en: Record<string, string> } }>(
   "../../**/i18n.ts",

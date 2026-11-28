@@ -10,6 +10,7 @@ import { useOfficeData } from "./queries";
 import {
   AttentionStrip, CostSection, ErrorSection, KpiCard, LiveRuns, SessionsSection,
 } from "./sections";
+import { ExternalTelemetry } from "./telemetry";
 import "./i18n";
 
 function fmtSecs(v: number | null | undefined): string {
@@ -30,10 +31,10 @@ function scrollTo(id: string) {
 export default function OfficePage() {
   const { t } = useI18n();
   const d = useOfficeData();
-  // 경과 시간 표시용 분 단위 리렌더 틱
-  const [, setTick] = useState(0);
+  // 경과 시간 표시용 분 단위 리렌더 틱 — now는 렌더 중 Date 호출 대신 state로 유지
+  const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const id = window.setInterval(() => setTick((n) => n + 1), 30000);
+    const id = window.setInterval(() => setNow(new Date()), 30000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -43,7 +44,7 @@ export default function OfficePage() {
     const usage = d.usageQ.data;
 
     // 오늘 실행 — /runs/stats daily는 UTC 날짜 키 (로컬 TZ와 9시간 어긋남)
-    const today = new Date().toISOString().slice(0, 10);
+    const today = now.toISOString().slice(0, 10);
     const runsToday = stats?.daily
       ? (stats.daily.find((x) => x.date === today)?.runs ?? 0)
       : null;
@@ -66,7 +67,7 @@ export default function OfficePage() {
       p95: llm?.latency_s?.p95 ?? null,
       // "월 누적"은 UTC 이번 달 by_day 합산 — total_cost_usd는 30일 윈도우 합계
       costMtd: (() => {
-        const ym = new Date().toISOString().slice(0, 7);
+        const ym = now.toISOString().slice(0, 7);
         const days = usage?.by_day || [];
         if (!days.length) return usage?.total_cost_usd ?? null;
         return days
@@ -76,7 +77,7 @@ export default function OfficePage() {
       activeSessions: d.sessionList.length,
       backlog,
     };
-  }, [d.statsQ.data, d.llmQ.data, d.usageQ.data, d.approvalsQ.data, d.runsQ.data, d.sessionList]);
+  }, [d.statsQ.data, d.llmQ.data, d.usageQ.data, d.approvalsQ.data, d.runsQ.data, d.sessionList, now]);
 
   const refreshAll = () => {
     void d.runsQ.refetch();
@@ -164,6 +165,11 @@ export default function OfficePage() {
       {/* 활성 세션 */}
       <div id="office-sessions" className="scroll-mt-4">
         <SessionsSection d={d} />
+      </div>
+
+      {/* 외부 텔레메트리 — OTLP metrics/logs (lead+ 전용) */}
+      <div id="office-telemetry" className="scroll-mt-4">
+        <ExternalTelemetry />
       </div>
     </div>
   );
