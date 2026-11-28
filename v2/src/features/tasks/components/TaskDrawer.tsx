@@ -1,5 +1,5 @@
 /** tasks — task 상세 사이드 패널. */
-import { useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../../shared/api/client";
 import type { Task, Project, Goal } from "../../../shared/api/types";
@@ -14,6 +14,14 @@ import { TaskForm } from "./TaskForm";
 import { RunHistorySection } from "./RunHistorySection";
 import { CommentsSection } from "./CommentsSection";
 import { ArtifactsSection } from "./ArtifactsSection";
+
+// 네이티브 <dialog> 사이드 패널 — 우측 도킹·전체 높이. UA dialog의
+// 중앙정렬(inset/margin auto)과 max 제약을 덮어쓴다.
+const DRAWER_DIALOG_CLS =
+  "start-auto end-0 top-0 bottom-0 m-0 h-dvh w-full max-w-lg max-h-none overflow-y-auto " +
+  "border-l border-border bg-surface text-ink shadow-xl open:flex flex-col " +
+  "[&:modal]:overscroll-contain [&::backdrop]:overflow-hidden " +
+  "[&::backdrop]:overscroll-contain [&::backdrop]:bg-black/30";
 
 export function TaskDrawer({
   taskId,
@@ -41,52 +49,82 @@ export function TaskDrawer({
     queryFn: () => apiGet<Task>(`/management/tasks/${encodeURIComponent(taskId)}`),
   });
   const task = detail.data;
-  if (detail.isLoading) return <Spinner />;
-  if (detail.error || !task) {
-    return (
-      <div className="fixed inset-0 z-50">
-        <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-        <aside className="absolute inset-y-0 right-0 w-full max-w-lg border-l border-border bg-surface p-4 shadow-xl">
+
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const pressOutside = useRef(false);
+  // 매 렌더 후 ref가 붙어 있으면 showModal() — 'close'(Esc 등) 시 onClose 동기화.
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    if (!d.open) d.showModal();
+    const sync = () => onClose();
+    d.addEventListener("close", sync);
+    return () => d.removeEventListener("close", sync);
+  });
+
+  // 프로그램적 닫기 — d.close()가 'close' 이벤트를 발생시켜 위 리스너가
+  // onClose로 React 상태를 동기화한다(브라우저가 포커스도 invoker로 복귀).
+  const closeDialog = () => {
+    const d = dialogRef.current;
+    if (d) d.close();
+    else onClose();
+  };
+
+  // 라이트 디스미스 — ::backdrop 클릭은 dialog 자신이 타겟이 된다.
+  // press 시작·click 종료 모두 타겟이 dialog이고 좌표가 패널 rect 밖일
+  // 때만 닫는다 — 텍스트 선택 드래그·select 옵션 클릭 등 버블 클릭 오인 방지.
+  const outsideDialog = (e: { clientX: number; clientY: number; currentTarget: HTMLDialogElement }) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  };
+  const onBackdropPointerDown = (e: PointerEvent<HTMLDialogElement>) => {
+    pressOutside.current = outsideDialog(e);
+  };
+  const onBackdropClick = (e: MouseEvent<HTMLDialogElement>) => {
+    const dismiss = pressOutside.current && e.target === e.currentTarget && outsideDialog(e);
+    pressOutside.current = false;
+    if (dismiss) closeDialog();
+  };
+
+  const st = task ? String(task.status || "backlog").toLowerCase() : "";
+  const project = task?.project_id ? projects.find((p) => p.id === task.project_id) : undefined;
+  // effective goal — spec §3차 A: task.goal_id → project.goal_id → none
+  const effectiveGoalId = task ? task.goal_id || project?.goal_id || "" : "";
+  const effectiveGoal = effectiveGoalId ? goals.find((g) => g.id === effectiveGoalId) : undefined;
+
+  // 로딩/에러도 같은 dialog 셸 안에 렌더 — 열린 상태에서 언마운트/재마운트가
+  // 없도록 항상 <dialog>를 반환하고 내용만 분기한다.
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-label={task ? task.title || task.id : taskId}
+      onPointerDown={onBackdropPointerDown}
+      onClick={onBackdropClick}
+      className={`${DRAWER_DIALOG_CLS} p-0`}
+    >
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <h2 className="min-w-0 flex-1 truncate text-base font-bold text-ink">
+          {task ? `${task.identifier ? `${task.identifier} ` : ""}${task.title || task.id}` : taskId}
+        </h2>
+        <button
+          type="button"
+          onClick={closeDialog}
+          aria-label={t("tasks.close", "닫기")}
+          className="rounded-md px-2 py-1 text-muted hover:bg-surface-hover"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="flex-1 space-y-4 p-4">
+        {detail.isLoading ? (
+          <div className="flex justify-center py-10"><Spinner /></div>
+        ) : detail.error || !task ? (
           <ErrorBox
             message={detail.error instanceof Error ? detail.error.message : t("tasks.notFound", "작업을 찾을 수 없습니다")}
             onRetry={() => detail.refetch()}
           />
-        </aside>
-      </div>
-    );
-  }
-
-  const st = String(task.status || "backlog").toLowerCase();
-  const project = task.project_id ? projects.find((p) => p.id === task.project_id) : undefined;
-  // effective goal — spec §3차 A: task.goal_id → project.goal_id → none
-  const effectiveGoalId = task.goal_id || project?.goal_id || "";
-  const effectiveGoal = effectiveGoalId ? goals.find((g) => g.id === effectiveGoalId) : undefined;
-
-  return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-label={task.title || task.id}
-        className="absolute inset-y-0 right-0 flex w-full max-w-lg flex-col overflow-y-auto border-l border-border bg-surface shadow-xl"
-      >
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <h2 className="min-w-0 flex-1 truncate text-base font-bold text-ink">
-            {task.identifier ? `${task.identifier} ` : ""}{task.title || task.id}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t("tasks.close", "닫기")}
-            className="rounded-md px-2 py-1 text-muted hover:bg-surface-hover"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div className="flex-1 space-y-4 p-4">
-          {mode === "edit" ? (
+        ) : mode === "edit" ? (
             <TaskForm
               initial={task}
               projects={projects}
@@ -160,7 +198,6 @@ export function TaskDrawer({
             </>
           )}
         </div>
-      </aside>
-    </div>
+    </dialog>
   );
 }
