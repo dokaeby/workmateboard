@@ -498,6 +498,18 @@ def on_run_finished(
             run_oid = row_org_id(store, "runs", run_id)
         if w_org and w_org != run_oid:
             continue
+        # FR-031 — suspended/deleted 조직에는 deferred run을 promote하지
+        # 않는다. promote 대상 조직은 deferred wakeup의 org(없으면 finishing
+        # run의 org) — finishing run의 wakeup 마감(finish_wakeups_for_run)은
+        # 위에서 이미 완료됐다. 이 wakeup은 'deferred'로 남겨 조직 복귀 후
+        # 다음 종결 이벤트에 재promote되게 한다(terminal 마감하지 않음).
+        if store.org_inactive(w_org or run_oid):
+            logger.info(
+                "deferred wakeup %s promote skipped: org %s inactive",
+                w["id"],
+                w_org or run_oid,
+            )
+            continue
         # 아직 같은 scope의 활성 run이 있으면 promote 보류
         if (
             _active_run_for_scope(store, run.workflow_key, input_data, w_agent_id, w_goal_id)

@@ -19,6 +19,13 @@ class OrgTransferError(RuntimeError):
     """소유권 이관 부분 실패 — tx 롤백 후 호출자에게 전달."""
 
 
+class OrgInactiveError(RuntimeError):
+    """suspended/deleted 조직에 대한 run 생성 시도 — FR-031.
+
+    create_run이 모든 진입점의 choke point이므로 여기서 던진다.
+    API 계층은 403 org_inactive로 변환한다."""
+
+
 def normalize_org_slug(raw: str) -> str:
     """조직 슬러그 정규화 — 소문자 영숫자·하이픈 3~48자."""
     s = _ORG_SLUG_RE.sub("-", raw.strip().lower()).strip("-")
@@ -119,6 +126,21 @@ class OrgStoreMixin:
         except self._integrity_errors:
             return None
 
+    def org_inactive(self, org_id: str) -> bool:
+        """조직이 자동화 run 생성 차단 대상인지 — FR-031.
+
+        suspended/deleted이거나 조직 행이 없으면(purge 등) True.
+        org_id=''는 org_id 도입 전 레거시 컨텍스트라 active로 간주한다.
+        조회 자체가 실패하면 차단하지 않는다(False) — 판정 불가로
+        자동화를 멈추는 것보다 기존 동작 유지가 안전하다."""
+        if not org_id:
+            return False
+        try:
+            org = self.get_organization(org_id)
+        except Exception:
+            return False
+        return org is None or str(org.get("status") or "active") != "active"
+
     def set_organization_status(self, org_id: str, status: str) -> bool:
         if status not in ORG_STATUSES:
             raise ValueError(f"invalid org status: {status}")
@@ -197,7 +219,20 @@ class OrgStoreMixin:
             " WHERE org_id=? AND role='org_owner' AND status='active'",
             (org_id,),
         ).fetchone()
-        return int(r["n"]) if r else 0
+        return int(r["n"] if r else 0)
+
+    def count_org_active_runs(self, org_id: str) -> int:
+        """org의 활성 run 수 — 삭제 차단 판정용(FR-028).
+
+        queued|running|waiting_approval만 활성으로 본다 — spec 명시 집합.
+        waiting_review/needs_human 등은 사람 개입 대기라 진행 중 작업이
+        아니므로 삭제를 막지 않는다."""
+        r = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM runs WHERE org_id=?"
+            " AND status IN ('queued','running','waiting_approval')",
+            (org_id,),
+        ).fetchone()
+        return int(r["n"] if r else 0)
 
     def set_org_member_role(self, org_id: str, user_id: str, role: str) -> bool:
         if role not in ORG_ROLES:

@@ -168,7 +168,11 @@ def main(argv: list[str] | None = None) -> int:
         from .store import orgctx
 
         _orgs = store.list_organizations()
-        _oid = str(_orgs[0]["id"]) if _orgs else ""
+        # FR-031 — suspended 조직은 건너뛰고 첫 "활성" 조직을 고른다.
+        _oid = next(
+            (str(o["id"]) for o in _orgs if str(o.get("status") or "active") == "active"),
+            "__no_org__",
+        )
         with orgctx.org_scope(_oid):
             wf_spec = resolve_workflow_spec(store, args.workflow)
             if wf_spec is None:

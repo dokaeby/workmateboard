@@ -174,6 +174,11 @@ def create_app(
 
             org_tok = orgctx.set_org_context(ctx._request_org_id(request))
         try:
+            # FR-031/FR-028 — suspended 조직은 owner 읽기 전용·멤버 전면 차단,
+            # deleted 조직은 멤버 전면 차단. 세션 사용자만 대상.
+            block = ctx._org_access_block(request)
+            if block is not None:
+                return block
             response = await call_next(request)
         finally:
             if org_tok is not None:
@@ -225,6 +230,13 @@ def create_app(
             request.url.path,
         )
         return ctx.err(500, "internal_error", "internal server error", request)
+
+    from ..store.orgs import OrgInactiveError
+
+    @app.exception_handler(OrgInactiveError)
+    async def _org_inactive_exc(request: Request, exc: OrgInactiveError) -> JSONResponse:
+        """FR-031 — suspended/deleted 조직 run 생성 시도(store.create_run 중앙 차단)."""
+        return ctx.err(403, "org_inactive", "organization is not active", request)
 
     from .routers import agents as _r_agents
     from .routers import auth as _r_auth

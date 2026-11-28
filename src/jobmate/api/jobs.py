@@ -63,8 +63,22 @@ def _default_org_id(store: Store) -> str:
     try:
         orgs = store.list_organizations()
     except Exception:
-        return ""
-    return str(orgs[0]["id"]) if orgs else ""
+        return "__no_org__"
+    # FR-031 — suspended 조직은 "활성"이 아니므로 건너뛴다. 활성 조직이
+    # 하나도 없으면 '__no_org__' 센티널 — ''는 무필터 ctx라 쓰기가
+    # org_id='' 레거시 행에 떨어지고 읽기는 전 조직을 노출한다.
+    for o in orgs:
+        if str(o.get("status") or "active") == "active":
+            return str(o["id"])
+    return "__no_org__"
+
+
+def _org_inactive(store: Store, oid: str) -> bool:
+    """org 행 상태 — suspended/deleted 조직의 자동화 run 생성 차단(FR-031).
+
+    실제 판정은 Store.org_inactive 단일 경로 — 스케줄/루틴/메시지/트리거/
+    wakeup promote 등 모든 자동화 경로가 같은 규칙을 공유한다."""
+    return store.org_inactive(oid)
 
 
 def _run_org_id(store: Store, run_id: str) -> str:
@@ -303,6 +317,11 @@ def _process_due_schedules(
         # 이 조직 컨텍스트를 상속해 run.org_id = schedule.org_id가 된다.
         org_tok = orgctx.set_org_context(str(sched.get("org_id") or ""))
         try:
+            # FR-031 — suspended/deleted 조직의 스케줄 실행 차단.
+            # claim 전에 건너뛰어 정지 해제 시 다음 due에서 재시도된다.
+            if _org_inactive(store, str(sched.get("org_id") or "")):
+                worker_logger.info("schedule %s skipped: org %s inactive", sid, sched.get("org_id"))
+                continue
             interval = max(int(sched.get("interval_minutes") or 0), 1)
             fired = datetime.now(UTC)
             nxt = fired + timedelta(minutes=interval)
@@ -465,6 +484,12 @@ def _process_due_routines(
         # task/routine_run/run·audit·inbox가 모두 이 조직을 상속한다.
         org_tok = orgctx.set_org_context(str(routine.get("org_id") or ""))
         try:
+            # FR-031 — suspended/deleted 조직의 루틴 발사 차단.
+            if _org_inactive(store, str(routine.get("org_id") or "")):
+                worker_logger.info(
+                    "routine %s skipped: org %s inactive", rid, routine.get("org_id")
+                )
+                continue
             res = routines_svc.fire_due_routine(
                 store, routine, schedule_run=_schedule_run, actor="routine"
             )
@@ -811,6 +836,29 @@ def _process_message_job(
     provider = row["source_provider"]
     source_id = row["source_id"]
     attempts = int(row.get("attempts", 0)) + 1
+    # FR-031 — suspended/deleted 조직의 메시지는 새 run을 만들지 않는다.
+    # 'failed'는 terminal이라 pending_messages(pending/processing만 수집)가
+    # 재수집하지 않아 조직 정지 동안 무한 재시도하지 않는다. 메시지 행은
+    # 1회성이므로 조직 복귀 후 자동 재처리되지 않는다 — 필요 시 재투입.
+    if _org_inactive(store, oid):
+        try:
+            store.finish_message(
+                provider,
+                source_id,
+                "failed",
+                "org_inactive",
+                attempts=attempts,
+                org_id=oid,
+            )
+        except Exception as e:
+            worker_logger.warning(
+                "message %s:%s org_inactive finish failed: %s",
+                provider,
+                source_id,
+                str(e)[:200],
+            )
+        worker_logger.info("message %s:%s skipped: org %s inactive", provider, source_id, oid)
+        return
     try:
         if attempts > 5:
             store.finish_message(

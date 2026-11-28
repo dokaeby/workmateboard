@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from ..models import Approval, AuditEvent, Run, RunStatus, StageRun, StageStatus
 from . import orgctx
+from .orgs import OrgInactiveError
 from .util import _clamp_limit, _dt, _iso, _loads, _now, clean_scope_id
 
 logger = logging.getLogger("jobmate.store")
@@ -138,6 +139,12 @@ class RunStoreMixin:
         if not oid and goal_row is not None:
             oid = str(goal_row.get("org_id") or "")
         oid = oid or orgctx.org_for_write(org_id)
+        # FR-031 — suspended/deleted 조직의 신규 run 생성을 중앙 차단.
+        # API·스케줄러·wakeup·evals·CLI 등 모든 진입점이 create_run을
+        # 지나므로 호출측 precheck(jobs/triggers/org_access_block)와
+        # 별개로 여기서 한 번 강제한다. ''(레거시 무스코프)는 대상 아님.
+        if oid and self.org_inactive(oid):
+            raise OrgInactiveError(f"organization not active: {oid}")
         run = Run(
             id=uuid.uuid4().hex[:12],
             workflow_key=workflow_key,

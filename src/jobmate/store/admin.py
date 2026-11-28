@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
 from . import orgctx
 from .util import _clamp_limit, _iso, _loads, _now
+
+logger = logging.getLogger(__name__)
 
 
 def _org_filter() -> tuple[str, list[Any]]:
@@ -138,7 +142,135 @@ class AdminStoreMixin:
             # 최근 키만 의미가 있고, 장기 보존 감사는 audit_events(90d)가 담당.
             cur = c.execute("DELETE FROM agent_events WHERE created_at < ?", (d90,))
             counts["agent_events"] = int(getattr(cur, "rowcount", 0) or 0)
+        counts.update(self.purge_deleted_organizations(now=now))
         return counts
+
+    def purge_deleted_organizations(
+        self, retention_days: int = 30, now: datetime | None = None
+    ) -> dict[str, int]:
+        """soft-delete 후 retention_days 경과한 조직의 org 스코프 행 삭제(FR-028).
+
+        audit_events는 법적 보존을 위해 유지 — organizations/멤버십/초대/
+        user_permissions 포함 나머지 org 스코프 테이블을 org_id로 삭제한다.
+        조직당 단일 tx — 한 조직의 실패가 다른 조직 purge를 막지 않는다."""
+        from .migrations import _ORG_SCOPED_TABLES
+
+        cutoff = _iso((now or _now()) - timedelta(days=retention_days))
+        rows = self._conn.execute(
+            "SELECT id FROM organizations WHERE status='deleted' AND updated_at < ?",
+            (cutoff,),
+        ).fetchall()
+        purged_orgs = 0
+        total_rows = 0
+        tables = [t for t in _ORG_SCOPED_TABLES if t != "audit_events"]
+        tables += ["organization_members", "org_invitations"]
+        for r in rows:
+            oid = str(r["id"])
+            try:
+                with self.tx() as c:
+                    # org_id 컬럼이 없는 자식 테이블을 부모보다 먼저 정리한다.
+                    # PG에서는 stage_runs/approvals가 runs.id를 REFERENCES하므로
+                    # 이 순서가 아니면 FK 위반으로 purge 전체가 실패한다.
+                    # 나머지 테이블도 고아 행을 남기지 않도록 runs/tasks/
+                    # routines/triggers/agent_sessions 기준으로 삭제한다.
+                    for sql, params in (
+                        (
+                            "DELETE FROM stage_runs WHERE run_id IN"
+                            " (SELECT id FROM runs WHERE org_id=?)",
+                            (oid,),
+                        ),
+                        (
+                            "DELETE FROM approvals WHERE run_id IN"
+                            " (SELECT id FROM runs WHERE org_id=?)",
+                            (oid,),
+                        ),
+                        (
+                            "DELETE FROM run_comments WHERE run_id IN"
+                            " (SELECT id FROM runs WHERE org_id=?)",
+                            (oid,),
+                        ),
+                        (
+                            "DELETE FROM task_runs WHERE run_id IN"
+                            " (SELECT id FROM runs WHERE org_id=?)"
+                            " OR task_id IN (SELECT id FROM tasks WHERE org_id=?)",
+                            (oid, oid),
+                        ),
+                        (
+                            "DELETE FROM routine_runs WHERE routine_id IN"
+                            " (SELECT id FROM routines WHERE org_id=?)"
+                            " OR task_id IN (SELECT id FROM tasks WHERE org_id=?)",
+                            (oid, oid),
+                        ),
+                        (
+                            "DELETE FROM trigger_fires WHERE trigger_id IN"
+                            " (SELECT id FROM triggers WHERE org_id=?)",
+                            (oid,),
+                        ),
+                        (
+                            # run_id 직결분. deferred(run_id='')는 아래에서
+                            # payload JSON을 파싱해 org_id를 판별한다 —
+                            # LIKE 부분문자열 매칭은 입력 내 우연 일치로
+                            # 타 조직 행을 지우거나 구형 행을 놓친다.
+                            "DELETE FROM wakeup_requests WHERE run_id IN"
+                            " (SELECT id FROM runs WHERE org_id=?)",
+                            (oid,),
+                        ),
+                        (
+                            # agent_session_events는 (tool,session_key)로만
+                            # agent_sessions에 연결된다 — org_id는 세션 행 소유.
+                            # NOT EXISTS 가드: 같은 키를 공유하는 타 조직
+                            # 세션이 있으면 이벤트는 어느 조직 소유인지
+                            # 구분할 수 없으므로 보존한다(과삭제 방지).
+                            "DELETE FROM agent_session_events WHERE EXISTS ("
+                            "SELECT 1 FROM agent_sessions s"
+                            " WHERE s.tool=agent_session_events.tool"
+                            " AND s.session_key=agent_session_events.session_key"
+                            " AND s.org_id=?)"
+                            " AND NOT EXISTS ("
+                            "SELECT 1 FROM agent_sessions s2"
+                            " WHERE s2.tool=agent_session_events.tool"
+                            " AND s2.session_key=agent_session_events.session_key"
+                            " AND s2.org_id<>?)",
+                            (oid, oid),
+                        ),
+                    ):
+                        cur = c.execute(sql, params)
+                        total_rows += int(getattr(cur, "rowcount", 0) or 0)
+                    # deferred wakeup(run_id='')의 payload org_id 파싱 판별.
+                    wrows = c.execute(
+                        "SELECT id, payload FROM wakeup_requests WHERE run_id=''"
+                    ).fetchall()
+                    for wr in wrows:
+                        try:
+                            wp = json.loads(str(wr["payload"] or "{}"))
+                        except Exception:
+                            logger.debug("org purge: unparseable wakeup payload id=%s", wr["id"])
+                            continue
+                        if not isinstance(wp, dict) or str(wp.get("org_id") or "") != oid:
+                            continue
+                        cur = c.execute("DELETE FROM wakeup_requests WHERE id=?", (str(wr["id"]),))
+                        total_rows += int(getattr(cur, "rowcount", 0) or 0)
+                    # 타 조직 agent가 이 조직 agent를 reports_to로 참조 중이면
+                    # 끊는다 — agents.reports_to는 PG FK라 부모 삭제 전 NULL화 필요.
+                    c.execute(
+                        "UPDATE agents SET reports_to=NULL WHERE reports_to IS NOT NULL"
+                        " AND reports_to IN (SELECT id FROM agents WHERE org_id=?)",
+                        (oid,),
+                    )
+                    for t in tables:
+                        cur = c.execute(
+                            f"DELETE FROM {t} WHERE org_id=?",  # noqa: S608
+                            (oid,),
+                        )
+                        total_rows += int(getattr(cur, "rowcount", 0) or 0)
+                    cur = c.execute("DELETE FROM organizations WHERE id=?", (oid,))
+                    total_rows += int(getattr(cur, "rowcount", 0) or 0)
+                purged_orgs += 1
+            except Exception as e:
+                logger.warning("org purge failed id=%s: %s", oid, str(e)[:200])
+        if purged_orgs:
+            logger.info("purged %d deleted organizations (%d rows)", purged_orgs, total_rows)
+        return {"purged_organizations": purged_orgs, "purged_org_rows": total_rows}
 
     # ---- agent_sessions 브릿지/헬스 집계 ----
     def agent_sessions_bridge_info(self) -> dict[str, Any]:

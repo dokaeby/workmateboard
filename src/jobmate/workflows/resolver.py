@@ -25,8 +25,14 @@ def _first_org_id(store: Any) -> str:
     try:
         orgs = store.list_organizations()
     except Exception:
-        return ""
-    return str(orgs[0]["id"]) if orgs else ""
+        return "__no_org__"
+    # FR-031 — suspended 조직은 "활성"이 아니므로 건너뛴다. 활성 조직이
+    # 없으면 '__no_org__' 센티널 — ''는 org_scope가 무필터가 돼 임의 조직의
+    # 동명 spec을 해석할 수 있다.
+    for o in orgs:
+        if str(o.get("status") or "active") == "active":
+            return str(o["id"])
+    return "__no_org__"
 
 
 def resolve_workflow_spec(store: Any, key: str) -> WorkflowSpec | None:
@@ -50,7 +56,7 @@ def resolve_workflow_spec(store: Any, key: str) -> WorkflowSpec | None:
     try:
         with orgctx.org_scope(oid):
             row = store.get_custom_workflow(key)
-        if row is None and not ctx_oid and oid:
+        if row is None and not ctx_oid and oid and oid != "__no_org__":
             # ctx='' + 기본 조직에 없음 — 조직 도입 이전/무스코프 쓰기로
             # 남은 레거시 행을 위해 무필터 1회 재조회(단일 조직 배포 호환).
             row = store.get_custom_workflow(key)

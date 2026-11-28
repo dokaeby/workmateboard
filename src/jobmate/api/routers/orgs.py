@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ...security import SESSION_COOKIE, hash_token
+from ...store import orgctx
 from ...store.orgs import ORG_ROLES, OrgTransferError, normalize_org_slug
 
 logger = logging.getLogger("jobmate.api")
@@ -70,7 +71,11 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     def _audit(actor: str, action: str, org_id: str, detail: dict[str, Any]) -> None:
         try:
-            store.audit("", actor, action, org_id, detail)
+            # 감사 행은 '행위 대상 조직'에 스탬프한다 — 플랫폼 admin이 타 조직을
+            # suspend/delete해도 그 조직의 감사 로그에 남아야 FR-033을 만족한다.
+            # (store.audit은 run_id=''이면 요청 ctx org를 쓰므로 명시 scope 필요)
+            with orgctx.org_scope(org_id):
+                store.audit("", actor, action, org_id, detail)
         except Exception:
             logger.debug("org audit failed: %s", action, exc_info=True)
 
@@ -196,23 +201,91 @@ def register(app: FastAPI, ctx: Any) -> None:
         blocked = _suspended_write(request, org)
         if blocked is not None:
             return blocked
-        members = [mm for mm in store.list_org_members(org_id) if mm.get("status") == "active"]
-        if len(members) > 1:
-            return err(
-                409,
-                "org_has_members",
-                "멤버를 먼저 모두 제거해야 합니다",
-                request,
-                extra={"member_count": len(members)},
-            )
-        # 활성 run 차단 검사 — runs.org_id는 US3에서 도입, 도입 전까지
-        # org 스코프 run이 없으므로 생략(US3에서 org_has_active_runs 추가)
-        store.set_organization_status(org_id, "deleted")
+        # 활성 run 차단(FR-028) — queued|running|waiting_approval이 1건
+        # 이상이면 삭제 거부 + 잔여 건수 반환. run을 먼저 취소/종결해야 한다.
+        # check-then-act(활성 run·멤버 수 확인 → deleted 전이)를 exclusive로
+        # 묶어, 확인과 전이 사이에 POST /runs가 끼어드는 TOCTOU를 차단한다.
+        with store.exclusive():
+            active_runs = store.count_org_active_runs(org_id)
+            if active_runs:
+                return err(
+                    409,
+                    "org_has_active_runs",
+                    "활성 run이 있어 삭제할 수 없습니다",
+                    request,
+                    extra={"active_runs": active_runs},
+                )
+            members = [mm for mm in store.list_org_members(org_id) if mm.get("status") == "active"]
+            if len(members) > 1:
+                return err(
+                    409,
+                    "org_has_members",
+                    "멤버를 먼저 모두 제거해야 합니다",
+                    request,
+                    extra={"member_count": len(members)},
+                )
+            store.set_organization_status(org_id, "deleted")
         for mm in store.list_org_members(org_id):
             store.clear_session_org_context(str(mm["user_id"]), org_id)
         _audit(str(user.get("email") or "-"), "org_deleted", org_id, {})
         logger.info("org deleted: id=%s by=%s", org_id, user["id"])
         return JSONResponse({"status": "deleted"})
+
+    @app.post("/api/v1/orgs/{org_id}/suspend")
+    def org_suspend(org_id: str, request: Request) -> JSONResponse:
+        """조직 정지 — 플랫폼 admin 전용(FR-031).
+
+        suspended 조직은 멤버 API가 403 org_suspended로 차단되고
+        org_owner는 읽기 전용이 된다(미들웨어 _org_access_block)."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 환경에서는 사용할 수 없습니다", request)
+        admin = _platform_admin_user(request)
+        if admin is None:
+            return err(403, "forbidden", "platform admin role required", request)
+        org = _org_or_404(org_id)
+        if org is None:
+            return err(404, "not_found", "조직을 찾을 수 없습니다", request)
+        if org.get("status") == "suspended":
+            return JSONResponse({"status": "suspended"})
+        if org.get("status") == "deleted":
+            return err(409, "org_deleted", "삭제된 조직은 정지할 수 없습니다", request)
+        store.set_organization_status(org_id, "suspended")
+        _audit(
+            str(admin.get("email") or admin.get("id") or "-"),
+            "org_suspended",
+            org_id,
+            {},
+        )
+        logger.info("org suspended: id=%s by=%s", org_id, admin.get("id"))
+        return JSONResponse({"status": "suspended"})
+
+    @app.post("/api/v1/orgs/{org_id}/restore")
+    def org_restore(org_id: str, request: Request) -> JSONResponse:
+        """정지된 조직 복구 — 플랫폼 admin 전용. suspended → active."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 환경에서는 사용할 수 없습니다", request)
+        admin = _platform_admin_user(request)
+        if admin is None:
+            return err(403, "forbidden", "platform admin role required", request)
+        org = _org_or_404(org_id)
+        if org is None:
+            return err(404, "not_found", "조직을 찾을 수 없습니다", request)
+        if org.get("status") != "suspended":
+            return err(
+                409,
+                "invalid_state",
+                f"restore requires suspended org (status={org.get('status')})",
+                request,
+            )
+        store.set_organization_status(org_id, "active")
+        _audit(
+            str(admin.get("email") or admin.get("id") or "-"),
+            "org_restored",
+            org_id,
+            {},
+        )
+        logger.info("org restored: id=%s by=%s", org_id, admin.get("id"))
+        return JSONResponse({"status": "active"})
 
     @app.post("/api/v1/orgs/{org_id}/switch")
     def org_switch(org_id: str, request: Request) -> JSONResponse:
@@ -740,7 +813,12 @@ def register(app: FastAPI, ctx: Any) -> None:
         guarded = _project_perm_guard(request, user, org_id, project_id)
         if isinstance(guarded, JSONResponse):
             return guarded
-        _org, pid = guarded
+        org, pid = guarded
+        # suspended 조직 읽기 규칙 — 다른 orgs/* GET과 동일하게 org_owner만
+        # 허용(org_admin·일반 멤버·비멤버 플랫폼 admin은 403 org_suspended).
+        blocked = _suspended_read(request, org, _membership(user, org_id) or {})
+        if blocked is not None:
+            return blocked
         uid_filter = user_id.strip()
         if uid_filter:
             if store.get_org_membership(org_id, uid_filter) is None:

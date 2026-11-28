@@ -84,6 +84,13 @@ def _evaluate_triggers(
             trig_org = str(trig.get("org_id") or "")
             if sess_org and trig_org and sess_org != trig_org:
                 continue
+            # FR-031 — suspended/deleted 조직의 trigger는 발사하지 않는다.
+            # claim_trigger_fire 전에 건너뛰어 trigger_fires를 소모하지
+            # 않는다. 전이 자체는 new_prev에 기록되므로 같은 전이가
+            # 재발사되지는 않는다(스케줄의 due 재시도와 달리 1회성 이벤트).
+            if store.org_inactive(trig_org):
+                worker_logger.info("trigger %s skipped: org %s inactive", trig["id"], trig_org)
+                continue
             match = trig.get("match") or {}
             action = trig.get("action") or {}
             if not _trigger_match(match, sess):

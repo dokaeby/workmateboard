@@ -257,14 +257,20 @@ def build_app_context(
     def _first_active_org(store: Store) -> str:
         """머신 주체(env/ownerless 키)의 조직 컨텍스트 — 첫 활성 조직.
 
-        jobs._default_org_id와 동일 규칙. 조직이 하나도 없으면 '' —
-        이 경우 인증 행위자 분기는 위에서 이미 '__no_org__'로 막히고,
-        여기 도달하는 것은 비인증이 아닌 머신 키뿐이다."""
+        jobs._default_org_id와 동일 규칙. 활성 조직이 하나도 없으면
+        '__no_org__' 센티널 — ''를 돌려주면 _org_filter의 `?=''` 이스케이프가
+        무필터가 돼 전 조직(정지·삭제 포함) 데이터를 노출한다. 인증 행위자
+        분기는 위에서 이미 '__no_org__'로 막히고, 여기 도달하는 것은
+        비인증이 아닌 머신 키뿐이다."""
         try:
             orgs = store.list_organizations()
         except Exception:
-            return ""
-        return str(orgs[0]["id"]) if orgs else ""
+            return "__no_org__"
+        # FR-031 — suspended 조직은 "활성"이 아니므로 건너뛴다.
+        for o in orgs:
+            if str(o.get("status") or "active") == "active":
+                return str(o["id"])
+        return "__no_org__"
 
     def _normalize_role(role: Any) -> str:
         """role 정규화 — member|lead|admin. 레거시 'user'는 member로 취급."""
@@ -320,6 +326,62 @@ def build_app_context(
         from ..security import allowed_emails, api_key, is_loopback_request
 
         return not api_key() and not allowed_emails() and not is_loopback_request(request)
+
+    def _org_access_block(request: Request) -> JSONResponse | None:
+        """suspended/deleted 조직 컨텍스트의 API 접근 차단 (FR-031/FR-028).
+
+        세션 사용자만 대상 — 머신 API 키·env 키는 조직 멤버가 아니므로
+        기존 머신 trust model을 따른다(크론·브릿지 경로 보호).
+        exempt:
+        - /api/v1/auth/* — 인증 경로 자체.
+        - /api/v1/orgs 및 /api/v1/orgs/* — orgs.py가 라우트별 suspended 규칙을
+          자체 적용한다(탈퇴·삭제·조직 생성/목록·스위치 탈출 경로 보존).
+          "/api/v1/orgs" 정확 경로도 포함해야 suspended 조직에 갇힌 사용자가
+          조직 목록 조회·새 조직 생성으로 탈출할 수 있다.
+        - /api/v1/invitations/* — 수신자 측 초대 라우트는 orgs.py 소속이며
+          라우트가 "타깃 조직"의 suspended/deleted 상태를 자체 검증한다
+          (invite_accept의 org 상태 체크). 현재 org ctx의 suspended와는
+          무관하므로 차단하면 안 된다.
+        - GET/HEAD/OPTIONS /api/v1/share/* — 공개 공유 스냅샷. 인증 미들웨어도
+          GET을 인증 예외로 두는 토큰 기반 공개 경로이고 share_get은
+          payload 스냅샷만 반환해 멤버 전용 데이터를 섞지 않는다.
+
+        - suspended: org_owner는 읽기(GET/HEAD/OPTIONS)만 허용,
+          그 외 멤버는 전면 403 org_suspended.
+        - deleted: 멤버 구분 없이 전면 403 org_deleted."""
+        user = _session_user(request)
+        if user is None:
+            return None
+        oid = orgctx.current_org_id()
+        if not oid or oid == "__no_org__":
+            return None
+        path = request.url.path
+        if (
+            path.startswith("/api/v1/auth/")
+            or path == "/api/v1/orgs"
+            or path.startswith("/api/v1/orgs/")
+            or path.startswith("/api/v1/invitations/")
+        ):
+            return None
+        if path.startswith("/api/v1/share/") and request.method in (
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        ):
+            return None
+        org = store.get_organization(oid)
+        if org is None:
+            return None
+        status = str(org.get("status") or "")
+        if status == "suspended":
+            m = store.get_org_membership(oid, str(user["id"]))
+            is_owner = str((m or {}).get("role") or "") == "org_owner"
+            if is_owner and request.method in ("GET", "HEAD", "OPTIONS"):
+                return None
+            return err(403, "org_suspended", "정지된 조직입니다", request)
+        if status == "deleted":
+            return err(403, "org_deleted", "삭제된 조직입니다", request)
+        return None
 
     def _platform_admin_user(request: Request) -> dict[str, Any] | None:
         """플랫폼 admin 판정 — 세션 role=admin, 유효 API 키(머신), 또는

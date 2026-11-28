@@ -228,8 +228,13 @@ class BuilderStoreMixin:
         try:
             orgs = self.list_organizations()
         except Exception:
-            return ""
-        return str(orgs[0]["id"]) if orgs else ""
+            return "__no_org__"
+        # FR-031 — suspended 조직은 "활성"이 아니므로 건너뛴다. 활성 조직이
+        # 없으면 '__no_org__' — '' 스탬프는 무필터 ctx 조회에 노출된다.
+        for o in orgs:
+            if str(o.get("status") or "active") == "active":
+                return str(o["id"])
+        return "__no_org__"
 
     def save_custom_workflow(
         self,

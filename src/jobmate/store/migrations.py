@@ -17,6 +17,50 @@ from .util import _iso, _now
 logger = logging.getLogger("jobmate.store.migrations")
 
 
+_ORG_SCOPED_TABLES = (
+    "runs",
+    "projects",
+    "tasks",
+    "agents",
+    "goals",
+    "evals",
+    # eval_runs는 파생 테이블이지만 org_id를 비정규화해 직접 필터한다
+    # (spec 003 US3 리뷰 — 조직 간 eval 활동 유출 차단).
+    "eval_runs",
+    "custom_workflows",
+    "workflow_revisions",
+    "connectors",
+    "routines",
+    "agent_permissions",
+    "user_permissions",
+    "agent_events",
+    "task_comments",
+    "task_artifacts",
+    "cost_events",
+    "approval_requests",
+    "recovery_actions",
+    "budget_policies",
+    "budget_incidents",
+    "inbox_items",
+    "notifications",
+    "reports",
+    "playbooks",
+    "dashboard_cards",
+    "share_links",
+    "workflow_schedules",
+    "triggers",
+    "event_links",
+    "llm_usage",
+    "scheduled_events",
+    "notification_jobs",
+    "message_extractions",
+    "email_summaries",
+    "agent_sessions",
+    "session_activity",
+    "audit_events",
+)
+
+
 class MigrationStoreMixin:
     def _ensure_columns(self, table: str, wanted: dict[str, str]) -> None:
         """CREATE TABLE IF NOT EXISTS는 기존 테이블을 변경하지 않으므로
@@ -94,48 +138,7 @@ class MigrationStoreMixin:
         self._ensure_columns("auth_sessions", {"current_org_id": "TEXT NOT NULL DEFAULT ''"})
         # spec 003 US3/FR-013 — 조직 스코프 테이블의 org_id 컬럼 보강
         # (신규 DB는 SCHEMA가 생성, 기존 DB는 여기서 ALTER).
-        _ORG_SCOPED_TABLES = (
-            "runs",
-            "projects",
-            "tasks",
-            "agents",
-            "goals",
-            "evals",
-            # eval_runs는 파생 테이블이지만 org_id를 비정규화해 직접 필터한다
-            # (spec 003 US3 리뷰 — 조직 간 eval 활동 유출 차단).
-            "eval_runs",
-            "custom_workflows",
-            "workflow_revisions",
-            "connectors",
-            "routines",
-            "agent_permissions",
-            "user_permissions",
-            "agent_events",
-            "task_comments",
-            "task_artifacts",
-            "cost_events",
-            "approval_requests",
-            "recovery_actions",
-            "budget_policies",
-            "budget_incidents",
-            "inbox_items",
-            "notifications",
-            "reports",
-            "playbooks",
-            "dashboard_cards",
-            "share_links",
-            "workflow_schedules",
-            "triggers",
-            "event_links",
-            "llm_usage",
-            "scheduled_events",
-            "notification_jobs",
-            "message_extractions",
-            "email_summaries",
-            "agent_sessions",
-            "session_activity",
-            "audit_events",
-        )
+
         for _t in _ORG_SCOPED_TABLES:
             try:
                 self._ensure_columns(_t, {"org_id": "TEXT NOT NULL DEFAULT ''"})

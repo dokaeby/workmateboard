@@ -247,7 +247,7 @@ class AgentSessionStoreMixin:
         sql = (
             "SELECT id,tool,session_key,project,title,status,doing,ask,"
             "ended_summary,artifacts,machine,tokens_in,tokens_out,"
-            "last_event_at,created_at,updated_at"
+            "last_event_at,created_at,updated_at,org_id"
             " FROM agent_sessions"
         )
         frag, fparams = _org_filter()
