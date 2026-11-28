@@ -38,6 +38,7 @@ from .governance import GovernanceStoreMixin
 from .inbox import InboxStoreMixin
 from .management import ManagementStoreMixin
 from .migrations import MigrationStoreMixin
+from .observability import ObservabilityStoreMixin
 from .orgs import OrgStoreMixin
 from .permissions import PermissionStoreMixin
 from .pg_dialect import _is_pg_dsn, _PGConn
@@ -90,6 +91,7 @@ class Store(
     OrgStoreMixin,
     WebhookStoreMixin,
     UserPrefsStoreMixin,
+    ObservabilityStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -125,6 +127,7 @@ class Store(
         self._migrate_user_columns()
         self._migrate_org_columns()
         self._migrate_run_columns()
+        self._migrate_observability_indexes()
         self._migrate_budget_incident_index()
         self._migrate_wakeup_idempotency_index()
         self._migrate_agent_name_index()

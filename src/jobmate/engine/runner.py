@@ -56,6 +56,18 @@ ESCALATE_FAILED = "failed"
 # 리뷰성 단계(회귀 시 review_rounds 증가)
 REVIEW_DECISION_STAGES = {"security", "code_review", "qa"}
 
+# spec 007 US3 — 실패성 종결 상태. 이 상태로 finalize되면 run.error를
+# 기록해 error_taxonomy 분류(error_class)와 /observability/errors 집계에
+# 잡히게 한다. completed/cancelled/waiting_*는 error를 남기지 않는다.
+_FINALIZE_ERROR_STATUSES = frozenset(
+    {
+        RunStatus.FAILED,
+        RunStatus.BUDGET_EXHAUSTED,
+        RunStatus.REJECTED,
+        RunStatus.NEEDS_HUMAN,
+    }
+)
+
 # LLM function-calling 루프 상한 (단계당 tool-call 라운드 수)
 _MAX_TOOL_ROUNDS = 5
 # tool 결과를 프롬프트에 되돌릴 때의 최대 길이 (ToolExecutor.MAX_RESULT_CHARS와 동일)
@@ -769,19 +781,51 @@ class WorkflowRunner:
             status = RunStatus.REJECTED
         else:
             status = RunStatus.COMPLETED
-        self.store.update_run(run_id, status=status)
+        update: dict[str, Any] = {"status": status}
+        if status in _FINALIZE_ERROR_STATUSES:
+            # spec 007 US3 — 실패성 종결은 run.error를 남겨 error_class
+            # 분류·observability/errors·error.error_class 알림 조건이
+            # 동작하게 한다. 이미 더 구체적인 error가 기록된 run은
+            # 덮어쓰지 않는다(update_run은 error!=None이면 COALESCE로
+            # 기존값을 교체하므로 여기서 기존값을 확인한다).
+            existing = self.store.get_run(run_id)
+            if existing is not None and not (existing.error or ""):
+                update["error"] = self._finalize_error(run_id, status, escalate)
+        self.store.update_run(run_id, **update)
         self.store.audit(
             run_id, "system", "run_finalized", "", {"status": status.value, "escalate": escalate}
         )
         self._project_management(run_id)
         logger.info("run %s finalized status=%s escalate=%s", run_id, status.value, escalate or "-")
         run = self.store.get_run(run_id)
-        if run is not None and self.spec.key == "dev_review":
+        if run is not None:
             meta = dict(run.metadata or {})
-            meta["pr_summary"] = self._approval_summary(state)
+            # spec 007 US3 — run 수준 비용을 metadata에 기록해
+            # alert_rules의 run.cost_usd 조건이 실제로 발화하도록 한다.
+            meta["cost_usd"] = round(float(state.get("cost_usd", 0.0) or 0.0), 6)
+            if self.spec.key == "dev_review":
+                meta["pr_summary"] = self._approval_summary(state)
+                self.store.audit(
+                    run_id, "system", "pr_summary", "", {"chars": len(meta["pr_summary"])}
+                )
             self.store.update_run(run_id, metadata=meta)
-            self.store.audit(run_id, "system", "pr_summary", "", {"chars": len(meta["pr_summary"])})
         return {"final_status": status.value}
+
+    def _finalize_error(self, run_id: str, status: RunStatus, escalate: str) -> str:
+        """실패성 종결의 run.error 본문 — error_class 분류의 입력.
+
+        가장 최근 failed stage_run의 원문을 우선 쓴다 — 실제 원인
+        (timeout/auth/budget 등)이 error_taxonomy에 정확히 매칭된다.
+        stage 오류가 없으면 escalate 사유·상태값으로 폴백한다
+        (예: 'run_budget_exhausted' → 'budget' 분류)."""
+        try:
+            for sr in reversed(self.store.get_stage_runs(run_id)):
+                if sr.status == StageStatus.FAILED and sr.error:
+                    return str(sr.error)[:500]
+        except Exception:
+            logger.debug("finalize error lookup failed run=%s", run_id, exc_info=True)
+        reason = escalate or status.value
+        return f"run_{reason}"[:300]
 
     def _project_management(self, run_id: str) -> None:
         """run→task/agent 상태 투영 hook (management 1차).

@@ -30,7 +30,9 @@ _CHANNEL_STATUSES = ("sent", "skipped_unconfigured", "failed")
 _FIRE_RETENTION_DAYS = 90
 # cooldown_minutes=0인 규칙의 same-fingerprint dedup은 사실상 영구 —
 # 동일 이벤트가 스윕/재평가로 반복 emit돼도 재발송하지 않는다.
-_FAR_FUTURE_ISO = "9999-12-31T23:59:59+00:00"
+# _FAR_PAST를 dedup cutoff로 쓰면 모든 기존 fire가 `created_at > cutoff`를
+# 만족해 NOT EXISTS가 claim을 차단한다(역사적으로 _FAR_FUTURE를 썼다가
+# dedup이 무력화돼 발송 스팸이 발생한 회귀 — _FAR_FUTURE는 사용 금지).
 _FAR_PAST_ISO = "1970-01-01T00:00:00+00:00"
 
 
@@ -291,8 +293,19 @@ class AlertsStoreMixin:
         3. status='dispatching' fire 행 INSERT — 같은
            (rule_id, event_fingerprint)의 최근 fire가 있으면
            WHERE NOT EXISTS가 rowcount=0 → claim 실패.
-           dedup 윈도우는 cooldown과 동일: cooldown>0이면 윈도우 경과 후
-           같은 fingerprint도 재발화 가능, cooldown=0이면 사실상 영구 dedup.
+           dedup 윈도우는 cooldown과 동일하다:
+           - cooldown>0: 윈도우(cooldown 분) 경과 후 같은 fingerprint도
+             재발화 가능 — 지속 조건의 주기적 재알림. 규칙 레벨 쿨다운
+             (last_fired_at)은 cooldown 분 내 어떤 발송도 막으므로
+             같은 fingerprint가 cooldown 안에 연속 발화하지는 않는다.
+           - cooldown=0: fp_cutoff가 _FAR_PAST라 같은 fingerprint의
+             기존 fire(보존 90일 내)가 항상 존재 → 사실상 영구 dedup.
+             다른 fingerprint는 last_fired_at 차단 없이 즉시 발화한다.
+             주의: 주기 평가 fingerprint는 시간 버킷
+             (periodic:{rid}:{field}:{YYYYMMDDHH})을 포함하므로
+             cooldown=0 주기 규칙도 조건이 지속되는 한 시간마다
+             새 fingerprint로 재발화한다 — 의도된 동작(시간당 1회
+             상한 알림).
         4. claim 성공 시 last_fired_at을 같은 tx에서 갱신 — 다른
            fingerprint의 동시 이벤트도 쿨다운에 걸린다.
 
@@ -306,7 +319,10 @@ class AlertsStoreMixin:
             cooldown = max(0, int(cooldown_minutes or 0))
         except (TypeError, ValueError):
             cooldown = 0
-        fp_cutoff = _iso(now_dt - timedelta(minutes=cooldown)) if cooldown > 0 else _FAR_FUTURE_ISO
+        # cooldown=0은 _FAR_PAST — 어떤 과거 fire도 `created_at > cutoff`를
+        # 만족시켜 same-fingerprint dedup이 영구 적용된다(_FAR_FUTURE면
+        # 조건이 항상 거짓이라 dedup이 무력화돼 반복 발송 스팸이 된다).
+        fp_cutoff = _iso(now_dt - timedelta(minutes=cooldown)) if cooldown > 0 else _FAR_PAST_ISO
         rule_cutoff = _iso(now_dt - timedelta(minutes=cooldown)) if cooldown > 0 else _FAR_PAST_ISO
         fid = uuid.uuid4().hex[:12]
         oid = orgctx.org_for_write(org_id)

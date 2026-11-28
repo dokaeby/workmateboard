@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .. import mailer, messenger
@@ -41,8 +43,28 @@ CONDITION_FIELDS = frozenset(
         "schedule.missed",
         "schedule.id",
         "schedule.workflow",
+        # spec 007 US4 — 신규 조건 필드
+        "run.latency_ms",  # run.duration_ms의 alias (동일 값)
+        "error.error_class",  # stage/run 실패 이벤트의 error_class
+        "error.rate_pct",  # 주기 평가 — trailing window 실패율(%)
+        "session.stale_count",  # 주기 평가 — stale/long_idle 세션 수
+        "cost.delta_pct",  # 주기 평가 — 오늘 비용 vs 직전 7일 일평균 증감(%)
     }
 )
+
+# spec 007 US4 — 이벤트 컨텍스트에 값이 없고 주기 집계가 필요한 필드.
+# emit_alert_event(이벤트 경로)에서는 평가하지 않고
+# evaluate_periodic_rules(스윕/이벤트 경유 주기 평가)에서만 매칭한다.
+PERIODIC_FIELDS = frozenset({"error.rate_pct", "session.stale_count", "cost.delta_pct"})
+
+# 주기 평가 최소 간격 — emit 이벤트가 잦아도 SQL 집계는 이 간격으로 스로틀.
+_PERIODIC_MIN_INTERVAL = 300.0
+# (id(store), org_id) → 마지막 평가 monotonic 시각
+_PERIODIC_LAST: dict[tuple[int, str], float] = {}
+# error.rate_pct 집계 윈도우(분)
+_ERROR_RATE_WINDOW_MIN = 60
+# cost.delta_pct 비교 기간(일) — 오늘 vs 직전 7일 일평균
+_COST_BASELINE_DAYS = 7
 
 OPS = frozenset({"eq", "ne", "gt", "gte", "lt", "lte", "in", "contains"})
 _NUMERIC_OPS = frozenset({"gt", "gte", "lt", "lte"})
@@ -343,52 +365,83 @@ def emit_alert_event(
         return 0
     now = _now()
     for rule in rules:
-        rid = str(rule.get("id") or "")
-        if not rid:
+        # 주기 집계 필드 규칙은 이벤트 컨텍스트에 값이 없으므로 여기서
+        # 건너뛴다 — ne/eq가 None에 매칭되는 오발화를 막는다. 평가는
+        # 아래 evaluate_periodic_rules가 담당한다.
+        if _condition_field(rule) in PERIODIC_FIELDS:
             continue
         if not condition_matches(rule.get("condition") or {}, ctx_fields):
             continue
-        # dedup/cooldown 판정 + fire claim을 store의 단일 tx로 원자화 —
-        # 직접 emit·스윕·비동기 경로가 동시에 들어와도 채널 발송은
-        # claim에 성공한 emitter 1명뿐이다 (check-then-act 경합 제거).
-        try:
-            cooldown = int(rule.get("cooldown_minutes") or 0)
-        except (TypeError, ValueError):
-            cooldown = 0
-        fire_id = store.claim_alert_fire(
-            rule_id=rid,
-            event_fingerprint=fp,
-            cooldown_minutes=cooldown,
-            org_id=str(rule.get("org_id") or "") or None,
-            now=now,
-        )
-        if fire_id is None:
-            # 같은 fingerprint의 fire가 이미 있으면 조용히 skip(멱등),
-            # 없으면 규칙 쿨다운 억제 — suppressed_cooldown을 1회 기록한다.
-            if store.find_alert_fire(rid, fp) is None:
-                store.record_suppressed_fire(
-                    rule_id=rid,
-                    event_fingerprint=fp,
-                    org_id=str(rule.get("org_id") or "") or None,
-                )
-                logger.info("alert rule %s suppressed cooldown fp=%s", rid, fp[:60])
-            continue
-        channels = rule.get("channels") or []
-        results = [dispatch_channel(store, ch, rule, ctx_fields) for ch in channels]
-        any_failed = any(r.get("status") == "failed" for r in results)
-        store.complete_alert_fire(
-            fire_id,
-            status=FIRE_PARTIAL if any_failed else FIRE_FIRED,
-            channels=results,
-        )
-        fired += 1
-        logger.info(
-            "alert rule %s fired fp=%s channels=%s",
-            rid,
-            fp[:60],
-            [r.get("status") for r in results],
-        )
+        fired += _claim_and_dispatch(store, rule, ctx_fields, fp, now)
+    # spec 007 US4 — 주기 집계 필드 규칙 평가. emit 경로(직접 emit +
+    # jobs._alert_rule_sweep 경유 emit 포함)마다 호출되며 내부 스로틀로
+    # SQL 집계 빈도를 제한한다. 실패가 이벤트 평가를 깨지 않게 삼킨다.
+    try:
+        fired += evaluate_periodic_rules(store, org_id=oid)
+    except Exception:
+        logger.warning("periodic alert eval failed org=%s", oid, exc_info=True)
     return fired
+
+
+def _condition_field(rule: dict[str, Any]) -> str:
+    """rule.condition.field — 미검증/누락 시 ''."""
+    return str((rule.get("condition") or {}).get("field") or "")
+
+
+def _claim_and_dispatch(
+    store: Store,
+    rule: dict[str, Any],
+    ctx_fields: dict[str, Any],
+    fp: str,
+    now: datetime,
+) -> int:
+    """매칭된 단일 규칙의 dedup/cooldown claim + 채널 발송.
+
+    반환: 실제 발송이 발생했으면 1, dedup/cooldown 억제면 0.
+    emit_alert_event와 evaluate_periodic_rules가 공유한다."""
+    rid = str(rule.get("id") or "")
+    if not rid:
+        return 0
+    # dedup/cooldown 판정 + fire claim을 store의 단일 tx로 원자화 —
+    # 직접 emit·스윕·비동기·주기 평가 경로가 동시에 들어와도 채널 발송은
+    # claim에 성공한 emitter 1명뿐이다 (check-then-act 경합 제거).
+    try:
+        cooldown = int(rule.get("cooldown_minutes") or 0)
+    except (TypeError, ValueError):
+        cooldown = 0
+    fire_id = store.claim_alert_fire(
+        rule_id=rid,
+        event_fingerprint=fp,
+        cooldown_minutes=cooldown,
+        org_id=str(rule.get("org_id") or "") or None,
+        now=now,
+    )
+    if fire_id is None:
+        # 같은 fingerprint의 fire가 이미 있으면 조용히 skip(멱등),
+        # 없으면 규칙 쿨다운 억제 — suppressed_cooldown을 1회 기록한다.
+        if store.find_alert_fire(rid, fp) is None:
+            store.record_suppressed_fire(
+                rule_id=rid,
+                event_fingerprint=fp,
+                org_id=str(rule.get("org_id") or "") or None,
+            )
+            logger.info("alert rule %s suppressed cooldown fp=%s", rid, fp[:60])
+        return 0
+    channels = rule.get("channels") or []
+    results = [dispatch_channel(store, ch, rule, ctx_fields) for ch in channels]
+    any_failed = any(r.get("status") == "failed" for r in results)
+    store.complete_alert_fire(
+        fire_id,
+        status=FIRE_PARTIAL if any_failed else FIRE_FIRED,
+        channels=results,
+    )
+    logger.info(
+        "alert rule %s fired fp=%s channels=%s",
+        rid,
+        fp[:60],
+        [r.get("status") for r in results],
+    )
+    return 1
 
 
 def emit_alert_event_async(
@@ -423,6 +476,190 @@ def emit_alert_event_async(
         logger.warning("alert eval thread spawn failed", exc_info=True)
 
 
+# ---------------- 주기 집계 필드 평가 (spec 007 US4) ----------------
+
+
+def _periodic_org_scope(store: Store, org_id: str) -> Any:
+    """emit_alert_event와 동일한 org 스코프 재진입 — ctx가 다르면 감싼다.
+    반환은 orgctx.org_scope 컨텍스트 매니저 또는 None."""
+    oid = str(org_id or "")
+    if oid and orgctx.current_org_id() != oid:
+        return orgctx.org_scope(oid)
+    return None
+
+
+def evaluate_periodic_rules(
+    store: Store,
+    *,
+    org_id: str = "",
+    now: datetime | None = None,
+    force: bool = False,
+) -> int:
+    """주기 집계 필드(error.rate_pct/session.stale_count/cost.delta_pct)
+    규칙을 평가·발송한다 — 반환은 실제 발송된 규칙 수.
+
+    호출 경로: emit_alert_event 끝에서 자동 호출(이벤트가 흐를 때만,
+    _PERIODIC_MIN_INTERVAL 스로틀) + api/jobs.py::_alert_rule_sweep 끝에서
+    규칙이 있는 org별로 무조건 호출 — 이벤트가 없는 조용한 시스템의
+    주기 규칙도 평가된다(동일 스로틀 공유).
+
+    멱등/쿨다운은 _claim_and_dispatch 경유 — fingerprint는
+    `periodic:{rule_id}:{field}:{YYYYMMDDHH}`라 같은 시간 버킷 내
+    재평가는 dedup되고, cooldown_minutes가 지나면 재발화한다."""
+    oid = str(org_id or "")
+    scope = _periodic_org_scope(store, oid)
+    if scope is not None:
+        with scope:
+            return evaluate_periodic_rules(store, org_id=oid, now=now, force=force)
+    rules = [
+        r for r in store.list_alert_rules(enabled_only=True) if str(r.get("org_id") or "") == oid
+    ]
+    periodic = [r for r in rules if _condition_field(r) in PERIODIC_FIELDS]
+    if not periodic:
+        return 0
+    key = (id(store), oid)
+    mono = time.monotonic()
+    last = _PERIODIC_LAST.get(key)
+    if not force and last is not None and mono - last < _PERIODIC_MIN_INTERVAL:
+        return 0
+    now_dt = now if isinstance(now, datetime) else _now()
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=UTC)
+    needed = {_condition_field(r) for r in periodic}
+    try:
+        values = _compute_periodic_values(store, oid, needed, now_dt)
+    except Exception:
+        logger.warning("periodic value compute failed org=%s", oid, exc_info=True)
+        return 0
+    _PERIODIC_LAST[key] = mono
+    # 시간 버킷 fingerprint — 쿨다운=0 규칙도 시간 단위로만 재발화한다.
+    window = now_dt.strftime("%Y%m%d%H")
+    fired = 0
+    for rule in periodic:
+        rid = str(rule.get("id") or "")
+        field = _condition_field(rule)
+        if not rid or field not in values:
+            continue
+        fp = f"periodic:{rid}:{field}:{window}"
+        pfields: dict[str, Any] = dict(values)
+        pfields["_fingerprint"] = fp
+        if not condition_matches(rule.get("condition") or {}, pfields):
+            continue
+        fired += _claim_and_dispatch(store, rule, pfields, fp, now_dt)
+    return fired
+
+
+def _compute_periodic_values(
+    store: Store, org_id: str, needed: set[str], now: datetime
+) -> dict[str, float]:
+    """필요한 주기 필드만 계산 — (store, org) 단위 1회 호출당 1쿼리씩."""
+    values: dict[str, float] = {}
+    if "error.rate_pct" in needed:
+        values["error.rate_pct"] = _error_rate_pct(store, org_id, now)
+    if "session.stale_count" in needed:
+        values["session.stale_count"] = float(_session_stale_count(store, now))
+    if "cost.delta_pct" in needed:
+        values["cost.delta_pct"] = _cost_delta_pct(store, org_id, now)
+    return values
+
+
+def _error_rate_pct(store: Store, org_id: str, now: datetime) -> float:
+    """trailing 60분 run 실패율(%) — status='failed' / 전체 run.
+
+    윈도우 내 run이 없으면 0.0 — gt 계열 조건이 오발화하지 않는다."""
+    since = (now - timedelta(minutes=_ERROR_RATE_WINDOW_MIN)).isoformat()
+    row = store._conn.execute(  # noqa: SLF001 - sweep과 동일한 내부 집계 조회
+        "SELECT COUNT(*) AS total,"
+        " SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed"
+        " FROM runs WHERE created_at >= ? AND org_id=?",
+        (since, org_id),
+    ).fetchone()
+    total = int(row["total"] or 0) if row else 0
+    if total <= 0:
+        return 0.0
+    failed = int(row["failed"] or 0) if row else 0
+    return round(failed * 100.0 / total, 2)
+
+
+def _session_stale_count(store: Store, now: datetime | None = None) -> int:
+    """health가 stale/long_idle인 agent_sessions 수 — lead_common.session_health
+    와 동일 규칙을 SQL COUNT로 재현한다.
+
+    이전 구현은 list_agent_sessions(limit=500, last_event_at DESC) 상위만
+    스캔했는데, 정렬이 최신순이라 가장 오래된(stale) 세션이 limit 밖으로
+    밀려 과소계상됐다. session_health 규칙:
+    - status='ended' 제외
+    - working/decision: 마지막 활동(last_event_at → updated_at 폴백) 이후
+      _SESSION_STALE_SECONDS(300s) 초과 → stale
+    - rest: _SESSION_LONG_IDLE_SECONDS(12h) 초과 → long_idle
+    - 그 외 status/타임스탬프 없음 → active
+    org 필터는 list_agent_sessions의 _org_filter와 동일(ctx 조직 + '' 공유 행).
+    타임스탬프는 ISO 문자열 비교 — 파싱 불가한 비정형 값은 세션 행을
+    만들지 않는 upsert 경로상 발생하지 않는다고 가정한다."""
+    from ..lead_common import _SESSION_LONG_IDLE_SECONDS, _SESSION_STALE_SECONDS
+
+    now_dt = now if isinstance(now, datetime) else _now()
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=UTC)
+    stale_cutoff = (now_dt - timedelta(seconds=_SESSION_STALE_SECONDS)).isoformat()
+    idle_cutoff = (now_dt - timedelta(seconds=_SESSION_LONG_IDLE_SECONDS)).isoformat()
+    # COALESCE(NULLIF(...,'')) — session_health의
+    # `_parse_ts(last_event_at) or _parse_ts(updated_at)` 폴백과 동일 의미.
+    ts_expr = "COALESCE(NULLIF(last_event_at,''), NULLIF(updated_at,''))"
+    oid = orgctx.current_org_id()
+    org_cond = ""
+    params: list[Any] = [stale_cutoff, idle_cutoff]
+    if oid:
+        org_cond = " AND (org_id=? OR org_id='')"
+        params.append(oid)
+    sql = (
+        "SELECT COUNT(*) AS n FROM agent_sessions"  # noqa: S608 - org_cond/ts_expr는 고정 리터럴
+        " WHERE status != 'ended'"
+        " AND ("
+        f"  (status IN ('working','decision') AND {ts_expr} < ?)"
+        f"  OR (status='rest' AND {ts_expr} < ?)"
+        " )" + org_cond
+    )
+    row = store._conn.execute(sql, params).fetchone()  # noqa: SLF001 - 주기 집계 내부 조회
+    try:
+        return int(row["n"] or 0) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cost_delta_pct(store: Store, org_id: str, now: datetime) -> float:
+    """오늘(UTC) 비용 vs 직전 7일 일평균 증감률(%) — 양수=증가.
+
+    cost_events.cost_microusd 합계를 occurred_at 날짜별로 묶어 계산.
+    unpriced(cost_microusd NULL)는 합계에서 자연 제외된다.
+    기준선(직전 7일 합계)이 0이면: 오늘 비용>0 → 100.0(기준선 없음의
+    최대 증감 sentinel), 둘 다 0 → 0.0."""
+    today = now.date()
+    day0 = datetime(today.year, today.month, today.day, tzinfo=UTC)
+    since = (day0 - timedelta(days=_COST_BASELINE_DAYS)).isoformat()
+    rows = store._conn.execute(  # noqa: SLF001
+        "SELECT substr(occurred_at,1,10) AS d, SUM(cost_microusd) AS m"
+        " FROM cost_events WHERE occurred_at >= ? AND org_id=?"
+        " AND cost_microusd IS NOT NULL GROUP BY d",
+        (since, org_id),
+    ).fetchall()
+    daily: dict[str, float] = {}
+    for r in rows:
+        try:
+            daily[str(r["d"])] = float(r["m"] or 0)
+        except (TypeError, ValueError):
+            continue
+    today_key = today.isoformat()
+    today_sum = daily.get(today_key, 0.0)
+    prev_sum = 0.0
+    for i in range(1, _COST_BASELINE_DAYS + 1):
+        prev_sum += daily.get((today - timedelta(days=i)).isoformat(), 0.0)
+    avg = prev_sum / _COST_BASELINE_DAYS
+    if avg > 0:
+        return round((today_sum - avg) / avg * 100.0, 2)
+    return 100.0 if today_sum > 0 else 0.0
+
+
 # ---------------- 이벤트 컨텍스트 빌더 ----------------
 
 _TERMINAL_RUN_STATUSES = {
@@ -455,9 +692,41 @@ def run_event_fields(store: Store, run_id: str) -> tuple[dict[str, Any], str] | 
         "run.workflow": run.workflow_key,
         "run.project": run.project or "",
         "run.duration_ms": duration_ms,
+        # spec 007 US4 — duration_ms의 alias. 값은 위에서 run
+        # created_at→updated_at 차이로 이미 계산된다.
+        "run.latency_ms": duration_ms,
         "run.cost_usd": float((run.metadata or {}).get("cost_usd") or 0.0),
+        # spec 007 US4 — runs.error_class 컬럼(007 US3 스키마). 모델이
+        # 아직 필드를 노출하지 않을 수 있어 원시 컬럼을 직접 읽는다.
+        "error.error_class": _row_error_class(store, "runs", run.id),
     }
     return fields, org_id
+
+
+def _row_error_class(store: Store, table: str, row_id: str) -> str:
+    """runs/stage_runs.error_class 원시 컬럼 조회 — 컬럼이 없는 구 스키마나
+    조회 실패 시 ''로 수렴한다(이벤트 평가는 비차단)."""
+    try:
+        row = store._conn.execute(  # noqa: SLF001 - 이벤트 필드용 내부 조회
+            f"SELECT error_class FROM {table} WHERE id=?",  # noqa: S608 - table은 고정 리터럴
+            (row_id,),
+        ).fetchone()
+        return str(row["error_class"] or "") if row else ""
+    except Exception:
+        return ""
+
+
+def _error_class_of(obj: Any, store: Store, table: str, row_id: str) -> str:
+    """error_class 방어적 읽기 — 병렬 작업으로 모델/행에 error_class가
+    생기기 전후 모두 동작한다: dict.get → getattr → 원시 컬럼 순."""
+    eclass = ""
+    if isinstance(obj, dict):
+        eclass = str(obj.get("error_class") or "")
+    elif obj is not None:
+        eclass = str(getattr(obj, "error_class", "") or "")
+    if not eclass:
+        eclass = _row_error_class(store, table, row_id)
+    return eclass
 
 
 def stage_event_fields(
@@ -522,6 +791,9 @@ def emit_stage_failed_event(store: Store, run_id: str, stage_run_id: str) -> Non
             if built is None:
                 return
             fields, org_id = built
+            # spec 007 US4 — stage 실패의 error_class. StageRun 모델에
+            # 필드가 아직 없을 수 있어 attr/dict/원시 컬럼 순으로 읽는다.
+            fields["error.error_class"] = _error_class_of(sr, store, "stage_runs", stage_run_id)
             emit_alert_event(
                 store,
                 event_fingerprint=f"stage:{stage_run_id}:failed",

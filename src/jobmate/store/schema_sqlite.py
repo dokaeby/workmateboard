@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS runs (
   status TEXT NOT NULL,
   trace_id TEXT NOT NULL,
   error TEXT NOT NULL DEFAULT '',
+  error_class TEXT NOT NULL DEFAULT '',
   metadata TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL DEFAULT '',
   project TEXT NOT NULL DEFAULT '',
@@ -23,6 +24,9 @@ CREATE TABLE IF NOT EXISTS runs (
 
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
+-- spec 007 관측성 집계/스윕용 — runs.created_at/updated_at, stage_runs.finished_at 범위 스캔
+CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at);
+CREATE INDEX IF NOT EXISTS idx_runs_updated ON runs(updated_at);
 
 CREATE TABLE IF NOT EXISTS stage_runs (
   id TEXT PRIMARY KEY,
@@ -33,6 +37,7 @@ CREATE TABLE IF NOT EXISTS stage_runs (
   input TEXT NOT NULL DEFAULT '{}',
   output TEXT NOT NULL DEFAULT '{}',
   error TEXT NOT NULL DEFAULT '',
+  error_class TEXT NOT NULL DEFAULT '',
   model TEXT NOT NULL DEFAULT '',
   prompt_version TEXT NOT NULL DEFAULT '',
   tokens_in INTEGER NOT NULL DEFAULT 0,
@@ -41,6 +46,7 @@ CREATE TABLE IF NOT EXISTS stage_runs (
   finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stage_runs_run ON stage_runs(run_id);
+CREATE INDEX IF NOT EXISTS idx_stage_runs_finished ON stage_runs(finished_at);
 
 CREATE TABLE IF NOT EXISTS approvals (
   id TEXT PRIMARY KEY,
@@ -1238,5 +1244,23 @@ CREATE TABLE IF NOT EXISTS user_onboarding (
   checklist_json TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT NOT NULL
 );
+
+-- spec 007 US7 — 이상 탐지 이벤트 (조직 리소스).
+-- fingerprint에 kind+metric+날짜를 넣어 같은 이상이 24h 내 재알림되지
+-- 않게 하고, 다음 날 동일 패턴은 새 이벤트로 기록된다.
+CREATE TABLE IF NOT EXISTS anomaly_events (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL,
+  metric TEXT NOT NULL DEFAULT '',
+  value REAL NOT NULL DEFAULT 0,
+  baseline REAL NOT NULL DEFAULT 0,
+  message TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL DEFAULT '',
+  detected_at TEXT NOT NULL,
+  UNIQUE(org_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_anomaly_events_detected
+  ON anomaly_events(org_id, detected_at);
 
 """

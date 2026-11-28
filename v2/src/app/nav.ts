@@ -9,7 +9,9 @@ export interface NavItem {
 
 /** 사이드바/모바일바 공용 내비게이션 — index.html nav-item과 동일 구성. */
 export const NAV_ITEMS: NavItem[] = [
-  { view: "office", label: "Agent Office", icon: "⬡" },
+  { view: "office", label: "관측 센터", icon: "📡" },
+  { view: "traces", label: "트레이스", icon: "≋", minRole: "lead" },
+  { view: "alerts", label: "알림 규칙", icon: "🚨", minRole: "lead" },
   { view: "monitor", label: "Agent Insights", icon: "📡" },
   { view: "radar", label: "Skill Radar", icon: "◈" },
   { view: "gmail", label: "Gmail Checker", icon: "✉" },
@@ -46,7 +48,7 @@ export function visibleNavItems(role: string | null, prefs: { sidebar_menu?: Rec
     const rank = { member: 0, lead: 1, admin: 2 } as Record<string, number>;
     const userRank = rank[(role ?? "member")] ?? 0;
     if (it.minRole && userRank < rank[it.minRole]) return false;
-    if (it.view === "office" || it.view === "monitor" || it.view === "radar" || it.view === "settings") return true;
+    if (it.view === "office" || it.view === "traces" || it.view === "alerts" || it.view === "monitor" || it.view === "radar" || it.view === "settings") return true;
     return prefs?.sidebar_menu?.[it.view] === true;
   });
 }

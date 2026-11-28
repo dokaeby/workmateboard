@@ -357,6 +357,7 @@ def create_app(
     from .routers import messaging as _r_messaging
     from .routers import metrics as _r_metrics
     from .routers import misc as _r_misc
+    from .routers import observability as _r_observability
     from .routers import ops as _r_ops
     from .routers import orgs as _r_orgs
     from .routers import paperclip as _r_paperclip
@@ -401,6 +402,7 @@ def create_app(
     _r_me.register(app, ctx)
     _r_templates.register(app, ctx)
     _r_alerts.register(app, ctx)
+    _r_observability.register(app, ctx)
     return app
 
 

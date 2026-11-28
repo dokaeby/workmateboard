@@ -210,6 +210,135 @@ function ApprovalRequestRow({
   );
 }
 
+// ── spec 007 US5 — /observability/approvals 승인 인지 뷰 ──
+interface ObsApprovalItem {
+  run_id?: string;
+  workflow?: string;
+  project?: string;
+  stage_key?: string;
+  waiting_since?: string;
+  waited_s?: number;
+  requested_by?: string;
+}
+interface ObsApprovals {
+  waiting?: ObsApprovalItem[];
+  stats?: {
+    waiting?: number;
+    oldest_wait_s?: number | null;
+    total_wait_s?: number | null;
+    decided_24h?: number;
+    avg_decision_s?: number | null;
+  };
+}
+
+function fmtDurSec(sec: number | null | undefined): string {
+  const s = Number(sec);
+  if (!isFinite(s) || s < 0) return "-";
+  if (s < 60) return `${Math.round(s)}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+function ObsApprovalsSection() {
+  const { t } = useI18n();
+  const setView = useAppStore((s) => s.setView);
+  const qc = useQueryClient();
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ["obs-approvals"],
+    queryFn: () => apiGet<ObsApprovals>("/observability/approvals"),
+    refetchInterval: 30000,
+  });
+
+  const waiting = data?.waiting || [];
+  const stats = data?.stats;
+
+  const approve = async (runId: string) => {
+    setBusyId(runId);
+    try {
+      await apiPost(`/runs/${encodeURIComponent(runId)}/approve`, { decision: "approve", comment: "" });
+      qc.invalidateQueries({ queryKey: ["obs-approvals"] });
+      qc.invalidateQueries({ queryKey: ["approvals"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+    } catch (e) {
+      alert(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const chips: [string, string][] = stats ? [
+    [t("appr.waiting", "대기"), String(stats.waiting ?? waiting.length)],
+    [t("appr.oldestWait", "최장 대기"), fmtDurSec(stats.oldest_wait_s)],
+    [t("appr.totalWait", "총 대기"), fmtAge(stats.total_wait_s)],
+    [t("appr.decided24h", "24h 결정"), String(stats.decided_24h ?? 0)],
+    [t("appr.avgDecision", "평균 결정 시간"), fmtDurSec(stats.avg_decision_s)],
+  ] : [];
+
+  return (
+    <Card
+      title={t("appr.obsTitle", "실행 승인 대기 (관측)")}
+      className="mb-3"
+      actions={
+        <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => refetch()}>
+          {t("common.refresh", "새로고침")}
+        </Button>
+      }
+    >
+      {isLoading && <Spinner />}
+      {error && <ErrorBox message={error instanceof Error ? error.message : String(error)} onRetry={() => refetch()} />}
+      {data && (
+        <>
+          {chips.length > 0 && (
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {chips.map(([k, v]) => (
+                <Badge key={k} tone="muted">{k} <b className="text-ink">{v}</b></Badge>
+              ))}
+            </div>
+          )}
+          {!waiting.length && <Empty>{t("appr.obsEmpty", "승인 대기 중인 실행이 없습니다")}</Empty>}
+          {waiting.length > 0 && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {waiting.map((w) => {
+                const rid = String(w.run_id || "");
+                return (
+                  <div key={rid || w.workflow} className="flex items-center gap-3 rounded-lg border border-border bg-surface-hover px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-ink">{w.workflow || rid.slice(0, 8)}</span>
+                        <Badge tone="warn">{t("appr.waitedFor", "대기")} {fmtDurSec(w.waited_s)}</Badge>
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
+                        {w.project && <span className="rounded bg-surface px-1">{w.project}</span>}
+                        {w.stage_key && <span>{t("appr.stage", "단계")}: {w.stage_key}</span>}
+                        {w.requested_by && <span>{t("appr.requestedBy", "요청자")}: {w.requested_by}</span>}
+                        {w.waiting_since && <span>{fmtTs(w.waiting_since)}</span>}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 gap-1.5">
+                      <Button
+                        className="px-2.5 py-1 text-xs"
+                        disabled={!rid || busyId === rid}
+                        onClick={() => rid && approve(rid)}
+                      >
+                        {t("appr.approve", "승인")}
+                      </Button>
+                      <Button variant="ghost" className="px-2.5 py-1 text-xs" onClick={() => setView("runs")}>
+                        {t("appr.goRun", "실행 보기")}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 export default function ApprovalsPage() {
   const { t } = useI18n();
   const setView = useAppStore((s) => s.setView);
@@ -281,6 +410,7 @@ export default function ApprovalsPage() {
           {t("common.refresh", "새로고침")}
         </Button>
       </PageHead>
+      <ObsApprovalsSection />
       <Card>
         {isLoading && <Spinner />}
         {error && <ErrorBox message={error instanceof Error ? error.message : String(error)} onRetry={() => refetch()} />}

@@ -26,6 +26,27 @@ interface LlmUsage {
   daily?: { date?: string; tokens_in?: number; tokens_out?: number }[];
 }
 
+// spec 007 US2 — /observability/costs + /observability/usage
+interface ObsCostItem {
+  key?: string;
+  cost_usd?: number | null;
+  tokens_in?: number;
+  tokens_out?: number;
+  calls?: number;
+  runs?: number;
+}
+interface ObsCosts {
+  group_by?: string;
+  days?: number;
+  items?: ObsCostItem[];
+}
+interface ObsUsage {
+  days?: number;
+  models?: Record<string, { calls?: number; tokens_in?: number; tokens_out?: number }>;
+  daily?: { date?: string; tokens_in?: number; tokens_out?: number; cost_usd?: number | null }[];
+  sessions?: { total?: number; by_tool?: Record<string, number> };
+}
+
 const COST_STATUS_TONE: Record<string, "ok" | "warn" | "accent" | "muted"> = {
   reported: "ok",
   estimated: "accent",
@@ -177,6 +198,154 @@ function LedgerSection() {
 }
 
 const DAYS = ["7", "30", "90"];
+const GROUP_BYS = ["model", "project", "workflow", "agent", "day"] as const;
+type GroupBy = (typeof GROUP_BYS)[number];
+const GROUP_LABEL: Record<GroupBy, string> = {
+  model: "cost.grpModel",
+  project: "cost.grpProject",
+  workflow: "cost.grpWorkflow",
+  agent: "cost.grpAgent",
+  day: "cost.grpDay",
+};
+
+/** SVG 스파크라인 — 일별 비용 시계열 (차트 라이브러리 없이 polyline). */
+function Sparkline({ values, height = 48 }: { values: number[]; height?: number }) {
+  if (values.length < 2) return null;
+  const w = 600;
+  const max = Math.max(1e-9, ...values);
+  const step = w / (values.length - 1);
+  const pts = values
+    .map((v, i) => `${(i * step).toFixed(1)},${(height - 4 - (v / max) * (height - 8)).toFixed(1)}`)
+    .join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${height}`} className="h-12 w-full" preserveAspectRatio="none" role="img">
+      <polyline points={pts} fill="none" stroke="var(--color-accent)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+/** spec 007 US2 — /observability/costs 그룹 집계 + /observability/usage 일별 비용·세션. */
+function ObsCostSection() {
+  const { t } = useI18n();
+  const [days, setDays] = useState("30");
+  const [groupBy, setGroupBy] = useState<GroupBy>("model");
+
+  const costs = useQuery({
+    queryKey: ["obs-costs", days, groupBy],
+    queryFn: () => apiGet<ObsCosts>(`/observability/costs?days=${encodeURIComponent(days)}&group_by=${groupBy}`),
+    refetchInterval: 60000,
+  });
+  const usage = useQuery({
+    queryKey: ["obs-usage", days],
+    queryFn: () => apiGet<ObsUsage>(`/observability/usage?days=${encodeURIComponent(days)}`),
+    refetchInterval: 60000,
+  });
+
+  const items = (costs.data?.items || []).slice().sort((a, b) => (Number(b.cost_usd) || 0) - (Number(a.cost_usd) || 0)).slice(0, 10);
+  const maxCost = Math.max(1e-9, ...items.map((x) => Number(x.cost_usd) || 0));
+  const daily = usage.data?.daily || [];
+  const dailyCosts = daily.map((d) => Number(d.cost_usd) || 0);
+  const sessions = usage.data?.sessions;
+  const byTool = Object.entries(sessions?.by_tool || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+
+  return (
+    <Card title={t("cost.obsTitle", "비용 집계 (관측)")} className="mt-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <select
+          value={groupBy}
+          onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+          aria-label={t("cost.groupBy", "그룹 기준")}
+          className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
+        >
+          {GROUP_BYS.map((g) => <option key={g} value={g}>{t(GROUP_LABEL[g], g)}</option>)}
+        </select>
+        <select
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          aria-label={t("cost.daysAria", "비용 기간")}
+          className="rounded-md border border-border bg-surface px-2 py-1.5 text-sm"
+        >
+          {["7", "30", "90"].map((x) => <option key={x} value={x}>{t(`common.last${x}`, `최근 ${x}일`)}</option>)}
+        </select>
+        <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => { costs.refetch(); usage.refetch(); }}>
+          {t("common.refresh", "새로고침")}
+        </Button>
+      </div>
+
+      {costs.isLoading && <Spinner />}
+      {costs.error && (
+        <ErrorBox message={costs.error instanceof Error ? costs.error.message : String(costs.error)} onRetry={() => costs.refetch()} />
+      )}
+      {costs.data && !items.length && <Empty>{t("cost.noItems", "해당 기간 비용 데이터가 없습니다")}</Empty>}
+      {items.length > 0 && (
+        <>
+          <div className="mb-1 text-xs font-bold text-muted">{t("cost.topItems", "상위 항목")}</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs text-muted">
+                  <th className="py-1.5 pr-3">{t("cost.key", "키")}</th>
+                  <th className="py-1.5 pr-3">{t("cost.cost", "비용")}</th>
+                  <th className="py-1.5 pr-3">{t("cost.tokens", "토큰")}</th>
+                  <th className="py-1.5 pr-3">{t("cost.calls", "호출")}</th>
+                  <th className="py-1.5">{t("cost.runs", "실행")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it, i) => {
+                  const c = Number(it.cost_usd) || 0;
+                  return (
+                    <tr key={it.key || i} className="border-b border-border last:border-0">
+                      <td className="max-w-48 truncate py-1.5 pr-3 font-mono text-xs" title={it.key || "-"}>{it.key || "-"}</td>
+                      <td className="py-1.5 pr-3">
+                        <div className="flex items-center gap-2">
+                          <span className="h-1.5 w-16 overflow-hidden rounded bg-surface-hover">
+                            <span className="block h-full bg-accent/80" style={{ width: `${Math.max(2, Math.round((c / maxCost) * 100))}%` }} />
+                          </span>
+                          {it.cost_usd != null ? usd(it.cost_usd) : "-"}
+                        </div>
+                      </td>
+                      <td className="py-1.5 pr-3">{((Number(it.tokens_in) || 0) + (Number(it.tokens_out) || 0)).toLocaleString()}</td>
+                      <td className="py-1.5 pr-3">{it.calls ?? 0}</td>
+                      <td className="py-1.5">{it.runs ?? 0}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {dailyCosts.some((v) => v > 0) && (
+        <div className="mt-4">
+          <div className="mb-1 flex items-center justify-between text-xs font-bold text-muted">
+            <span>{t("cost.dailyCost", "일별 비용 (스파크라인)")}</span>
+            <span className="font-normal">{dailyCosts.reduce((a, b) => a + b, 0) > 0 ? usd(dailyCosts.reduce((a, b) => a + b, 0)) : ""}</span>
+          </div>
+          <Sparkline values={dailyCosts} />
+          {daily.length > 0 && (
+            <div className="mt-0.5 flex justify-between text-[10px] text-muted">
+              <span>{daily[0]?.date}</span><span>{daily[daily.length - 1]?.date}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {sessions && (
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="mb-1 text-xs font-bold text-muted">{t("cost.usageTitle", "사용량 요약")}</div>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge tone="accent">{t("cost.sessions", "세션")} {sessions.total ?? 0}</Badge>
+            {byTool.map(([tool, n]) => (
+              <Badge key={tool} tone="muted">{tool} {n}</Badge>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 function Num({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -352,6 +521,8 @@ export default function CostPage() {
           </Card>
         </>
       )}
+
+      <ObsCostSection />
 
       <LedgerSection />
 

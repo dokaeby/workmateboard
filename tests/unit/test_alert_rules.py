@@ -164,6 +164,38 @@ def test_cooldown_suppresses_repeat():
     assert "suppressed_cooldown" in statuses
 
 
+def test_cooldown_zero_dedups_same_fingerprint_permanently():
+    """cooldown=0 회귀 — 같은 fingerprint 재평가는 재발송하지 않는다.
+
+    fp_cutoff가 _FAR_FUTURE였을 때 NOT EXISTS(created_at > '9999…')가 항상
+    참이라 dedup이 무력화돼 스윕/재평가마다 동일 이벤트가 재발송되던
+    버그의 회귀 테스트. cooldown=0의 same-fingerprint dedup은 사실상
+    영구(90일 fire 보존이 실질 상한)이고, 다른 fingerprint는 즉시 발화."""
+    s = _store()
+    run = _mk_run(s, "failed")
+    _mk_rule(
+        s,
+        {"field": "run.status", "op": "eq", "value": "failed"},
+        cooldown_minutes=0,
+    )
+    assert svc.emit_run_status_event(s, run.id) == 1
+    # 동일 fingerprint 재평가(스윕/재시도 경로와 동일 입력) — dedup
+    for _ in range(3):
+        assert svc.emit_run_status_event(s, run.id) == 0
+    fired = [f for f in s.list_alert_fires() if f["status"] == "fired"]
+    assert len(fired) == 1
+    # 다른 fingerprint는 cooldown=0이라 쿨다운 차단 없이 즉시 발화
+    n = svc.emit_alert_event(
+        s,
+        event_fingerprint="manual:distinct-1",
+        fields={"run.status": "failed"},
+        org_id="",
+    )
+    assert n == 1
+    fired = [f for f in s.list_alert_fires() if f["status"] == "fired"]
+    assert len(fired) == 2
+
+
 def test_unconfigured_channels_report_skipped():
     s = _store()
     run = _mk_run(s, "failed")

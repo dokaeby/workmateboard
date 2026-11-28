@@ -65,6 +65,8 @@ _ORG_SCOPED_TABLES = (
     # spec 006 US1 — 알림 규칙/발사 이력(조직 리소스).
     "alert_rules",
     "alert_rule_fires",
+    # spec 007 US7 — 이상 탐지 이벤트(조직 리소스).
+    "anomaly_events",
 )
 
 
@@ -1067,15 +1069,40 @@ class MigrationStoreMixin:
             logger.warning("org dedupe index inbox_items failed: %s", e)
 
     def _migrate_run_columns(self) -> None:
-        """기존 DB의 runs에 created_by/project/agent_id 컬럼 보강."""
+        """기존 DB의 runs에 created_by/project/agent_id 컬럼 보강.
+
+        spec 007 US3 — runs/stage_runs.error_class도 여기서 보강한다
+        (services/error_taxonomy.classify_error가 기록 시점에 채운다)."""
         self._ensure_columns(
             "runs",
             {
                 "created_by": "TEXT NOT NULL DEFAULT ''",
                 "project": "TEXT NOT NULL DEFAULT ''",
                 "agent_id": "TEXT",
+                "error_class": "TEXT NOT NULL DEFAULT ''",
             },
         )
+        self._ensure_columns(
+            "stage_runs",
+            {"error_class": "TEXT NOT NULL DEFAULT ''"},
+        )
+
+    def _migrate_observability_indexes(self) -> None:
+        """spec 007 관측성 집계/스윕용 범위 스캔 인덱스 — 기존 DB 보강.
+
+        신규 DB는 SCHEMA/SCHEMA_PG에 이미 포함. runs.created_at/updated_at과
+        stage_runs.finished_at은 observability_errors·_alert_rule_sweep·
+        error.rate_pct 집계의 WHERE 범위 조건이다."""
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_runs_updated ON runs(updated_at)",
+            "CREATE INDEX IF NOT EXISTS idx_stage_runs_finished ON stage_runs(finished_at)",
+        ):
+            try:
+                with self.tx() as c:
+                    c.execute(sql)
+            except Exception as e:
+                logger.warning("observability index failed: %s", e)
 
     def _migrate_budget_incident_index(self) -> None:
         """open 인시던트 (policy, window, threshold) 부분 UNIQUE 인덱스.

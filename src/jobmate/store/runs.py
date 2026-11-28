@@ -31,6 +31,16 @@ def _org_id_of(row: Any) -> str:
     return str(row["org_id"] or "") if row is not None else ""
 
 
+def _classify(error: str) -> str:
+    """에러 원문 → error_class (spec 007 US3). 실패해도 'unknown'으로 수렴."""
+    try:
+        from ..services.error_taxonomy import classify_error
+
+        return classify_error(error)
+    except Exception:
+        return "unknown"
+
+
 class RunStoreMixin:
     def resolve_run_goal_id(self, input_data: dict[str, Any], goal_id: str = "") -> str:
         """run의 goal_id 해석 — create_run/admit_run 공용 단일 경로.
@@ -291,15 +301,33 @@ class RunStoreMixin:
         이전 구현은 get_run으로 읽은 뒤 전체 컬럼을 다시 써서, 읽기~쓰기 사이에
         다른 writer(stage 완료 등)가 바꾼 status/metadata를 덮어쓸 수 있었다.
         COALESCE(?, col) 패턴으로 None 인자만 기존 값을 유지하고, status/error/
-        metadata 각각 독립적으로 현재 행 기준 갱신한다."""
+        metadata 각각 독립적으로 현재 행 기준 갱신한다.
+
+        spec 007 US3 — error가 주어지면 error_taxonomy로 분류한 error_class도
+        함께 갱신한다(실패 마감 경로 전부가 update_run을 지나도록 중앙 처리).
+        error='' 명시 전달(재시도 초기화)은 분류하지 않되 error_class도
+        함께 지운다 — error만 비우고 분류만 남는 stale 상태를 막는다."""
+        error_class: str | None = None
+        if error is not None:
+            if error:
+                try:
+                    from ..services.error_taxonomy import classify_error
+
+                    error_class = classify_error(error)
+                except Exception:
+                    error_class = "unknown"
+            else:
+                error_class = ""
         with self.tx() as c:
             c.execute(
                 "UPDATE runs SET status=COALESCE(?, status),"
-                " error=COALESCE(?, error), metadata=COALESCE(?, metadata),"
+                " error=COALESCE(?, error), error_class=COALESCE(?, error_class),"
+                " metadata=COALESCE(?, metadata),"
                 " updated_at=? WHERE id=? AND (org_id=? OR ?='')",
                 (
                     status.value if status is not None else None,
                     error,
+                    error_class,
                     json.dumps(metadata) if metadata is not None else None,
                     _iso(_now()),
                     run_id,
@@ -346,18 +374,18 @@ class RunStoreMixin:
             for r in rows:
                 rid = str(r["id"])
                 cur = c.execute(
-                    "UPDATE runs SET status='failed', error=?, updated_at=?"
+                    "UPDATE runs SET status='failed', error=?, error_class=?, updated_at=?"
                     " WHERE id=? AND status IN ('queued','running')"
                     " AND (org_id=? OR ?='')",
-                    (error, now, rid, *org_params),
+                    (error, _classify(error), now, rid, *org_params),
                 )
                 if int(getattr(cur, "rowcount", 0) or 0) <= 0:
                     continue  # 조회~갱신 사이 상태 전이 — 다른 경로가 처리 중
                 reaped.append(rid)
                 c.execute(
-                    "UPDATE stage_runs SET status='failed', error=?, finished_at=?"
-                    " WHERE run_id=? AND status='running'",
-                    (error, now, rid),
+                    "UPDATE stage_runs SET status='failed', error=?, error_class=?,"
+                    " finished_at=? WHERE run_id=? AND status='running'",
+                    (error, _classify(error), now, rid),
                 )
         for rid in reaped:
             self.audit(rid, "system", "run_stale_reaped", rid, {"error": error})
@@ -451,14 +479,25 @@ class RunStoreMixin:
         tokens_out: int = 0,
     ) -> None:
         status_enum = StageStatus(status)
+        # spec 007 US3 — 실패 원문을 error_taxonomy로 분류해 함께 기록.
+        # 분류 실패가 stage 마감 자체를 깨면 안 되므로 방어적으로 감싼다.
+        error_class = ""
+        if status_enum == StageStatus.FAILED and error:
+            try:
+                from ..services.error_taxonomy import classify_error
+
+                error_class = classify_error(error)
+            except Exception:
+                error_class = "unknown"
         with self.tx() as c:
             c.execute(
-                "UPDATE stage_runs SET status=?, output=?, error=?, tokens_in=?,"
-                "tokens_out=?, finished_at=? WHERE id=?",
+                "UPDATE stage_runs SET status=?, output=?, error=?, error_class=?,"
+                "tokens_in=?, tokens_out=?, finished_at=? WHERE id=?",
                 (
                     status_enum.value,
                     json.dumps(output or {}),
                     error,
+                    error_class,
                     tokens_in,
                     tokens_out,
                     _iso(_now()),
@@ -637,7 +676,7 @@ class RunStoreMixin:
                     set_meta = ", metadata=?"
                     meta_params = [json.dumps(meta, ensure_ascii=False)]
             cur = c.execute(
-                "UPDATE runs SET status='queued', error='', updated_at=?"  # noqa: S608
+                "UPDATE runs SET status='queued', error='', error_class='', updated_at=?"  # noqa: S608
                 + set_meta
                 + f" WHERE id=? AND status IN ({conds}) AND (org_id=? OR ?='')",
                 (now, *meta_params, run_id, *self._RETRYABLE_STATUSES, *_org_bind()),
@@ -818,7 +857,8 @@ class RunStoreMixin:
             marker["resolved_at"] = now
             cur = c.execute(
                 "UPDATE runs SET status='rejected', error='budget_approval_rejected',"
-                " metadata=?, updated_at=? WHERE id=? AND status='waiting_approval'",
+                " error_class='budget', metadata=?, updated_at=? WHERE id=?"
+                " AND status='waiting_approval'",
                 (json.dumps(meta, ensure_ascii=False), now, run_id),
             )
         return cur.rowcount > 0
@@ -894,7 +934,7 @@ class RunStoreMixin:
             with self.tx() as c:
                 cur = c.execute(
                     "UPDATE runs SET status='cancelled',"
-                    " error='budget_approval_expired', updated_at=?"
+                    " error='budget_approval_expired', error_class='budget', updated_at=?"
                     " WHERE id=? AND status='waiting_approval'",
                     (now, rid),
                 )

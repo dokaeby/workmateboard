@@ -102,9 +102,10 @@ def _alert_rule_sweep(store: Store) -> None:
     넘긴다. fingerprint dedup이 중복 발송을 막으므로 직접 emit과 겹쳐도
     안전하다. 규칙이 하나도 없으면 조회 없이 종료한다."""
     try:
-        if not store.list_alert_rules(enabled_only=True):
-            return
+        rules = store.list_alert_rules(enabled_only=True)
     except Exception:
+        return
+    if not rules:
         return
     from ..services import alert_rules as _alerts
 
@@ -133,13 +134,44 @@ def _alert_rule_sweep(store: Store) -> None:
         ).fetchall()
         for r in srows:
             _alerts.emit_stage_failed_event(store, str(r["run_id"]), str(r["id"]))
+        scan_ok = True
     except Exception:
         worker_logger.warning("alert rule sweep failed", exc_info=True)
-        return
+        scan_ok = False
+    if scan_ok:
+        try:
+            store.set_state("alert_sweep_ts", {"ts": now.isoformat()})
+        except Exception:
+            worker_logger.debug("alert sweep watermark update failed", exc_info=True)
+    # spec 007 US4 — 주기 집계 규칙(error.rate_pct/session.stale_count/
+    # cost.delta_pct)은 이벤트가 없는 조용한 시스템에서도 평가돼야 한다.
+    # emit 경로가 없는 상태에서는 아무 emit도 호출되지 않으므로 스윕 끝에서
+    # 무조건 평가한다 — evaluate_periodic_rules가 _PERIODIC_MIN_INTERVAL로
+    # 스로틀하고 org_scope를 내부에서 재적용한다. 규칙이 있는 org별로 호출.
     try:
-        store.set_state("alert_sweep_ts", {"ts": now.isoformat()})
+        org_ids = sorted({str(r.get("org_id") or "") for r in rules})
+        for oid in org_ids:
+            _alerts.evaluate_periodic_rules(store, org_id=oid)
     except Exception:
-        worker_logger.debug("alert sweep watermark update failed", exc_info=True)
+        worker_logger.warning("periodic alert eval failed", exc_info=True)
+
+
+def _anomaly_sweep(store: Store) -> None:
+    """spec 007 US7 — 비용/에러 급증 이상 탐지 (시간 게이트는 서비스 내부).
+
+    실패가 automation cycle을 깨지 않게 전부 삼킨다."""
+    try:
+        from ..services import anomaly as _anomaly
+
+        _anomaly.run_anomaly_sweep(store)
+    except Exception as exc:
+        worker_logger.warning("anomaly sweep failed", exc_info=True)
+        try:
+            from ..services import sentry as _sentry
+
+            _sentry.capture_exception(exc, tags={"component": "anomaly"})
+        except Exception:
+            worker_logger.debug("sentry capture failed", exc_info=True)
 
 
 def _process_budget_approvals(
@@ -351,6 +383,8 @@ def run_automation_cycle(
     # 직접 emit을 놓친 경로(승인 resume·메신저·reaper)를 보완하고,
     # require_approval 대기 run의 만료·승인분 실행을 처리한다.
     _alert_rule_sweep(store)
+    # spec 007 US7 — 비용/에러 급증 이상 탐지 (1h 게이트, dedupe fingerprint).
+    _anomaly_sweep(store)
     _process_budget_approvals(store, settings, llm, adapters, schedule=promote_schedule)
     # spec 004 US1 — due webhook delivery 배치 (FR-008). 서버리스 cron tick
     # 경로에서도 동일하게 동작해야 하므로 사이클 본체에 포함한다.

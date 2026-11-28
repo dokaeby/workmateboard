@@ -57,8 +57,6 @@ describe("i18n 사전 무결성", () => {
       const rel = relative(SRC, file);
       if (rel.endsWith("i18n.test.ts")) continue;
       const src = readFileSync(file, "utf8");
-      // 스프라이트 사무실은 office-i18n 별도 사전 — registerI18n 키가 아니므로 제외
-      if (rel.startsWith("features/office/sprites/")) continue;
       for (const m of src.matchAll(callRe)) {
         if (!known.has(m[1])) missing.push(`${rel}: ${m[1]}`);
       }
