@@ -2159,7 +2159,7 @@ const _wireDialogFallbacks = () => {
 };
 if (!_cmdSupported()) {
   const _fbTimer = setTimeout(() => { if (!_cmdSupported()) _wireDialogFallbacks(); }, 3000);
-  import("https://esm.run/invokers-polyfill")
+  import("/static/vendor/invokers-polyfill/index.js")
     .catch(() => {})
     .finally(() => { clearTimeout(_fbTimer); if (!_cmdSupported()) _wireDialogFallbacks(); });
 }
