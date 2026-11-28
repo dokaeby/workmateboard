@@ -17,6 +17,8 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from ...store.otlp_ingest import external_span_json
+
 logger = logging.getLogger("jobmate.api")
 
 
@@ -35,7 +37,15 @@ def register(app: FastAPI, ctx: Any) -> None:
         if store.get_run(run_id) is None:
             return err(404, "not_found", "run not found", request)
         stages = store.run_timeline(run_id)
-        return JSONResponse(content={"run_id": run_id, "stages": stages})
+        # spec 008 US1 — jobmate.run_id로 링크된 외부 OTLP 스팬을 타임라인에 병합.
+        # 믹스인 미배선(Store에 external_spans_for_run 없음) 환경에서는 빈 배열.
+        _spans_for_run = getattr(store, "external_spans_for_run", None)
+        ext = (
+            [external_span_json(r) for r in _spans_for_run(run_id)]
+            if _spans_for_run is not None
+            else []
+        )
+        return JSONResponse(content={"run_id": run_id, "stages": stages, "external_spans": ext})
 
     @app.get("/api/v1/observability/costs")
     def observability_costs(

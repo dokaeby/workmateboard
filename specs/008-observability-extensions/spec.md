@@ -30,7 +30,7 @@ spec 007에서 관측성 플랫폼(트레이스/비용/에러/승인/이상 탐�
 - `report_subscriptions` 테이블: `{kind: daily|weekly, channel: email|slack|webhook, target(이메일/웹훅URL), enabled, org_id, last_sent_at}`
 - reports 생성 주기(jobs.py)에 구독별 발송 훅 — email은 기존 mailer, slack/webhook은 spec 004 웹훅 전달 재사용(HMAC 서인)
 - `/api/v1/reports/subscriptions` CRUD + `POST /{id}/test`
-- UI: 비용/인사이트 뷰에 "리포트 구독" 섹션
+- UI: 알림함(inbox) 뷰에 "리포트 구독" 섹션 (`features/inbox/subscriptions.tsx`)
 
 ## Non-Goals
 - OTLP gRPC 수집(HTTP/JSON만), 일반 OTel 메트릭/로그 수집

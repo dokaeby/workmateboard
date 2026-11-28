@@ -67,6 +67,11 @@ _ORG_SCOPED_TABLES = (
     "alert_rule_fires",
     # spec 007 US7 — 이상 탐지 이벤트(조직 리소스).
     "anomaly_events",
+    # spec 008 — OTLP 인제스트/외부 스팬/온라인 평가/리포트 구독(조직 리소스).
+    "otlp_ingest_tokens",
+    "external_spans",
+    "eval_schedules",
+    "report_subscriptions",
 )
 
 
@@ -1819,3 +1824,58 @@ class MigrationStoreMixin:
                     " OR latest_revision < ?)",
                     (max_rev, oid, name, max_rev),
                 )
+
+    def _migrate_reporting_ext_columns(self) -> None:
+        """spec 008 US2/US3 — eval_runs 온라인 평가 컬럼 + report_subscriptions
+        webhook 서명 시크릿 컬럼 보강.
+
+        - eval_runs.source: 'manual'(기존 오프라인 경로) | 'online'(스케줄 평가)
+        - eval_runs.schedule_id: 온라인 평가를 트리거한 eval_schedules.id
+        - report_subscriptions.secret_enc: webhook 채널 HMAC 서명 시크릿의
+          Fernet 암호문(API 응답·로그 노출 금지)
+        """
+        self._ensure_columns(
+            "eval_runs",
+            {
+                "source": "TEXT NOT NULL DEFAULT 'manual'",
+                "schedule_id": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        self._ensure_columns(
+            "report_subscriptions",
+            {"secret_enc": "TEXT NOT NULL DEFAULT ''"},
+        )
+        self._migrate_eval_runs_online_dedupe_index()
+
+    def _migrate_eval_runs_online_dedupe_index(self) -> None:
+        """spec 008 US2 — 온라인 평가 (schedule_id, run_id) dedupe 부분
+        UNIQUE 인덱스. SCHEMA/SCHEMA_PG에도 동일 정의가 있다.
+
+        기존 DB에 중복 행이 있으면 인덱스 생성이 실패하므로 먼저
+        (schedule_id, run_id)별 가장 오래된 행만 남기고 나머지를 지운다
+        (_migrate_budget_incident_index와 동일 패턴 — 실패해도 경고만)."""
+        try:
+            rows = self._conn.execute(
+                "SELECT id, schedule_id, run_id FROM eval_runs"
+                " WHERE schedule_id != '' ORDER BY created_at, id"
+            ).fetchall()
+            seen: set[tuple[Any, Any]] = set()
+            dup_ids: list[str] = []
+            for r in rows:
+                key = (str(r["schedule_id"] or ""), str(r["run_id"] or ""))
+                if key in seen:
+                    dup_ids.append(str(r["id"]))
+                else:
+                    seen.add(key)
+            if dup_ids:
+                with self.tx() as c:
+                    for did in dup_ids:
+                        c.execute("DELETE FROM eval_runs WHERE id=?", (did,))
+                logger.info("eval_runs online dedupe removed %d dup rows", len(dup_ids))
+            with self.tx() as c:
+                c.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_runs_online_dedupe"
+                    " ON eval_runs(schedule_id, run_id) WHERE schedule_id != ''"
+                )
+        except Exception as e:
+            logger.warning("eval_runs online dedupe index skipped: %s", e)

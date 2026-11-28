@@ -166,6 +166,8 @@ def create_app(
                     # accept/decline은 라우트가 세션을 자체 검증한다
                     "/api/v1/invitations/",
                     "/api/v1/health/public",
+                    # OTLP ingest — 라우트가 Bearer ingest 토큰을 자체 검증
+                    "/api/v1/otlp/v1/",
                 )
             )
         ):
@@ -361,10 +363,12 @@ def create_app(
     from .routers import observability as _r_observability
     from .routers import ops as _r_ops
     from .routers import orgs as _r_orgs
+    from .routers import otlp as _r_otlp
     from .routers import paperclip as _r_paperclip
     from .routers import permissions as _r_permissions
     from .routers import push as _r_push
     from .routers import radar as _r_radar
+    from .routers import reporting as _r_reporting
     from .routers import retention as _r_retention
     from .routers import routines as _r_routines
     from .routers import runs as _r_runs
@@ -404,6 +408,8 @@ def create_app(
     _r_templates.register(app, ctx)
     _r_alerts.register(app, ctx)
     _r_observability.register(app, ctx)
+    _r_otlp.register(app, ctx)
+    _r_reporting.register(app, ctx)
     return app
 
 

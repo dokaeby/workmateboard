@@ -686,10 +686,16 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   scored_at TEXT,
-  org_id TEXT NOT NULL DEFAULT ''
+  org_id TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'manual',
+  schedule_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_eval_runs_eval ON eval_runs(eval_id);
 CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
+-- 온라인 평가 dedupe — (schedule_id, run_id)당 eval_run 1건. 수동 실행
+-- (schedule_id='')은 대상 아님. 기존 DB는 _migrate_reporting_ext_columns가 생성.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_runs_online_dedupe
+  ON eval_runs(schedule_id, run_id) WHERE schedule_id != '';
 
 -- agent-management 1차 (paperclip spec): SQLite판과 동일 구조
 CREATE TABLE IF NOT EXISTS tasks (
@@ -1202,5 +1208,72 @@ CREATE TABLE IF NOT EXISTS anomaly_events (
 );
 CREATE INDEX IF NOT EXISTS idx_anomaly_events_detected
   ON anomaly_events(org_id, detected_at);
+
+
+-- spec 008 US1 — OTLP 인제스트 토큰(조직 리소스). token_hash만 저장, 원문 미보관.
+CREATE TABLE IF NOT EXISTS otlp_ingest_tokens (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_otlp_tokens_hash ON otlp_ingest_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_otlp_tokens_org ON otlp_ingest_tokens(org_id);
+
+-- spec 008 US1 — 외부 OTLP 스팬(jobMate 밖 에이전트/LLM 호출).
+-- run_id는 attributes의 jobmate.run_id가 유효할 때만 링크.
+CREATE TABLE IF NOT EXISTS external_spans (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  trace_id TEXT NOT NULL,
+  span_id TEXT NOT NULL,
+  parent_span_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  attributes TEXT NOT NULL DEFAULT '{}',
+  run_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_external_spans_trace ON external_spans(org_id, trace_id);
+CREATE INDEX IF NOT EXISTS idx_external_spans_run ON external_spans(org_id, run_id);
+CREATE INDEX IF NOT EXISTS idx_external_spans_started ON external_spans(org_id, started_at);
+
+-- spec 008 US2 — 온라인 평가 스케줄(조직 리소스). run/stage 완료 시 sample_rate로 eval 실행.
+CREATE TABLE IF NOT EXISTS eval_schedules (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT 'run_completed',
+  workflow_key TEXT NOT NULL DEFAULT '',
+  sample_rate REAL NOT NULL DEFAULT 1.0,
+  eval_name TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_eval_schedules_org ON eval_schedules(org_id, enabled);
+
+-- spec 008 US3 — 리포트 구독(조직 리소스). daily/weekly 리포트의 email/slack/webhook 전달.
+CREATE TABLE IF NOT EXISTS report_subscriptions (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_sent_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  secret_enc TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_report_subs_org ON report_subscriptions(org_id, enabled);
 
 """

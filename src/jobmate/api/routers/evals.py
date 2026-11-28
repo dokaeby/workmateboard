@@ -17,15 +17,56 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from ... import budget_scope
 from ... import evals as evals_svc
 from ...models import RunStatus
+from ...store.reporting_ext import EVAL_SCHEDULE_TARGETS
 from ...store.util import clean_scope_id
 from ...workflows.resolver import resolve_workflow_spec
 from ..schemas import EvalCreateRequest, EvalPatchRequest
 
 logger = logging.getLogger("jobmate.api")
+
+
+class EvalScheduleCreateRequest(BaseModel):
+    """spec 008 US2 — 온라인 평가 스케줄 생성."""
+
+    name: str = Field(min_length=1, max_length=200)
+    target: str = "run_completed"
+    workflow_key: str | None = Field(default=None, max_length=120)
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    eval_name: str = Field(min_length=1, max_length=200)
+    enabled: bool = True
+
+
+class EvalSchedulePatchRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    target: str | None = None
+    workflow_key: str | None = Field(default=None, max_length=120)
+    sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    eval_name: str | None = Field(default=None, min_length=1, max_length=200)
+    enabled: bool | None = None
+
+
+def _schedule_out(s: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": s.get("id"),
+        "name": s.get("name") or "",
+        "target": s.get("target") or "run_completed",
+        "workflow_key": s.get("workflow_key") or "",
+        "sample_rate": float(s.get("sample_rate") or 0.0),
+        "eval_name": s.get("eval_name") or "",
+        "enabled": bool(s.get("enabled")),
+        "created_at": s.get("created_at"),
+        "updated_at": s.get("updated_at"),
+    }
+
+
+def _validate_schedule_target(target: str) -> str | None:
+    t = str(target or "").strip().lower()
+    return t if t in EVAL_SCHEDULE_TARGETS else None
 
 
 def register(app: FastAPI, ctx: Any) -> None:
@@ -90,6 +131,127 @@ def register(app: FastAPI, ctx: Any) -> None:
         return JSONResponse(
             status_code=201, content=evals_svc.eval_out(ev, _latest_map().get(ev["id"]))
         )
+
+    # ---- spec 008 US2 — 온라인 평가 스케줄 ----
+    # GET /evals/schedules는 /evals/{eval_id}보다 먼저 등록해야 한다 —
+    # 뒤에 두면 'schedules'가 eval_id로 매칭돼 404가 된다.
+
+    @app.get("/api/v1/evals/schedules")
+    def list_eval_schedules(request: Request) -> JSONResponse:
+        """온라인 평가 스케줄 목록 — lead+ (evals 리소스와 동일 게이트).
+        조직 스코프는 store의 orgctx 필터가 강제한다."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        items = [_schedule_out(s) for s in store.list_eval_schedules()]
+        return JSONResponse(content={"items": items})
+
+    @app.post("/api/v1/evals/schedules", status_code=201)
+    def create_eval_schedule(body: EvalScheduleCreateRequest, request: Request) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        target = _validate_schedule_target(body.target)
+        if target is None:
+            return err(
+                422,
+                "validation",
+                f"target must be one of {list(EVAL_SCHEDULE_TARGETS)}",
+                request,
+            )
+        wk = (body.workflow_key or "").strip()
+        if wk and resolve_workflow_spec(store, wk) is None:
+            return err(422, "validation", f"unknown workflow '{wk}'", request)
+        sched = store.create_eval_schedule(
+            name=body.name,
+            target=target,
+            workflow_key=wk,
+            sample_rate=float(body.sample_rate),
+            eval_name=body.eval_name,
+            enabled=body.enabled,
+            created_by=_actor_label(request),
+        )
+        _audit_api(
+            request,
+            "eval_schedule_create",
+            str(sched.get("id") or ""),
+            {"name": body.name[:80], "target": target, "eval_name": body.eval_name[:80]},
+        )
+        logger.info("eval schedule created id=%s name=%s", sched.get("id"), body.name[:80])
+        return JSONResponse(status_code=201, content={"item": _schedule_out(sched)})
+
+    @app.patch("/api/v1/evals/schedules/{schedule_id}")
+    def patch_eval_schedule(
+        schedule_id: str, body: EvalSchedulePatchRequest, request: Request
+    ) -> JSONResponse:
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        if store.get_eval_schedule(schedule_id) is None:
+            return err(404, "not_found", "eval schedule not found", request)
+        sent = body.model_fields_set
+        fields: dict[str, Any] = {}
+        if "name" in sent:
+            fields["name"] = body.name
+        if "target" in sent:
+            target = _validate_schedule_target(str(body.target or ""))
+            if target is None:
+                return err(
+                    422,
+                    "validation",
+                    f"target must be one of {list(EVAL_SCHEDULE_TARGETS)}",
+                    request,
+                )
+            fields["target"] = target
+        if "workflow_key" in sent:
+            wk = (body.workflow_key or "").strip()
+            if wk and resolve_workflow_spec(store, wk) is None:
+                return err(422, "validation", f"unknown workflow '{wk}'", request)
+            fields["workflow_key"] = wk
+        if "sample_rate" in sent:
+            fields["sample_rate"] = body.sample_rate
+        if "eval_name" in sent:
+            fields["eval_name"] = body.eval_name
+        if "enabled" in sent:
+            fields["enabled"] = body.enabled
+        if not fields:
+            return err(422, "validation", "no fields to update", request)
+        sched = store.update_eval_schedule(schedule_id, **fields)
+        if sched is None:
+            return err(422, "validation", "invalid schedule fields", request)
+        _audit_api(request, "eval_schedule_update", schedule_id, {"fields": sorted(fields)})
+        logger.info("eval schedule updated id=%s fields=%s", schedule_id, sorted(fields))
+        return JSONResponse(content={"item": _schedule_out(sched)})
+
+    @app.delete("/api/v1/evals/schedules/{schedule_id}")
+    def delete_eval_schedule(schedule_id: str, request: Request) -> JSONResponse:
+        """하드 삭제 — 생성된 eval_runs 행은 schedule_id를 보존한다."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        if not store.delete_eval_schedule(schedule_id):
+            return err(404, "not_found", "eval schedule not found", request)
+        _audit_api(request, "eval_schedule_delete", schedule_id, {})
+        logger.info("eval schedule deleted id=%s", schedule_id)
+        return JSONResponse(content={"ok": True})
+
+    @app.get("/api/v1/evals/schedules/{schedule_id}/history")
+    def eval_schedule_history(schedule_id: str, request: Request, limit: int = 50) -> JSONResponse:
+        """스케줄이 생성한 온라인 eval_run 최근 50건(최신순) — member+ 읽기."""
+        sched = store.get_eval_schedule(schedule_id)
+        if sched is None:
+            return err(404, "not_found", "eval schedule not found", request)
+        items = []
+        for er in store.list_eval_runs_for_schedule(schedule_id, limit=max(1, min(limit, 200))):
+            try:
+                er = evals_svc.maybe_score_eval_run(store, er)
+            except Exception:
+                logger.warning("eval_run lazy scoring failed id=%s", er.get("id"), exc_info=True)
+            out = evals_svc.eval_run_out(er)
+            out["source"] = str(er.get("source") or "manual")
+            out["schedule_id"] = str(er.get("schedule_id") or "")
+            items.append(out)
+        return JSONResponse(content={"items": items})
 
     @app.get("/api/v1/evals/{eval_id}")
     def get_eval(eval_id: str, request: Request) -> JSONResponse:

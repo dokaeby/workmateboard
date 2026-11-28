@@ -82,6 +82,35 @@ def _emit_run_alert_event(store: Store, run_id: str) -> None:
         worker_logger.warning("alert emit failed run=%s", run_id, exc_info=True)
 
 
+def _maybe_online_evals(store: Store, run_id: str) -> None:
+    """spec 008 US2 — run 종결 → 활성 eval_schedules 온라인 평가.
+
+    run_completed는 run terminal 시, stage_completed는 terminal
+    stage_run마다 sample_rate 게이트를 거쳐 eval_runs(source='online')를
+    만든다. (schedule_id, run_id) dedupe가 재실행/스윕 중복을 막는다.
+    실패가 run 경로를 깨지 않게 전부 삼킨다."""
+    try:
+        from ..services import online_evals as _oe
+
+        _oe.on_run_terminal(store, run_id)
+    except Exception:
+        worker_logger.warning("online eval failed run=%s", run_id, exc_info=True)
+
+
+def _online_eval_sweep(store: Store) -> None:
+    """spec 008 US2 백스톱 — 직접 hook을 놓친 terminal run/stage를 스캔.
+
+    _execute_run_job/_create_and_run 외 경로(reaper·승인 resume·메신저
+    커맨드 등)에서 종결된 run도 eval_schedules 평가 대상이 되게
+    automation cycle에서 watermark 스캔한다. 스케줄이 없으면 즉시 반환."""
+    try:
+        from ..services import online_evals as _oe
+
+        _oe.sweep(store)
+    except Exception:
+        worker_logger.warning("online eval sweep failed", exc_info=True)
+
+
 # spec 006 US1 — alert sweep가 평가하는 run 상태 (종결 + 승인 대기).
 _ALERT_SWEEP_STATUSES = {
     "completed",
@@ -383,6 +412,8 @@ def run_automation_cycle(
     # 직접 emit을 놓친 경로(승인 resume·메신저·reaper)를 보완하고,
     # require_approval 대기 run의 만료·승인분 실행을 처리한다.
     _alert_rule_sweep(store)
+    # spec 008 US2 — 온라인 평가 백스톱 스윕(직접 hook 미스 경로 보완).
+    _online_eval_sweep(store)
     # spec 007 US7 — 비용/에러 급증 이상 탐지 (1h 게이트, dedupe fingerprint).
     _anomaly_sweep(store)
     _process_budget_approvals(store, settings, llm, adapters, schedule=promote_schedule)
@@ -602,6 +633,8 @@ def _execute_run_job(
     _emit_run_webhook(store, run_id)
     # spec 006 US1 FR-003 — run 상태 변경을 alert 규칙으로 평가(비동기).
     _emit_run_alert_event(store, run_id)
+    # spec 008 US2 — 온라인 평가 스케줄 평가(run/stage terminal).
+    _maybe_online_evals(store, run_id)
     _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
 
 
@@ -1336,6 +1369,8 @@ def _create_and_run(
     # spec 004 US1 — 메시지 intake 등 _execute_run_job을 거치지 않는
     # run 종결 경로도 동일 이벤트를 emit한다(event_id 멱등).
     _emit_run_webhook(store, run.id)
+    # spec 008 US2 — 이 경로도 run이 terminal로 마감됐으므로 온라인 평가.
+    _maybe_online_evals(store, run.id)
     _promote_deferred_runs(store, settings, llm, adapters, run.id)
     if invoke_error is not None:
         raise invoke_error
@@ -1595,6 +1630,34 @@ def _maybe_generate_reports(store: Store, settings: Settings, adapters: dict[str
             )
             store.audit("", "system", "report_auto_generate", rid, {"kind": kind})
             worker_logger.info("auto report generated id=%s kind=%s", rid, kind)
+            # spec 008 US3 — daily/weekly 리포트 구독 채널 발송.
+            # exec_* kind는 구독 대상이 아니므로 daily/weekly만 처리한다.
+            # 리포트 본문은 기본 조직 기준 요약이지만 구독은 조직별 리소스 —
+            # enabled 구독이 있는 조직마다 해당 org scope로 발송한다
+            # (deliver_report_subscriptions의 org 필터가 조직별 목록을 만든다).
+            if kind in ("daily", "weekly"):
+                try:
+                    from ..services import reporting as _reporting
+
+                    for sub_oid in store.list_report_subscription_org_ids(kind):
+                        try:
+                            with orgctx.org_scope(sub_oid):
+                                _reporting.deliver_report_subscriptions(
+                                    store, settings, kind, content
+                                )
+                        except Exception as e:
+                            worker_logger.warning(
+                                "report subscription delivery failed kind=%s org=%s: %s",
+                                kind,
+                                sub_oid,
+                                str(e)[:200],
+                            )
+                except Exception as e:
+                    worker_logger.warning(
+                        "report subscription delivery failed kind=%s: %s",
+                        kind,
+                        str(e)[:200],
+                    )
             try:
                 kind_label = REPORT_KIND_LABELS.get(kind, kind)
                 messenger.notify(

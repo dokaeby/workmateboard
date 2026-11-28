@@ -40,11 +40,13 @@ from .management import ManagementStoreMixin
 from .migrations import MigrationStoreMixin
 from .observability import ObservabilityStoreMixin
 from .orgs import OrgStoreMixin
+from .otlp_ingest import OtlpIngestStoreMixin
 from .permissions import PermissionStoreMixin
 from .pg_dialect import _is_pg_dsn, _PGConn
 from .pg_dialect import _pg_translate as _pg_translate
 from .projects import ProjectStoreMixin
 from .radar import RadarStoreMixin
+from .reporting_ext import ReportingExtStoreMixin
 from .retention import RetentionStoreMixin
 from .routines import RoutineStoreMixin
 from .runs import RunStoreMixin
@@ -92,6 +94,8 @@ class Store(
     WebhookStoreMixin,
     UserPrefsStoreMixin,
     ObservabilityStoreMixin,
+    ReportingExtStoreMixin,
+    OtlpIngestStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 
@@ -140,6 +144,9 @@ class Store(
         self._migrate_phase3_columns()
         self._migrate_external_company_columns()
         self._ensure_external_company_indexes()
+        # spec 008 US2/US3 — eval_runs.source/schedule_id +
+        # report_subscriptions.secret_enc 컬럼 보강.
+        self._migrate_reporting_ext_columns()
         # DSN/경로 원문은 자격증명을 포함할 수 있으므로 백엔드 종류만 기록한다
         logger.info("store opened backend=%s", "postgresql" if self._pg else "sqlite")
         # settings.session_activity_retention_days로 app 기동 시 덮어쓴다
