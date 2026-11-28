@@ -32,12 +32,18 @@ def _signup(c: TestClient, email: str) -> None:
     assert r.status_code == 201, r.text
 
 
-def _member_client(app) -> TestClient:
+def _member_client(app, store) -> TestClient:
     """두 번째 가입 사용자(member role) 클라이언트 — 첫 가입자는 admin."""
     admin = TestClient(app)
     member = TestClient(app)
     _signup(admin, "admin@example.com")
     _signup(member, "member@example.com")
+    # spec 003 US4 (FR-025) — 가입 시 personal org의 org_owner는 조직 스코프
+    # lead/admin 게이트를 통과한다. 플랫폼 member 판정을 검증하려면 조직
+    # 역할을 member로 낮춰야 한다.
+    mu = store.get_user_by_email("member@example.com")
+    for o in store.list_user_orgs(mu["id"]):
+        store.set_org_member_role(o["id"], mu["id"], "member")
     return member
 
 
@@ -61,8 +67,8 @@ def _member_client(app) -> TestClient:
     ],
 )
 def test_member_gets_403_on_lead_endpoints(client, path):
-    c, _ = client
-    member = _member_client(c.app)
+    c, store = client
+    member = _member_client(c.app, store)
     assert member.get(path).status_code == 403
 
 
@@ -78,8 +84,8 @@ def test_member_gets_403_on_lead_endpoints(client, path):
     ],
 )
 def test_member_can_access_member_endpoints(client, path):
-    c, _ = client
-    member = _member_client(c.app)
+    c, store = client
+    member = _member_client(c.app, store)
     assert member.get(path).status_code == 200
 
 

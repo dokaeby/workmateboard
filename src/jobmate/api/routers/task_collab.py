@@ -48,6 +48,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _audit_api = ctx._audit_api
     _actor_label = ctx._actor_label
     _session_user = ctx._session_user
+    _require_session_capability = ctx._require_session_capability
 
     def _resolve_task(
         task_ref: str, request: Request
@@ -140,6 +141,12 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        # spec 003 US4 — 세션 사용자의 artifact:create user-permission 강제.
+        denied = _require_session_capability(
+            request, "artifact:create", task_id=task_id, actor=_actor_label(request)
+        )
+        if denied is not None:
+            return denied
         task, e = _resolve_task(task_id, request)
         if e is not None:
             return e

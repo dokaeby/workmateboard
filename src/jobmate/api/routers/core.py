@@ -27,6 +27,7 @@ logger = logging.getLogger("jobmate.api")
 def register(app: FastAPI, ctx: Any) -> None:
     store = ctx.store
     _admin_gate = ctx._admin_gate
+    _platform_admin_gate = ctx._platform_admin_gate
     # React 프론트엔드(v2) — 저장소 루트 v2/dist 빌드 산출물. 존재할 때만 마운트.
     _v2_dist = STATIC_DIR.parents[3] / "v2" / "dist"
 
@@ -78,7 +79,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     @app.get("/api/v1/health/detail")
     def health_detail(request: Request) -> JSONResponse:
         """헬스 상세 — DB 경로·머신명 등 내부 정보 포함이므로 admin 전용."""
-        gate = _admin_gate(request)
+        gate = _platform_admin_gate(request)
         if gate is not None:
             return gate
         started = float(getattr(app.state, "started_at", time.time()))

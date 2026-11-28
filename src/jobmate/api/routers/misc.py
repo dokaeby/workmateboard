@@ -36,6 +36,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _audit_api = ctx._audit_api
     _admin_gate = ctx._admin_gate
     _admin_user = ctx._admin_user
+    _platform_admin_gate = ctx._platform_admin_gate
     _lead_gate = ctx._lead_gate
     _prefs = ctx._prefs
 
@@ -83,7 +84,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     @app.get("/api/v1/developer/status")
     def developer_status_endpoint(request: Request) -> JSONResponse:
         """개발자 뷰 — 연동/인증 구성 상태 (값이 아닌 bool/노트만). admin 전용."""
-        gate = _admin_gate(request)
+        gate = _platform_admin_gate(request)
         if gate is not None:
             return gate
         return JSONResponse(content=developer_status(store, settings, adapters))

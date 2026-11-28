@@ -229,6 +229,10 @@ class AdminStoreMixin:
                 counts[table] = int(getattr(cur, "rowcount", 0) or 0)
             cur = c.execute("DELETE FROM api_keys WHERE owner_user_id=?", (user_id,))
             counts["api_keys"] = int(getattr(cur, "rowcount", 0) or 0)
+            # user_permissions — FR-032 계정 삭제 정리. user_id 키 행은
+            # 전 조직에서 제거한다(계정이 사라지면 grant도 무의미).
+            cur = c.execute("DELETE FROM user_permissions WHERE user_id=?", (user_id,))
+            counts["user_permissions"] = int(getattr(cur, "rowcount", 0) or 0)
             # 조직 멤버십·초대 정리(spec 003) — 초대는 invited_by(user_id 또는
             # 이메일)와 수신 이메일 양쪽으로 매칭해 잔존 PII를 제거한다.
             cur = c.execute("DELETE FROM organization_members WHERE user_id=?", (user_id,))

@@ -64,6 +64,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _summarize_email = ctx._summarize_email
     _schedule_run_jobs = ctx._schedule_run_jobs
     _admin_user = ctx._admin_user
+    _platform_admin_user = ctx._platform_admin_user
     execute_run = ctx.execute_run
 
     # ---- calendar-agent: 멀티채널 웹훅·수신함·이벤트·알림예약 ----
@@ -282,7 +283,7 @@ def register(app: FastAPI, ctx: Any) -> None:
                 _secret_ok()
                 or (not secret and authorized(request))
                 or (bool(api_key()) and authorized(request))
-                or (not secret and not api_key() and _admin_user(request) is not None)
+                or (not secret and not api_key() and _platform_admin_user(request) is not None)
             )
         if not valid:
             logger.warning("cron tick rejected: invalid credentials")

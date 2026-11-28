@@ -958,6 +958,21 @@ CREATE TABLE IF NOT EXISTS agent_permissions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_permissions_agent ON agent_permissions(agent_id);
 
+-- spec 003 US4: 사용자 단위 capability 권한 — agent_permissions와 동일 어휘.
+-- parent row가 없어 org_id는 요청 컨텍스트(ctx 조직)에서 스탬프한다.
+CREATE TABLE IF NOT EXISTS user_permissions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  effect TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'global',
+  scope_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(user_id, capability, scope_type, scope_id, effect, org_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id);
+
 -- agent-management 3차 (paperclip spec E): 외부 오케스트레이터(Paperclip 등)
 -- 읽기 전용 projection — provider+external_id UNIQUE. native
 -- agents/tasks/runs와 ID 네임스페이스를 섞지 않고, 토큰/크리덴셜/

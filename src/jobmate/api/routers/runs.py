@@ -35,6 +35,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _do_approve = ctx._do_approve
     _lead_gate = ctx._lead_gate
     _monthly_budget_usd = ctx._monthly_budget_usd
+    _require_session_capability = ctx._require_session_capability
     _mtd_llm_cost_usd = ctx._mtd_llm_cost_usd
     _run_rate_limited = ctx._run_rate_limited
     _schedule_run_jobs = ctx._schedule_run_jobs
@@ -119,6 +120,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         project = budget_scope.clean_scope_id(body.project or "")
         if not project and isinstance(body.metadata, dict):
             project = budget_scope.clean_scope_id(str(body.metadata.get("project") or ""))
+        # metadata.task_id는 agent/user 양쪽 permission 평가의 task scope
+        # 힌트 — agent_id 유무와 무관하게 한 번만 추출한다.
+        _perm_task_id = ""
+        if isinstance(body.metadata, dict):
+            _perm_task_id = str(body.metadata.get("task_id") or "")
         # spec 3차 D — agent_id 태깅된 run 생성은 해당 agent의 run:execute
         # capability를 서버가 재검증한다(버튼 숨김이 아니라 강제). agent_id
         # 없는 run은 agent 행위자가 아니므로 agent permission을 적용하지
@@ -131,9 +137,6 @@ def register(app: FastAPI, ctx: Any) -> None:
         # (canonical project uuid)로 해석한다 — id 또는 이름(ci) 모두 허용.
         # 해석 실패 시 ''를 넘겨 task_id 유도 project가 대신 쓰이게 한다.
         if agent_id:
-            _perm_task_id = ""
-            if isinstance(body.metadata, dict):
-                _perm_task_id = str(body.metadata.get("task_id") or "")
             _perm_project_id = ""
             if project:
                 _proj_row = store.get_project(project) or store.find_project_by_name(project)
@@ -178,6 +181,23 @@ def register(app: FastAPI, ctx: Any) -> None:
                 f"limit ${blocks[0]['amount_usd']:.4f})",
                 request,
             )
+        # spec 003 US4 — 세션 사용자의 run:execute user-permission 강제.
+        # project는 이름 문자열일 수 있어 agent permission 경로와 동일하게
+        # canonical project id로 해석한다. 머신 키/로컬 오픈은 헬퍼가 건너뛴다.
+        _sess_project_id = ""
+        if project:
+            _sess_proj = store.get_project(project) or store.find_project_by_name(project)
+            if _sess_proj is not None:
+                _sess_project_id = str(_sess_proj.get("id") or "")
+        denied = _require_session_capability(
+            request,
+            "run:execute",
+            task_id=_perm_task_id,
+            project_id=_sess_project_id,
+            actor=_actor_label(request),
+        )
+        if denied is not None:
+            return denied
         res = wakeups.admit_run(
             store,
             workflow_key=body.workflow,
@@ -427,6 +447,31 @@ def register(app: FastAPI, ctx: Any) -> None:
         gated = _lead_gate(request)
         if gated is not None:
             return gated
+        # spec 003 US4 — 세션 사용자의 run:approve user-permission 강제.
+        # run의 project 태그(이름 문자열 가능)와 input.meta.task_id를
+        # permission scope로 해석한다 — POST /runs의 run:execute와 동일 규칙.
+        _appr_task_id = ""
+        _appr_project_id = ""
+        _appr_run = store.get_run(run_id)
+        if _appr_run is not None:
+            _appr_meta = _appr_run.input.get("meta") if isinstance(_appr_run.input, dict) else None
+            if isinstance(_appr_meta, dict):
+                _appr_task_id = str(_appr_meta.get("task_id") or "")
+            if _appr_run.project:
+                _appr_proj = store.get_project(_appr_run.project) or store.find_project_by_name(
+                    _appr_run.project
+                )
+                if _appr_proj is not None:
+                    _appr_project_id = str(_appr_proj.get("id") or "")
+        denied = _require_session_capability(
+            request,
+            "run:approve",
+            task_id=_appr_task_id,
+            project_id=_appr_project_id,
+            actor=_actor_label(request),
+        )
+        if denied is not None:
+            return denied
         result = _do_approve(
             run_id,
             body.decision,

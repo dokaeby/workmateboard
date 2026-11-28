@@ -34,6 +34,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     llm = ctx.llm
     err = ctx.err
     _admin_user = ctx._admin_user
+    _platform_admin_user = ctx._platform_admin_user
     _effective_role = ctx._effective_role
     _normalize_role = ctx._normalize_role
     _audit_api = ctx._audit_api
@@ -368,8 +369,8 @@ def register(app: FastAPI, ctx: Any) -> None:
     # ---- 멀티유저 역할 ----
     @app.get("/api/v1/users")
     def list_users(request: Request) -> JSONResponse:
-        """사용자 목록 (관리자 전용) — 비밀번호 해시 제외."""
-        admin = _admin_user(request)
+        """사용자 목록 (플랫폼 관리자 전용) — 비밀번호 해시 제외."""
+        admin = _platform_admin_user(request)
         if admin is None:
             return err(403, "forbidden", "admin role required", request)
         users = []
@@ -387,8 +388,8 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.patch("/api/v1/users/{user_id}/role")
     def patch_user_role(user_id: str, body: UserRoleRequest, request: Request) -> JSONResponse:
-        """사용자 role 변경 (관리자 전용) — 마지막 admin 강등 차단 + 감사 로그."""
-        admin = _admin_user(request)
+        """사용자 role 변경 (플랫폼 관리자 전용) — 마지막 admin 강등 차단 + 감사 로그."""
+        admin = _platform_admin_user(request)
         if admin is None:
             return err(403, "forbidden", "admin role required", request)
         target = store.get_user_by_id(user_id)

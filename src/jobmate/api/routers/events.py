@@ -23,6 +23,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     adapters = ctx.adapters
     err = ctx.err
     _admin_user = ctx._admin_user
+    _platform_admin_user = ctx._platform_admin_user
     _audit_api = ctx._audit_api
     _lead_gate = ctx._lead_gate
 
@@ -40,7 +41,7 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.post("/api/v1/settings")
     def set_prefs(body: dict[str, Any], request: Request) -> JSONResponse:
-        if _admin_user(request) is None:
+        if _platform_admin_user(request) is None:
             return err(403, "forbidden", "admin role required", request)
         p = _prefs()
         minutes = int(body.get("gmail_check_minutes", p.get("gmail_check_minutes", 30)))

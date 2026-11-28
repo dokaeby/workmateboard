@@ -33,6 +33,8 @@ def register(app: FastAPI, ctx: Any) -> None:
     _rate_hit = ctx._rate_hit
     _EMAIL_RE = ctx._EMAIL_RE
     _send_org_invite = ctx.send_org_invite
+    _admin_user = ctx._admin_user
+    _platform_admin_user = ctx._platform_admin_user
 
     def _session_or_401(request: Request) -> dict[str, Any] | JSONResponse:
         user = _session_user(request)
@@ -686,3 +688,164 @@ def register(app: FastAPI, ctx: Any) -> None:
             {"invitation_id": inv["id"]},
         )
         return JSONResponse({"status": "declined"})
+
+    # ---- 프로젝트 권한 부여 (spec 003 US4, FR-024) ----
+    # user_permissions 행의 조회/교체/삭제. 게이트: 이 조직의
+    # org_admin/org_owner이거나 플랫폼 admin(ctx._admin_user).
+    # projects 테이블에는 사용자 manager 컬럼이 없다(owner_agent_id는
+    # agent 귀속) — 따라서 grant 관리 주체는 org_admin+로 한정한다.
+
+    def _project_perm_guard(
+        request: Request, user: dict[str, Any], org_id: str, project_id: str
+    ) -> tuple[dict[str, Any], str] | JSONResponse:
+        """(org, canonical_project_id) 또는 에러 응답.
+
+        {org_id} path param은 현재 조직 컨텍스트(orgctx)와 반드시 일치해야
+        한다 — 불일치는 다른 조직을 찌르는 시도로 보고 404."""
+        from ...store import orgctx
+
+        org = _org_or_404(org_id)
+        if org is None or orgctx.current_org_id() != org_id:
+            return err(404, "not_found", "조직을 찾을 수 없습니다", request)
+        m = _membership(user, org_id)
+        is_org_admin = _role_at_least(m, "org_admin")
+        is_platform_admin = _platform_admin_user(request) is not None
+        if not (is_org_admin or is_platform_admin):
+            return err(403, "permission_denied", "조직 관리자 권한이 필요합니다", request)
+        proj = store.get_project(project_id)
+        if proj is None:
+            return err(404, "not_found", "프로젝트를 찾을 수 없습니다", request)
+        canonical_pid = str(proj.get("id") or project_id)
+        return org, canonical_pid
+
+    def _perm_scope_rows(user_id: str, project_id: str) -> list[dict[str, Any]]:
+        """현재 조직 ctx의 user_permissions 중 이 프로젝트 scope 행만."""
+        return [
+            r
+            for r in store.list_user_permissions(user_id, limit=1000)
+            if str(r.get("scope_type") or "") == "project"
+            and str(r.get("scope_id") or "") == project_id
+        ]
+
+    @app.get("/api/v1/orgs/{org_id}/projects/{project_id}/permissions")
+    def org_project_permissions_list(
+        org_id: str, project_id: str, request: Request, user_id: str = ""
+    ) -> JSONResponse:
+        """프로젝트 scope user_permissions 조회 — org_admin+.
+
+        ?user_id= 지정 시 해당 멤버의 규칙만, 생략 시 조직 멤버 전체."""
+        user = _session_or_401(request)
+        if isinstance(user, JSONResponse):
+            return user
+        guarded = _project_perm_guard(request, user, org_id, project_id)
+        if isinstance(guarded, JSONResponse):
+            return guarded
+        _org, pid = guarded
+        uid_filter = user_id.strip()
+        if uid_filter:
+            if store.get_org_membership(org_id, uid_filter) is None:
+                return err(404, "not_found", "멤버를 찾을 수 없습니다", request)
+            return JSONResponse({"items": _perm_scope_rows(uid_filter, pid)})
+        items: list[dict[str, Any]] = []
+        for m in store.list_org_members(org_id):
+            if m.get("status") != "active":
+                continue
+            items.extend(_perm_scope_rows(str(m["user_id"]), pid))
+        return JSONResponse({"items": items})
+
+    @app.put("/api/v1/orgs/{org_id}/projects/{project_id}/permissions/{user_id}")
+    def org_project_permissions_put(
+        org_id: str,
+        project_id: str,
+        user_id: str,
+        body: dict[str, Any],
+        request: Request,
+    ) -> JSONResponse:
+        """프로젝트 scope 권한 규칙 전체 교체 — org_admin+.
+
+        body.rules는 services.permissions.validate_user_permission_rules가
+        검증·정규화한 뒤 store.replace_user_permissions에 전달된다."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 환경에서는 사용할 수 없습니다", request)
+        user = _session_or_401(request)
+        if isinstance(user, JSONResponse):
+            return user
+        guarded = _project_perm_guard(request, user, org_id, project_id)
+        if isinstance(guarded, JSONResponse):
+            return guarded
+        org, pid = guarded
+        if store.get_org_membership(org_id, user_id) is None:
+            return err(404, "not_found", "멤버를 찾을 수 없습니다", request)
+        if org.get("status") == "suspended":
+            return err(403, "org_suspended", "정지된 조직입니다", request)
+        rules = body.get("rules")
+        if not isinstance(rules, list):
+            return err(422, "validation", "rules must be a list", request)
+        from ...services import permissions as perm_svc
+        from ...services.management_common import ManagementError
+
+        try:
+            normalized = perm_svc.validate_user_permission_rules(store, user_id, org_id, rules)
+        except ManagementError as e:
+            return err(e.status_code, e.code, e.message, request)
+        # 이 엔드포인트는 프로젝트 scope 전용 — global/task 규칙이나 다른
+        # 프로젝트의 규칙은 GET에 보이지 않는 채 적용되는 사각지대를
+        # 만들므로 거부한다. 다른 scope 관리는 향후 org-level 엔드포인트로.
+        for r in normalized:
+            if str(r.get("scope_type") or "") != "project" or str(r.get("scope_id") or "") != pid:
+                return err(
+                    422,
+                    "validation",
+                    "rules must be scope_type='project' scoped to this project",
+                    request,
+                )
+        store.replace_user_permissions(user_id, normalized, scope_type="project", scope_id=pid)
+        saved = _perm_scope_rows(user_id, pid)
+        _audit(
+            str(user.get("email") or "-"),
+            "org_permissions_updated",
+            org_id,
+            {"user_id": user_id, "project_id": pid, "rule_count": len(saved)},
+        )
+        logger.info(
+            "org permissions updated org=%s project=%s user=%s by=%s rules=%d",
+            org_id,
+            pid,
+            user_id,
+            user.get("id"),
+            len(saved),
+        )
+        return JSONResponse({"rules": saved})
+
+    @app.delete("/api/v1/orgs/{org_id}/projects/{project_id}/permissions/{user_id}")
+    def org_project_permissions_delete(
+        org_id: str, project_id: str, user_id: str, request: Request
+    ) -> JSONResponse:
+        """사용자의 이 프로젝트 scope user_permissions만 삭제 — org_admin+."""
+        if _remote_open_mode(request):
+            return err(403, "forbidden", "이 환경에서는 사용할 수 없습니다", request)
+        user = _session_or_401(request)
+        if isinstance(user, JSONResponse):
+            return user
+        guarded = _project_perm_guard(request, user, org_id, project_id)
+        if isinstance(guarded, JSONResponse):
+            return guarded
+        org, pid = guarded
+        if org.get("status") == "suspended":
+            return err(403, "org_suspended", "정지된 조직입니다", request)
+        deleted = store.delete_user_permissions(user_id, scope_type="project", scope_id=pid)
+        _audit(
+            str(user.get("email") or "-"),
+            "org_permissions_cleared",
+            org_id,
+            {"user_id": user_id, "project_id": pid, "deleted": deleted},
+        )
+        logger.info(
+            "org permissions cleared org=%s project=%s user=%s by=%s deleted=%d",
+            org_id,
+            pid,
+            user_id,
+            user.get("id"),
+            deleted,
+        )
+        return JSONResponse({"deleted": deleted})

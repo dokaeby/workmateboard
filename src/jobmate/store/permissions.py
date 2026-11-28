@@ -130,3 +130,96 @@ class PermissionStoreMixin:
                     ),
                 )
         return self.list_agent_permissions(aid)
+
+    def list_user_permissions(
+        self,
+        user_id: str,
+        *,
+        capability: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """user의 permission 규칙 — capability 필터 선택, 최신순."""
+        frag, params = _org_filter()
+        sql = "SELECT * FROM user_permissions WHERE user_id=?" + frag  # noqa: S608
+        params = [user_id.strip()[:64], *params]
+        if capability:
+            sql += " AND capability=?"
+            params.append(capability.strip().lower()[:60])
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(_clamp_limit(limit, 500, 1000))
+        return [self._perm_json(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def replace_user_permissions(
+        self,
+        user_id: str,
+        rules: list[dict[str, Any]],
+        *,
+        scope_type: str = "",
+        scope_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """user의 permission 규칙 전체 교체 — DELETE + INSERT 단일 tx.
+
+        PUT semantics — 기존 행을 모두 지우고 전달된 집합만 남긴다.
+        scope_type/scope_id를 함께 지정하면 해당 scope의 행만 교체한다
+        (프로젝트 권한 엔드포인트가 다른 scope의 규칙을 건드리지 않게).
+        user_permissions는 부모 행이 없어 org 귀속은 요청 컨텍스트에서
+        가져온다(orgctx.org_for_write — ctx=''면 org_id=''로 기록).
+        DELETE는 ctx 조직 행만 지운다 — agent_permissions와 달리
+        org_id='' 레거시 병합은 하지 않는다(user perms는 항상 조직
+        스탬프가 원칙). 반환값은 저장된 행 목록."""
+        uid = user_id.strip()[:64]
+        now = _iso(_now())
+        oid = orgctx.org_for_write()
+        norm: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for rule in rules[:_MAX_RULES]:
+            n = self._normalize_perm_rule(rule if isinstance(rule, dict) else {})
+            if n is None:
+                continue
+            key = (n["capability"], n["scope_type"], n["scope_id"], n["effect"])
+            if key in seen:
+                continue
+            seen.add(key)
+            norm.append(n)
+        del_sql = "DELETE FROM user_permissions WHERE user_id=? AND org_id=?"
+        del_params: list[Any] = [uid, oid]
+        if scope_type and scope_id:
+            del_sql += " AND scope_type=? AND scope_id=?"
+            del_params += [scope_type, scope_id]
+        with self.tx() as c:
+            c.execute(del_sql, del_params)
+            for n in norm:
+                c.execute(
+                    "INSERT INTO user_permissions(id,user_id,capability,effect,"
+                    "scope_type,scope_id,created_at,org_id) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex[:12],
+                        uid,
+                        n["capability"],
+                        n["effect"],
+                        n["scope_type"],
+                        n["scope_id"],
+                        now,
+                        oid,
+                    ),
+                )
+        return self.list_user_permissions(uid)
+
+    def delete_user_permissions(
+        self, user_id: str, *, scope_type: str = "", scope_id: str = ""
+    ) -> int:
+        """ctx 조직의 user permission 규칙 삭제 — 삭제된 행 수 반환.
+
+        scope_type/scope_id를 함께 지정하면 해당 scope의 행만 지운다.
+        ctx 조직이 비어 있으면 org_id='' 행만 지운다(타 조직 행은 건드리지
+        않는다 — `org_id IN (?, '')` 패턴은 ctx=''일 때 전 조직 삭제가 되므로
+        사용하지 않는다)."""
+        uid = user_id.strip()[:64]
+        oid = orgctx.current_org_id()
+        sql = "DELETE FROM user_permissions WHERE user_id=? AND org_id=?"
+        params: list[Any] = [uid, oid]
+        if scope_type and scope_id:
+            sql += " AND scope_type=? AND scope_id=?"
+            params += [scope_type, scope_id]
+        cur = self._conn.execute(sql, params)
+        return int(getattr(cur, "rowcount", 0) or 0)

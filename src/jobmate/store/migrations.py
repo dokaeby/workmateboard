@@ -109,6 +109,7 @@ class MigrationStoreMixin:
             "connectors",
             "routines",
             "agent_permissions",
+            "user_permissions",
             "agent_events",
             "task_comments",
             "task_artifacts",
@@ -415,6 +416,43 @@ class MigrationStoreMixin:
             "indexes": [
                 "CREATE INDEX IF NOT EXISTS idx_agent_permissions_agent"
                 " ON agent_permissions(agent_id)"
+            ],
+        },
+        "user_permissions": {
+            "old_unique": [
+                frozenset(
+                    {
+                        "user_id",
+                        "capability",
+                        "scope_type",
+                        "scope_id",
+                        "effect",
+                    }
+                )
+            ],
+            "cols": [
+                "id",
+                "user_id",
+                "capability",
+                "effect",
+                "scope_type",
+                "scope_id",
+                "created_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  effect TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'global',
+  scope_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(user_id, capability, scope_type, scope_id, effect, org_id)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id)"
             ],
         },
         "cost_events": {
@@ -747,6 +785,14 @@ class MigrationStoreMixin:
             ("agent_id", "capability", "scope_type", "scope_id", "effect", "org_id"),
             "UNIQUE(agent_id, capability, scope_type, scope_id, effect, org_id)",
             "agent_permissions_scope_org_key",
+        ),
+        (
+            "user_permissions",
+            "UNIQUE",
+            ("user_id", "capability", "scope_type", "scope_id", "effect"),
+            ("user_id", "capability", "scope_type", "scope_id", "effect", "org_id"),
+            "UNIQUE(user_id, capability, scope_type, scope_id, effect, org_id)",
+            "user_permissions_scope_org_key",
         ),
         (
             "cost_events",

@@ -22,15 +22,17 @@ def _client(monkeypatch):
     return TestClient(app), store
 
 
-def _session_client(client, store, email, role=None):
+def _session_client(client, store, email, role=None, org_role="org_owner"):
     user = store.create_user(email, "", email)
     if role:
         store.set_user_role(user["id"], role)
     # spec 003 US3 — 멤버십 없는 사용자는 ctx='__no_org__'로 어떤 조직
     # 데이터도 보지 못한다. 테스트는 personal org을 만들어 준다.
+    # spec 003 US4 (FR-025) — org_role이 org_admin/org_owner면 조직 스코프
+    # lead/admin 게이트를 통과하므로 member 판정 테스트는 org_role="member".
     oid = store.create_organization(f"org-{email}", f"org-{email}")
     assert oid
-    store.add_org_member(oid, user["id"], "org_owner")
+    store.add_org_member(oid, user["id"], org_role)
     token = new_session_token()
     store.create_session(user["id"], hash_token(token))
     client.cookies.set(SESSION_COOKIE, token)
@@ -57,7 +59,7 @@ def _seed(store, org_id=""):
 
 def test_member_sees_no_source_text(monkeypatch):
     client, store = _client(monkeypatch)
-    _, oid = _session_client(client, store, "member@b.com")
+    _, oid = _session_client(client, store, "member@b.com", org_role="member")
     _seed(store, oid)
 
     r = client.get("/api/v1/messages")

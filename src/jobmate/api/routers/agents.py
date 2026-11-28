@@ -33,6 +33,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     _lead_gate = ctx._lead_gate
     _audit_api = ctx._audit_api
     _actor_label = ctx._actor_label
+    _require_session_capability = ctx._require_session_capability
 
     @app.get("/api/v1/agents")
     def list_agents(request: Request, status: str | None = None) -> JSONResponse:
@@ -74,6 +75,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        denied = _require_session_capability(request, "agent:manage", actor=_actor_label(request))
+        if denied is not None:
+            return denied
         fields = body.model_dump(exclude_unset=True)
         verr = agents_svc.validate_agent_fields(store, fields)
         if verr is not None:
@@ -105,6 +109,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        denied = _require_session_capability(request, "agent:manage", actor=_actor_label(request))
+        if denied is not None:
+            return denied
         agent_row = store.get_agent(agent_id)
         if agent_row is None:
             return err(404, "not_found", "agent not found", request)
@@ -211,6 +218,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        denied = _require_session_capability(request, "agent:manage", actor=_actor_label(request))
+        if denied is not None:
+            return denied
         agent = store.get_agent(agent_id)
         if agent is None:
             return err(404, "not_found", "agent not found", request)

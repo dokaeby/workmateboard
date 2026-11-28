@@ -287,6 +287,17 @@ def build_app_context(
             return "lead"
         return "member"
 
+    def _session_org_role(uid: str) -> str:
+        """세션 사용자의 현재 요청 조직(orgctx) 멤버십 역할 (spec 003 US4, FR-025).
+
+        ctx=''(비인증 경로)면 조직 검사를 건너뛰고 ''를 반환한다.
+        organization_members.role 어휘: member|org_admin|org_owner."""
+        oid = orgctx.current_org_id()
+        if not oid:
+            return ""
+        m = store.get_org_membership(oid, uid)
+        return str((m or {}).get("role") or "")
+
     def _local_open_mode(request: Request) -> bool:
         """인증 비활성 로컬 개발 모드 — 키·허용목록·VERCEL이 모두 없고 요청이
         loopback일 때만 True. 무키 상태로 외부에 노출된 배포에서 admin API가
@@ -310,9 +321,11 @@ def build_app_context(
 
         return not api_key() and not allowed_emails() and not is_loopback_request(request)
 
-    def _admin_user(request: Request) -> dict[str, Any] | None:
-        """관리자 판정 — 세션 사용자 role=admin, 유효 API 키(머신), 또는
-        인증이 비활성인 로컬 개발 모드(키·허용목록·VERCEL 모두 없음)일 때 허용."""
+    def _platform_admin_user(request: Request) -> dict[str, Any] | None:
+        """플랫폼 admin 판정 — 세션 role=admin, 유효 API 키(머신), 또는
+        인증이 비활성인 로컬 개발 모드. 조직 역할(org_admin/org_owner)은
+        인정하지 않는다 — 사용자 목록·role 변경·글로벌 설정·watchdog 같은
+        플랫폼 전역 작업은 개인 조직의 소유자에게 열리지 않아야 한다."""
         from ..security import api_key
 
         user = _session_user(request)
@@ -329,6 +342,17 @@ def build_app_context(
             return {"id": "local", "email": "", "role": "admin"}
         return None
 
+    def _admin_user(request: Request) -> dict[str, Any] | None:
+        """admin 판정 — 플랫폼 admin(_platform_admin_user) 또는 현재 조직
+        컨텍스트의 org_admin/org_owner(FR-025). 조직 스코프 리소스
+        (스케줄·리포트·감사·자동화 개요)의 admin 게이트는 이 판정을 쓰고,
+        플랫폼 전역 작업은 _platform_admin_user/_platform_admin_gate를 쓴다."""
+        user = _session_user(request)
+        if user is not None and _effective_role(user) != "admin":
+            if _session_org_role(str(user["id"])) in ("org_admin", "org_owner"):
+                return {**user, "role": "admin"}
+        return _platform_admin_user(request)
+
     def _lead_user(request: Request) -> dict[str, Any] | None:
         """팀장(lead) 이상 판정 — 세션 role이 lead/admin이거나,
         유효 API 키(머신), 또는 인증 비활성 로컬 개발 모드일 때 허용."""
@@ -339,6 +363,9 @@ def build_app_context(
             role = _effective_role(user)
             if role in ("lead", "admin"):
                 return {**user, "role": role}
+            # FR-025 — 조직 org_admin/org_owner 세션 사용자는 lead급.
+            if _session_org_role(str(user["id"])) in ("org_admin", "org_owner"):
+                return {**user, "role": "lead"}
             return None
         if api_key() and authorized(request):
             return {"id": "api-key", "email": "", "role": "admin"}
@@ -365,15 +392,62 @@ def build_app_context(
             role = _effective_role(user)
             if role in ("lead", "admin"):
                 return {**user, "role": role}
+            # FR-025 — 조직 org_admin/org_owner는 실제 세션 사용자이므로
+            # 명시적 lead로 인정한다(머신 키만 제외하는 기존 규칙 유지).
+            if _session_org_role(str(user["id"])) in ("org_admin", "org_owner"):
+                return {**user, "role": "lead"}
             return None
         if _local_open_mode(request):
             return {"id": "local", "email": "", "role": "admin"}
         return None
 
     def _admin_gate(request: Request) -> JSONResponse | None:
-        """admin이 아니면 403 응답, 아니면 None — 라우트 첫 줄에서 호출."""
+        """admin이 아니면 403 응답, 아니면 None — 라우트 첫 줄에서 호출.
+        조직 스코프 admin 리소스용(org_admin/org_owner 포함)."""
         if _admin_user(request) is None:
             return err(403, "forbidden", "admin role required", request)
+        return None
+
+    def _platform_admin_gate(request: Request) -> JSONResponse | None:
+        """플랫폼 admin 전용 게이트 — org 역할 승격 없이 엄격 판정.
+        플랫폼 전역 작업(watchdog·health 상세·developer status)에 사용."""
+        if _platform_admin_user(request) is None:
+            return err(403, "forbidden", "admin role required", request)
+        return None
+
+    def _require_session_capability(
+        request: Request,
+        capability: str,
+        *,
+        task_id: str = "",
+        project_id: str = "",
+        target_project_id: str = "",
+        actor: str = "",
+    ) -> JSONResponse | None:
+        """spec 003 US4 — 세션 사용자의 user-permission 강제 지점.
+
+        세션 사용자가 없으면(머신 API 키·로컬 오픈·비인증) None을 반환 —
+        이 경로들은 자체 인증/게이트 모델을 따른다. 세션 사용자면
+        services.permissions.require_user_permission으로 deny/needs_approval을
+        강제하고 ManagementError를 err 응답으로 변환해 반환한다."""
+        user = _session_user(request)
+        if user is None:
+            return None
+        from ..services import permissions as perm_svc
+        from ..services.management_common import ManagementError
+
+        try:
+            perm_svc.require_user_permission(
+                store,
+                str(user["id"]),
+                capability,
+                task_id=task_id,
+                project_id=project_id,
+                target_project_id=target_project_id,
+                actor=actor or str(user.get("email") or user["id"]),
+            )
+        except ManagementError as e:
+            return err(e.status_code, e.code, e.message, request)
         return None
 
     # ---- 인메모리 레이트리밋 공통 ----

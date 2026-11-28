@@ -216,7 +216,15 @@ class OrgStoreMixin:
                 "DELETE FROM organization_members WHERE org_id=? AND user_id=?",
                 (org_id, user_id),
             )
-        return int(getattr(cur, "rowcount", 0) or 0) > 0
+            removed = int(getattr(cur, "rowcount", 0) or 0) > 0
+            if removed:
+                # 멤버십과 함께 grant도 정리 — 재초대 시 stale 권한이
+                # 조용히 부활하는 것을 막는다.
+                c.execute(
+                    "DELETE FROM user_permissions WHERE org_id=? AND user_id=?",
+                    (org_id, user_id),
+                )
+        return removed
 
     def transfer_org_ownership(self, org_id: str, from_user_id: str, to_user_id: str) -> bool:
         """소유권 이관 — 단일 tx로 양쪽 role 갱신. 반환: 성공 여부.

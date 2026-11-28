@@ -63,10 +63,12 @@ def register(app: FastAPI, ctx: Any) -> None:
     _lead_gate = ctx._lead_gate
     _explicit_lead_user = ctx._explicit_lead_user
     _admin_gate = ctx._admin_gate
+    _platform_admin_gate = ctx._platform_admin_gate
     _audit_api = ctx._audit_api
     _actor_label = ctx._actor_label
     _do_approve = ctx._do_approve
     _run_rate_limited = ctx._run_rate_limited
+    _require_session_capability = ctx._require_session_capability
     _monthly_budget_usd = ctx._monthly_budget_usd
     _mtd_llm_cost_usd = ctx._mtd_llm_cost_usd
 
@@ -124,6 +126,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        denied = _require_session_capability(request, "agent:manage", actor=_actor_label(request))
+        if denied is not None:
+            return denied
         fields = body.model_dump(exclude_unset=True)
         verr = mgmt.validate_agent_create_fields(fields)
         if verr is not None:
@@ -188,6 +193,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        denied = _require_session_capability(request, "agent:manage", actor=_actor_label(request))
+        if denied is not None:
+            return denied
         agent = store.get_agent(agent_id)
         if agent is None:
             return err(404, "not_found", "agent not found", request)
@@ -257,6 +265,9 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        denied = _require_session_capability(request, "agent:manage", actor=_actor_label(request))
+        if denied is not None:
+            return denied
         try:
             mgmt.transition_agent(store, agent_id, body.status, actor=_actor_label(request))
         except mgmt.ManagementError as e:
@@ -282,6 +293,14 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        denied = _require_session_capability(
+            request,
+            "agent:wake",
+            task_id=str(body.task_id or ""),
+            actor=_actor_label(request),
+        )
+        if denied is not None:
+            return denied
         key = (body.idempotency_key or request.headers.get("idempotency-key") or "").strip()
         if not key:
             return err(
@@ -420,6 +439,16 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        # spec 003 US4 — 세션 사용자는 user_permissions의 task:create 규칙도
+        # 통과해야 한다(머신 키/로컬 오픈은 자체 게이트로 우회).
+        denied = _require_session_capability(
+            request,
+            "task:create",
+            project_id=str(body.project_id or ""),
+            actor=_actor_label(request),
+        )
+        if denied is not None:
+            return denied
         try:
             task = mgmt.create_task(
                 store,
@@ -478,6 +507,25 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        # spec 003 US4 — 세션 사용자의 task:update user-permission 강제.
+        # project_id로의 이동은 대상 프로젝트 scope도 함께 평가한다 —
+        # 현재 프로젝트만 검사하면 deny된 프로젝트로 task를 옮기는
+        # 우회가 가능하다(agent permission의 target_project_id와 동일 규칙).
+        _target_pid = ""
+        _raw_target = str(getattr(body, "project_id", "") or "").strip()
+        if _raw_target:
+            _tp = store.get_project(_raw_target) or store.find_project_by_name(_raw_target)
+            if _tp is not None:
+                _target_pid = str(_tp.get("id") or "")
+        denied = _require_session_capability(
+            request,
+            "task:update",
+            task_id=task_id,
+            target_project_id=_target_pid,
+            actor=_actor_label(request),
+        )
+        if denied is not None:
+            return denied
         fields = body.model_dump(exclude_unset=True)
         try:
             task = mgmt.patch_task(store, task_id, fields, actor=_actor_label(request))
@@ -491,6 +539,12 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
+        # spec 003 US4 — 세션 사용자의 task:assign user-permission 강제.
+        denied = _require_session_capability(
+            request, "task:assign", task_id=task_id, actor=_actor_label(request)
+        )
+        if denied is not None:
+            return denied
         try:
             task = mgmt.assign_task(
                 store,
@@ -519,6 +573,12 @@ def register(app: FastAPI, ctx: Any) -> None:
             gate = _lead_gate(request)
             if gate is not None:
                 return gate
+        # spec 003 US4 — 세션 사용자의 task:update user-permission 강제.
+        denied = _require_session_capability(
+            request, "task:update", task_id=task_id, actor=_actor_label(request)
+        )
+        if denied is not None:
+            return denied
         try:
             task = mgmt.checkout_task(
                 store,
@@ -565,6 +625,11 @@ def register(app: FastAPI, ctx: Any) -> None:
                     "only the checkout owner agent can release this task",
                     request,
                 )
+        denied = _require_session_capability(
+            request, "task:update", task_id=task_id, actor=_actor_label(request)
+        )
+        if denied is not None:
+            return denied
         try:
             out = mgmt.release_task(store, task_id, actor=_actor_label(request))
         except mgmt.ManagementError as e:
@@ -1039,7 +1104,7 @@ def register(app: FastAPI, ctx: Any) -> None:
 
         운영 tick(_automation_loop/cron_tick)과 같은 run_cycle을 쓰므로
         감지·복구·escalation 규칙이 동일하다."""
-        gate = _admin_gate(request)
+        gate = _platform_admin_gate(request)
         if gate is not None:
             return gate
         try:

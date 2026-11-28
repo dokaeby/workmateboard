@@ -259,6 +259,12 @@ def _member_client(monkeypatch):
         json={"email": "member@b.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
     )
     _verify_session(client, store, "member@b.com")
+    # spec 003 US4 (FR-025) — personal org의 org_owner는 조직 스코프
+    # lead/admin 게이트를 통과하므로, 플랫폼 member 판정을 보려면 조직
+    # 역할을 member로 낮춘다.
+    mu = store.get_user_by_email("member@b.com")
+    for o in store.list_user_orgs(mu["id"]):
+        store.set_org_member_role(o["id"], mu["id"], "member")
     return client, store
 
 
@@ -311,6 +317,9 @@ def test_custom_workflow_side_effect_needs_lead(monkeypatch):
 
     m2_uid = store.get_user_by_email("m2@b.com")["id"]
     m2_org = str(store.list_user_orgs(m2_uid)[0]["id"])
+    # FR-025 — m2의 org_owner 기본값은 조직 스코프 lead를 의미하므로
+    # member 게이트 판정을 위해 조직 역할을 member로 낮춘다.
+    store.set_org_member_role(m2_org, m2_uid, "member")
     with orgctx.org_scope(m2_org):
         store.save_custom_workflow("cw_sidefx", spec)
     r2 = client.post("/api/v1/runs", json={"workflow": "cw_sidefx", "task": "t"})
