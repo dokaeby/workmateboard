@@ -124,7 +124,18 @@ def create_app(
         stop_event.set()
         store.close()
 
-    app = FastAPI(title="jobMate Harness", version="0.1.0", lifespan=lifespan)
+    # spec 006 US7 FR-024 — 프로덕션(release/VERCEL)에서는 API 스키마·Swagger
+    # UI를 비활성화해 내부 엔드포인트 구조가 외부에 노출되지 않게 한다.
+    # 개발(debug) 환경에서는 기존대로 공개.
+    _prod_docs_off = settings.mode == "release" or bool(os.environ.get("VERCEL"))
+    app = FastAPI(
+        title="jobMate Harness",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url=None if _prod_docs_off else "/docs",
+        redoc_url=None if _prod_docs_off else "/redoc",
+        openapi_url=None if _prod_docs_off else "/openapi.json",
+    )
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -157,8 +168,11 @@ def create_app(
                 )
             )
         ):
-            # 공개 공유 스냅샷 — GET만 인증 예외(POST /share는 세션 필요)
-            public_share = path.startswith("/api/v1/share/") and request.method == "GET"
+            # 공개 공유 스냅샷·공유 템플릿 — GET만 인증 예외
+            # (POST /share는 세션 필요)
+            public_share = (
+                path.startswith("/api/v1/share/") or path.startswith("/api/v1/templates/shared/")
+            ) and request.method == "GET"
             # spec 004 US5 FR-032 — 스크래이퍼용 별도 bearer(JOBMATE_METRICS_TOKEN).
             # /api/v1/metrics GET에만 허용하고, 세션/API 키 인증은 그대로 요구된다.
             metrics_scrape = False
@@ -328,6 +342,7 @@ def create_app(
         return ctx.err(403, "org_inactive", "organization is not active", request)
 
     from .routers import agents as _r_agents
+    from .routers import alerts as _r_alerts
     from .routers import auth as _r_auth
     from .routers import backups as _r_backups
     from .routers import budgets as _r_budgets
@@ -338,6 +353,7 @@ def create_app(
     from .routers import goals as _r_goals
     from .routers import health as _r_health
     from .routers import management as _r_management
+    from .routers import me as _r_me
     from .routers import messaging as _r_messaging
     from .routers import metrics as _r_metrics
     from .routers import misc as _r_misc
@@ -352,6 +368,7 @@ def create_app(
     from .routers import runs as _r_runs
     from .routers import sessions as _r_sessions
     from .routers import task_collab as _r_task_collab
+    from .routers import templates as _r_templates
     from .routers import webhooks as _r_webhooks
 
     # core(페이지/헬스/워크플로 목록)는 원래 앱 내장 라우트 — 다른 라우터보다 먼저.
@@ -381,6 +398,9 @@ def create_app(
     _r_webhooks.register(app, ctx)
     _r_metrics.register(app, ctx)
     _r_retention.register(app, ctx)
+    _r_me.register(app, ctx)
+    _r_templates.register(app, ctx)
+    _r_alerts.register(app, ctx)
     return app
 
 

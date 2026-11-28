@@ -69,6 +69,146 @@ def _emit_run_webhook(store: Store, run_id: str) -> None:
         worker_logger.warning("webhook emit failed run=%s", run_id, exc_info=True)
 
 
+def _emit_run_alert_event(store: Store, run_id: str) -> None:
+    """spec 006 US1 FR-003 — run 상태 → alert 규칙 평가 (비동기, non-blocking).
+
+    실패가 run 경로를 깨지 않게 전부 삼킨다 — 실제 평가는 daemon thread가
+    수행하고 (rule_id, event_fingerprint) dedup이 재평가 중복을 막는다."""
+    try:
+        from ..services import alert_rules as _alerts
+
+        _alerts.emit_run_status_event_async(store, run_id)
+    except Exception:
+        worker_logger.warning("alert emit failed run=%s", run_id, exc_info=True)
+
+
+# spec 006 US1 — alert sweep가 평가하는 run 상태 (종결 + 승인 대기).
+_ALERT_SWEEP_STATUSES = {
+    "completed",
+    "failed",
+    "rejected",
+    "cancelled",
+    "budget_exhausted",
+    "needs_human",
+    "waiting_approval",
+}
+
+
+def _alert_rule_sweep(store: Store) -> None:
+    """alert 규칙 평가 백스톱 — 직접 emit을 놓친 경로(승인 resume·메신저
+    커맨드·stale reaper)를 automation cycle에서 보완한다.
+
+    updated_at 워터마크 이후 변경된 run/stage_run을 스캔해 emit 함수에
+    넘긴다. fingerprint dedup이 중복 발송을 막으므로 직접 emit과 겹쳐도
+    안전하다. 규칙이 하나도 없으면 조회 없이 종료한다."""
+    try:
+        if not store.list_alert_rules(enabled_only=True):
+            return
+    except Exception:
+        return
+    from ..services import alert_rules as _alerts
+
+    now = datetime.now(UTC)
+    wm_state = store.get_state("alert_sweep_ts", {})
+    wm = str((wm_state or {}).get("ts") or "")
+    try:
+        since_dt = datetime.fromisoformat(wm) if wm else now - timedelta(minutes=15)
+    except ValueError:
+        since_dt = now - timedelta(minutes=15)
+    # 워터마크-2분 오버랩 — 시계/커밋 경계 누락 방지. dedup이 중복을 걸러준다.
+    since = (since_dt - timedelta(minutes=2)).isoformat()
+    try:
+        rows = store._conn.execute(  # noqa: SLF001 - 서비스 계층 store 내부 조회
+            "SELECT id,status,updated_at FROM runs WHERE updated_at >= ?"
+            " ORDER BY updated_at LIMIT 300",
+            (since,),
+        ).fetchall()
+        for r in rows:
+            if str(r["status"]) in _ALERT_SWEEP_STATUSES:
+                _alerts.emit_run_status_event_async(store, str(r["id"]))
+        srows = store._conn.execute(  # noqa: SLF001
+            "SELECT id,run_id FROM stage_runs WHERE status='failed'"
+            " AND finished_at >= ? ORDER BY finished_at LIMIT 300",
+            (since,),
+        ).fetchall()
+        for r in srows:
+            _alerts.emit_stage_failed_event(store, str(r["run_id"]), str(r["id"]))
+    except Exception:
+        worker_logger.warning("alert rule sweep failed", exc_info=True)
+        return
+    try:
+        store.set_state("alert_sweep_ts", {"ts": now.isoformat()})
+    except Exception:
+        worker_logger.debug("alert sweep watermark update failed", exc_info=True)
+
+
+def _process_budget_approvals(
+    store: Store,
+    settings: Settings,
+    llm: Any,
+    adapters: dict[str, Any],
+    schedule: Any = None,
+) -> None:
+    """spec 006 US2 — budget 승인 대기 run의 TTL 만료 + 승인분 실행 발사.
+
+    1. state=waiting + TTL 초과 → cancelled(FR-009).
+    2. state=approved + status=queued → dispatched 마킹 후 execute_run 예약.
+    schedule 콜백이 있으면(cron tick) BackgroundTasks로, 없으면 daemon
+    thread로 실행한다 — _promote_deferred_runs의 _sched와 동일 규칙."""
+    try:
+        ttl_state = store.get_state("budget_approval_ttl", {})
+        ttl_raw = (ttl_state or {}).get("hours", 72)
+        try:
+            ttl = float(ttl_raw)
+        except (TypeError, ValueError):
+            ttl = 72.0
+    except (TypeError, ValueError):
+        ttl = 72.0
+    try:
+        expired = store.expire_budget_approval_waits(ttl)
+    except Exception:
+        worker_logger.warning("budget approval TTL sweep failed", exc_info=True)
+        expired = []
+    for rid in expired:
+        worker_logger.info("run %s budget approval expired ttl=%sh", rid, ttl)
+        _emit_run_alert_event(store, rid)
+    try:
+        approved = store.list_budget_approval_approved()
+    except Exception:
+        worker_logger.warning("budget approval dispatch scan failed", exc_info=True)
+        return
+    for row in approved:
+        try:
+            run = store._row_to_run(row)  # noqa: SLF001 - 내부 조회
+        except Exception:
+            worker_logger.warning("budget approval row parse failed", exc_info=True)
+            continue
+        # approved→dispatched 원자 claim — loop/tick 중복 발사 방지
+        try:
+            if not store.mark_budget_approval_dispatched(run.id):
+                continue
+        except Exception:
+            worker_logger.warning(
+                "budget approval dispatch claim failed run=%s", run.id, exc_info=True
+            )
+            continue
+        payload = {"task": str((run.input or {}).get("task") or "")}
+        worker_logger.info("run %s budget approval dispatched", run.id)
+        if schedule is not None:
+            try:
+                schedule(run, payload)
+                continue
+            except Exception:
+                worker_logger.warning(
+                    "budget approval schedule failed run=%s", run.id, exc_info=True
+                )
+        threading.Thread(
+            target=_execute_run_job,
+            args=(store, settings, llm, adapters, run.id, run.workflow_key, payload, None),
+            daemon=True,
+        ).start()
+
+
 def _emit_event_webhook(store: Store, event_type: str, event_id: str, data: dict[str, Any]) -> None:
     """범용 webhook 이벤트 emit — 실패가 호출 경로를 깨지 않게 삼킨다."""
     try:
@@ -207,6 +347,11 @@ def run_automation_cycle(
     if flush_jobs is not None:
         flush_jobs(jobs)
     _check_waiting_approvals(store, adapters)
+    # spec 006 US1/US2 — alert 규칙 백스톱 스윕 + budget 승인 TTL/재개.
+    # 직접 emit을 놓친 경로(승인 resume·메신저·reaper)를 보완하고,
+    # require_approval 대기 run의 만료·승인분 실행을 처리한다.
+    _alert_rule_sweep(store)
+    _process_budget_approvals(store, settings, llm, adapters, schedule=promote_schedule)
     # spec 004 US1 — due webhook delivery 배치 (FR-008). 서버리스 cron tick
     # 경로에서도 동일하게 동작해야 하므로 사이클 본체에 포함한다.
     _process_webhook_deliveries(store, settings)
@@ -377,20 +522,36 @@ def _execute_run_job(
             return _execute_run_job(
                 store, settings, llm, adapters, run_id, workflow, payload, ctx, schedule
             )
+    # spec 006 US2 FR-008 — budget 승인 대기(run.metadata.budget_approval
+    # state=waiting) run은 승인/예산 재개 전까지 실행하지 않는다. 생성 경로가
+    # 스케줄을 건너뛰지만, deferred promote·스케줄 발사·submit_run 등 다른
+    # 진입점이 실수로 잡을 수 있어 실행 경계에서 한 번 더 차단한다.
+    try:
+        if store.run_budget_approval_state(run_id) == "waiting":
+            worker_logger.info("run %s skipped: waiting budget approval", run_id)
+            return
+    except Exception:
+        worker_logger.debug("budget approval state check failed run=%s", run_id, exc_info=True)
     # 동시 run 세마포어 — 슬롯 대기 후 실행. 타임아웃 시 run을 failed로 마감.
     if not _acquire_run_slot(run_id):
         store.update_run(run_id, status=RunStatus.FAILED, error="concurrency_timeout")
         store.audit(run_id, "system", "run_queue_timeout", run_id, {})
         _project_management(store, run_id)
         _emit_run_webhook(store, run_id)
+        _emit_run_alert_event(store, run_id)
         _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
         return
     try:
+        # retry-from-stage 지시(spec 006 US4) — 라우터가 ctx에 실어 보낸
+        # _retry_from을 state gmail_ctx로 새지 않게 꺼내 invoke에 전달한다.
+        retry_from = ""
+        if isinstance(ctx, dict):
+            retry_from = str(ctx.pop("_retry_from", "") or "")
         try:
             runner = build_runner(
                 workflow, store=store, llm=llm, settings=settings, adapters=adapters
             )
-            runner.invoke(run_id, payload, gmail_ctx=ctx)
+            runner.invoke(run_id, payload, gmail_ctx=ctx, retry_from=retry_from or None)
         except Exception as e:
             store.update_run(run_id, status=RunStatus.FAILED, error=str(e)[:500])
             store.audit(run_id, "system", "runner_error", "", {"error": str(e)[:300]})
@@ -405,6 +566,8 @@ def _execute_run_job(
     _project_management(store, run_id)
     # spec 004 US1 — 종결/대기 상태 webhook 이벤트 (실패는 emit 내부에서 삼킴)
     _emit_run_webhook(store, run_id)
+    # spec 006 US1 FR-003 — run 상태 변경을 alert 규칙으로 평가(비동기).
+    _emit_run_alert_event(store, run_id)
     _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
 
 

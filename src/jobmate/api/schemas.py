@@ -236,6 +236,9 @@ class BudgetPolicyRequest(BaseModel):
     warn_percent: int | None = Field(default=None, ge=1, le=100)
     hard_stop_enabled: bool | None = None
     is_active: bool | None = None
+    # spec 006 US2 FR-007/FR-010 — 임계 도달 시 액션.
+    # alert(기본, 알림만) | pause(hard_stop 차단) | require_approval(승인 대기).
+    threshold_action: Literal["alert", "pause", "require_approval"] | None = None
 
 
 class BudgetIncidentResolveRequest(BaseModel):

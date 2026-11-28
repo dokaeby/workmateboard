@@ -56,6 +56,9 @@ class BudgetStoreMixin:
         d["window_kind"] = wk if wk in BudgetStoreMixin._WINDOW_KINDS else "calendar_month_utc"
         for k in ("hard_stop_enabled", "is_active"):
             d[k] = bool(d.get(k))
+        # spec 006 US2 FR-007 — 임계 액션 정규화(알 수 없는 값은 alert).
+        ta = str(d.get("threshold_action") or "alert").strip().lower()
+        d["threshold_action"] = ta if ta in ("alert", "pause", "require_approval") else "alert"
         return d
 
     def upsert_budget_policy(
@@ -71,6 +74,7 @@ class BudgetStoreMixin:
         reservation_microusd: int = 0,
         unpriced_usage_policy: str = "allow",
         window_kind: str = "calendar_month_utc",
+        threshold_action: str = "alert",
     ) -> dict[str, Any] | None:
         """(scope_type, scope_id) UNIQUE 기준 upsert. scope_id ''는 global.
 
@@ -98,6 +102,9 @@ class BudgetStoreMixin:
         wk = (window_kind or "calendar_month_utc").strip().lower()
         if wk not in self._WINDOW_KINDS:
             wk = "calendar_month_utc"
+        ta = (threshold_action or "alert").strip().lower()
+        if ta not in ("alert", "pause", "require_approval"):
+            ta = "alert"
         org_id = orgctx.org_for_write()
         for _attempt in range(2):
             existing = self.get_budget_policy(scope_type, scope_id)
@@ -109,8 +116,8 @@ class BudgetStoreMixin:
                             "INSERT INTO budget_policies(id,scope_type,scope_id,window_kind,"
                             "amount_usd,amount_microusd,reservation_microusd,"
                             "unpriced_usage_policy,warn_percent,hard_stop_enabled,"
-                            "is_active,created_at,updated_at,org_id)"
-                            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "threshold_action,is_active,created_at,updated_at,org_id)"
+                            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (
                                 uuid.uuid4().hex[:12],
                                 scope_type,
@@ -122,6 +129,7 @@ class BudgetStoreMixin:
                                 upp,
                                 int(warn_percent),
                                 1 if hard_stop_enabled else 0,
+                                ta,
                                 1 if is_active else 0,
                                 now,
                                 now,
@@ -133,7 +141,7 @@ class BudgetStoreMixin:
                             "UPDATE budget_policies SET amount_usd=?, amount_microusd=?,"
                             " reservation_microusd=?, unpriced_usage_policy=?,"
                             " window_kind=?, warn_percent=?, hard_stop_enabled=?,"
-                            " is_active=?, updated_at=? WHERE id=?",
+                            " threshold_action=?, is_active=?, updated_at=? WHERE id=?",
                             (
                                 float(amount_usd),
                                 amount_microusd,
@@ -142,6 +150,7 @@ class BudgetStoreMixin:
                                 wk,
                                 int(warn_percent),
                                 1 if hard_stop_enabled else 0,
+                                ta,
                                 1 if is_active else 0,
                                 now,
                                 existing["id"],

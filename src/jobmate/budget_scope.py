@@ -29,6 +29,8 @@ SCOPE_TYPES = ("global", "workflow", "project", "agent", "task")
 WINDOW_KIND = "calendar_month_utc"
 _WINDOW_KINDS = ("calendar_month_utc", "lifetime")
 _UNPRICED_POLICIES = ("block", "allow")
+# spec 006 US2 FR-007 — budget_policies.threshold_action 어휘.
+_THRESHOLD_ACTIONS = ("alert", "pause", "require_approval")
 
 # 부분 갱신에서 "필드 미전송"과 "명시 null"을 구분하는 sentinel.
 # upsert_policy의 각 파라미터 기본값 — 미전송이면 기존 행 값을 유지한다.
@@ -233,6 +235,23 @@ def evaluate_admission(
         hard = bool(p.get("hard_stop_enabled")) and hard_limit
         if hard_unpriced:
             hard = True
+        # spec 006 US2 FR-007 — threshold_action이 차단 여부를 결정한다.
+        # - 'alert'(기본): 기존 동작 유지 — hard_stop_enabled일 때만 한도
+        #   차단(기존 hard_stop과 동일). 기존 행이 alert로 마이그레이션돼도
+        #   비용 보호가 꺼지지 않도록 차단 의미를 보존한다.
+        # - 'pause': hard_stop_enabled와 무관하게 한도 도달 시 차단 —
+        #   차단 자체가 액션.
+        # - 'require_approval': 차단 없이 run 생성 후 승인 대기로 처리
+        #   (blocks에 넣지 않음 — pending_budget_approvals가 담당).
+        # unpriced_usage_policy='block'은 임계가 아닌 별도 정책이라
+        # threshold_action과 무관하게 차단을 유지한다.
+        action = str(p.get("threshold_action") or "alert").strip().lower()
+        if action not in ("alert", "pause", "require_approval"):
+            action = "alert"
+        hard_for_block = (
+            hard_limit
+            and (action == "pause" or (action == "alert" and bool(p.get("hard_stop_enabled"))))
+        ) or hard_unpriced
         reason_code = ""
         if hard_unpriced:
             reason_code = "unpriced_usage"
@@ -273,6 +292,20 @@ def evaluate_admission(
                     )
                 except Exception as e:
                     logger.warning("budget inbox item failed: %s", str(e)[:200])
+                # spec 006 US2 FR-011 — 임계 도달을 alert 규칙 이벤트로 발행.
+                # 인시던트가 새로 생성된 경우에만(멱등) 비동기 평가된다.
+                try:
+                    from .services import alert_rules as _alerts
+
+                    _alerts.emit_budget_threshold_event(
+                        store,
+                        policy=p,
+                        threshold=threshold,
+                        used_pct=used_pct,
+                        month=month,
+                    )
+                except Exception:
+                    logger.warning("budget alert emit failed", exc_info=True)
                 logger.warning(
                     "budget %s threshold=%s scope=%s spend_microusd=%d "
                     "reservation_microusd=%d limit_microusd=%d unpriced=%d",
@@ -284,7 +317,7 @@ def evaluate_admission(
                     amount_mu,
                     unpriced_n,
                 )
-        if hard:
+        if hard_for_block:
             blocks.append(
                 {
                     "policy_id": p["id"],
@@ -338,6 +371,108 @@ def evaluate_admission(
     return blocks
 
 
+def pending_budget_approvals(
+    store: Store,
+    workflow_key: str,
+    project: str = "",
+    agent_id: str = "",
+    task_id: str = "",
+) -> list[dict[str, Any]]:
+    """spec 006 US2 FR-008 — threshold_action='require_approval' 정책 중
+    임계(warn% 이상 사용률)를 넘은 스코프의 승인 요구 목록.
+
+    create_run admission hook(store/runs.py)과 승인 재심사(routers/runs.py)
+    가 공유한다. 반환 항목은 mark_run_budget_approvals가 metadata에 기록하는
+    형태와 동일 — 비어 있으면 승인 없이 실행 가능."""
+    project = clean_scope_id(project)
+    agent_id = clean_scope_id(agent_id)
+    task_id = clean_scope_id(task_id)
+    month, window_start = month_window()
+    out: list[dict[str, Any]] = []
+    for p in _relevant_policies(store, workflow_key, project, agent_id, task_id):
+        if str(p.get("threshold_action") or "alert") != "require_approval":
+            continue
+        amount_mu = _policy_amount_microusd(p)
+        if amount_mu <= 0:
+            continue
+        st = str(p.get("scope_type") or "global")
+        sid = clean_scope_id(str(p.get("scope_id") or ""))
+        wk = str(p.get("window_kind") or WINDOW_KIND)
+        spend_mu = scope_spend_microusd(store, st, sid, month, wk)
+        warn_limit_mu = amount_mu * int(p.get("warn_percent") or 80) // 100
+        reservation_mu = int(p.get("reservation_microusd") or 0)
+        # 승인 게이트는 warn 임계(soft) 도달부터 적용 — hard 한도 도달을
+        # 기다리면 승인 후 실행할 여유가 없다.
+        breached = spend_mu >= warn_limit_mu or (spend_mu + max(0, reservation_mu) >= amount_mu)
+        if not breached:
+            continue
+        used_pct = round(spend_mu / amount_mu * 100, 1) if amount_mu else 0.0
+        out.append(
+            {
+                "policy_id": str(p["id"]),
+                "scope_type": st,
+                "scope_id": sid,
+                "scope": _scope_label(p),
+                "used_pct": used_pct,
+                "month_spend_usd": round(spend_mu / MICROUSD_PER_USD, 6),
+                "amount_usd": amount_mu / MICROUSD_PER_USD,
+                "month": month,
+                "window_start": window_start,
+            }
+        )
+    return out
+
+
+def _run_budget_inputs(run: Any) -> tuple[str, str, str, str]:
+    """run row → (workflow_key, project, agent_id, task_id) — 재심사 입력."""
+    wf = str(getattr(run, "workflow_key", "") or "")
+    project = str(getattr(run, "project", "") or "")
+    agent_id = str(getattr(run, "agent_id", "") or "")
+    task_id = ""
+    try:
+        meta = (getattr(run, "input", None) or {}).get("meta")
+        if isinstance(meta, dict):
+            task_id = str(meta.get("task_id") or "")
+    except Exception:
+        task_id = ""
+    return wf, project, agent_id, task_id
+
+
+def run_budget_clear(store: Store, run: Any) -> bool:
+    """run의 스코프가 현재 모든 예산 정책을 통과하는지 — 차단·승인 요구 모두 없음."""
+    wf, project, agent_id, task_id = _run_budget_inputs(run)
+    if not wf:
+        return False
+    if evaluate_admission(store, wf, project, agent_id=agent_id, task_id=task_id):
+        return False
+    if pending_budget_approvals(store, wf, project, agent_id=agent_id, task_id=task_id):
+        return False
+    return True
+
+
+def resume_budget_approval_waits(store: Store) -> int:
+    """raise_budget_and_resume 후속 — budget 승인 대기 run을 재심사해
+    통과한 것만 approved(queued)로 재개한다. 반환: 재개 수.
+
+    실행 스케줄은 automation cycle(_process_budget_approvals)이 집는다 —
+    이 함수는 상태 전이만 담당해 라우터/서비스 경로와 무관하게 동작한다."""
+    resumed = 0
+    for row in store.list_budget_approval_waits():
+        run = store._row_to_run(row)  # noqa: SLF001 - 서비스 계층 store 내부 조회
+        if run_budget_clear(store, run):
+            if store.approve_run_budget_approval(run.id):
+                resumed += 1
+                store.audit(
+                    run.id,
+                    "system",
+                    "run_budget_approval_resumed",
+                    run.id,
+                    {"reason": "budget_resumed"},
+                )
+                logger.info("run %s budget approval resumed after budget raise", run.id)
+    return resumed
+
+
 # ---------------- CRUD helpers ----------------
 
 
@@ -354,6 +489,7 @@ def upsert_policy(
     reservation_microusd: Any = UNSET,
     unpriced_usage_policy: Any = UNSET,
     window_kind: Any = UNSET,
+    threshold_action: Any = UNSET,
 ) -> dict[str, Any] | None:
     """정책 부분 upsert — UNSET(미전송) 필드는 기존 행 값을 유지한다.
 
@@ -441,6 +577,18 @@ def upsert_policy(
             raise ValueError("window_kind must be 'calendar_month_utc' or 'lifetime'")
     else:
         wk = str((existing or {}).get("window_kind") or WINDOW_KIND)
+    # spec 006 US2 FR-007 — 임계 도달 액션. UNSET/None은 기존 값 유지,
+    # 명시 null도 미전송과 동일하게 취급한다.
+    if threshold_action is None:
+        threshold_action = UNSET
+    if threshold_action is not UNSET:
+        ta = str(threshold_action).strip().lower()
+        if ta not in _THRESHOLD_ACTIONS:
+            raise ValueError("threshold_action must be 'alert', 'pause' or 'require_approval'")
+    else:
+        ta = str((existing or {}).get("threshold_action") or "alert")
+        if ta not in _THRESHOLD_ACTIONS:
+            ta = "alert"
 
     return store.upsert_budget_policy(
         scope_type,
@@ -450,6 +598,7 @@ def upsert_policy(
         reservation_microusd=reservation_mu,
         unpriced_usage_policy=upp,
         window_kind=wk,
+        threshold_action=ta,
         warn_percent=(
             int(warn_percent)
             if warn_percent is not UNSET
@@ -496,11 +645,20 @@ def list_policies_with_spend(store: Store) -> list[dict[str, Any]]:
         else:
             status = "ok"
         open_incidents = len(store.open_budget_incidents_for_policy(str(p["id"])))
+        # spec 006 US2 FR-010 — 적용된 threshold_action과 해당 스코프의
+        # budget 승인 대기 run 수를 overview 응답에 포함한다.
+        ta = str(p.get("threshold_action") or "alert")
+        if ta not in _THRESHOLD_ACTIONS:
+            ta = "alert"
         out.append(
             {
                 "id": p["id"],
                 "scope_type": st,
                 "scope_id": sid,
+                "threshold_action": ta,
+                "waiting_approvals": (
+                    store.count_budget_approval_waits(st, sid) if ta == "require_approval" else 0
+                ),
                 "amount_usd": amount_usd,
                 "amount_microusd": amount_mu,
                 "reservation_microusd": max(0, reservation_mu),
@@ -583,10 +741,25 @@ def resolve_incident(
         reservation_microusd=int(policy.get("reservation_microusd") or 0),
         unpriced_usage_policy=str(policy.get("unpriced_usage_policy") or "allow"),
         window_kind=str(policy.get("window_kind") or WINDOW_KIND),
+        threshold_action=str(policy.get("threshold_action") or "alert"),
     )
     store.resolve_open_budget_incidents_for_policy(
         str(inc.get("policy_id") or ""), "resolved", note=note or "budget raised"
     )
+    # spec 006 US2 — require_approval로 대기 중이던 run 재개.
+    # 새 한도가 관측 지출보다 크므로 재심사(run_budget_clear)를 통과하는
+    # run만 approved(queued)로 전이되고, 실제 실행은 automation cycle의
+    # _process_budget_approvals가 스케줄한다. 실패해도 인시던트 해결은 유지.
+    try:
+        resumed = resume_budget_approval_waits(store)
+        if resumed:
+            logger.info(
+                "budget raise resumed %d approval-waiting runs incident=%s",
+                resumed,
+                incident_id,
+            )
+    except Exception:
+        logger.warning("budget approval resume failed incident=%s", incident_id, exc_info=True)
     store.audit(
         "",
         actor,

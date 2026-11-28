@@ -59,16 +59,42 @@ export function setLang(l: Lang) {
 function emit() { listeners.forEach((f) => f()); }
 function subscribe(f: () => void) { listeners.add(f); return () => listeners.delete(f); }
 
+export type TFn = (key: string, fallback?: string) => string;
+
+/** 등록된 사전 스냅샷 — 테스트/툴링용 (컴포넌트는 useI18n/tr 사용). */
+export function i18nDicts(): { ko: Dict; en: Dict } {
+  return { ko: { ...dicts.ko }, en: { ...dicts.en } };
+}
+
+const warnedMissing = new Set<string>();
+
+/** 비-React 모듈(데이터 합성·에러 메시지 등)용 즉시 번역 — 현재 언어 dict 우선,
+ *  없으면 ko → fallback → key. dev 모드에서 양쪽 dict 모두 없는 키는 1회 경고. */
+export function tr(key: string, fallback?: string): string {
+  const v = dicts[lang][key] ?? dicts.ko[key];
+  if (v === undefined) {
+    if (
+      key &&
+      import.meta.env.DEV &&
+      import.meta.env.MODE !== "test" &&
+      !warnedMissing.has(key)
+    ) {
+      warnedMissing.add(key);
+      console.warn(`[i18n] 누락 키: "${key}" — fallback/키를 그대로 표시합니다`);
+    }
+    return fallback ?? key;
+  }
+  return v;
+}
+
 /** 기능 모듈용 — 등록된 사전 + 언어를 구독하는 hook. */
 export function useI18n() {
   useSyncExternalStore(subscribe, getLang);
   return {
     lang,
-    t: (key: string, fallback?: string) => dicts[lang][key] ?? dicts.ko[key] ?? fallback ?? key,
+    t: (key: string, fallback?: string) => tr(key, fallback),
   };
 }
-
-export type TFn = (key: string, fallback?: string) => string;
 
 /** t() + {param} 치환 — 백엔드 i18n 메타(title_key/params) 렌더링용. */
 export function tx(

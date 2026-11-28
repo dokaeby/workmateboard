@@ -560,6 +560,7 @@ CREATE TABLE IF NOT EXISTS budget_policies (
   amount_usd DOUBLE PRECISION NOT NULL,
   warn_percent INTEGER NOT NULL DEFAULT 80,
   hard_stop_enabled INTEGER NOT NULL DEFAULT 1,
+  threshold_action TEXT NOT NULL DEFAULT 'alert',
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -1119,5 +1120,62 @@ CREATE TABLE IF NOT EXISTS deletion_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_deletion_receipts_hash ON deletion_receipts(user_id_hash);
 
+
+
+
+-- spec 006 US1 — 알림 규칙 (조직 리소스)
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  condition_json TEXT NOT NULL DEFAULT '{}',
+  channels_json TEXT NOT NULL DEFAULT '[]',
+  cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+  last_fired_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_rules_org ON alert_rules(org_id, enabled);
+
+CREATE TABLE IF NOT EXISTS alert_rule_fires (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  rule_id TEXT NOT NULL,
+  event_fingerprint TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'fired',
+  channels_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_rule_fires_dedup
+  ON alert_rule_fires(rule_id, event_fingerprint, created_at);
+
+-- spec 006 US5 — 사용자별 대시보드 설정/저장 뷰 (사용자 레벨)
+CREATE TABLE IF NOT EXISTS user_dashboard_prefs (
+  user_id TEXT PRIMARY KEY,
+  cards_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_views (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  layout_json TEXT NOT NULL DEFAULT '{}',
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_views_user_name ON user_views(user_id, name);
+CREATE INDEX IF NOT EXISTS idx_user_views_user ON user_views(user_id);
+
+-- spec 006 US6 — 온보딩 상태 (사용자 레벨)
+CREATE TABLE IF NOT EXISTS user_onboarding (
+  user_id TEXT PRIMARY KEY,
+  dismissed INTEGER NOT NULL DEFAULT 0,
+  completed_at TEXT,
+  checklist_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
 
 """

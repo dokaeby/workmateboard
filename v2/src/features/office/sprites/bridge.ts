@@ -6,6 +6,7 @@
 
 import type { AgentSession } from "../../../shared/api/types";
 import type { PersonInput, SubInput } from "./types";
+import { t as spriteT } from "./office-i18n";
 
 /** 레거시 SESSION_TOOL_LABEL — index.html 인라인 상수와 동일 */
 export const SESSION_TOOL_LABEL: Record<string, string> = {
@@ -71,7 +72,7 @@ export function sessionsToPeople(list: AgentSession[], opts?: { includeEnded?: b
           if (Array.isArray(a)) summ = a.filter((x): x is string => typeof x === "string").join(", ");
         }
         if (!summ) summ = s.title || "";
-        doing = summ ? `종료: ${summ}` : "종료됨";
+        doing = summ ? spriteT("ended.prefix", { a: summ }) : spriteT("ended.done");
         ask = "";
       }
       const p: PersonInput = {

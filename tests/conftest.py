@@ -60,6 +60,25 @@ for _name in (
 ):
     os.environ[_name] = ""
 
+# 알림 채널/가입 허용목록 — 개발 .env의 실제 webhook·SMTP 자격증명이
+# 테스트에서 외부 발송을 일으키지 않게 빈 값으로 고정한다
+# (services/alert_rules.py·mailer.py·messenger.py·security.py가 읽는
+# 실제 env 이름 기준).
+for _name in (
+    "JOBMATE_SLACK_WEBHOOK_URL",
+    "JOBMATE_TELEGRAM_BOT_TOKEN",
+    "JOBMATE_TELEGRAM_CHAT_ID",
+    "JOBMATE_SMTP_HOST",
+    "JOBMATE_SMTP_PORT",
+    "JOBMATE_SMTP_USER",
+    "JOBMATE_SMTP_PASS",
+    "JOBMATE_SMTP_FROM",
+    "JOBMATE_SMTP_TLS",
+    "JOBMATE_ALLOWED_EMAILS",
+    "VAPID_SUBJECT",
+):
+    os.environ[_name] = ""
+
 
 import pytest  # noqa: E402
 

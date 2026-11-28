@@ -5,6 +5,8 @@
  * 실제 run이 있으면 부모가 이 모듈을 호출하지 않는다. */
 import { OFFICE_STAGES } from "./layout";
 import type { BoardAuditEvent, BoardRun, BoardStageRun } from "./types";
+import { tr } from "../../../shared/i18n";
+import "./i18n";
 
 export const DEMO_STAGE_SEC = 8;
 export const DEMO_DONE_SEC = 10;
@@ -46,7 +48,7 @@ export function demoRunState(): DemoRunState {
       started_at: status === "pending" ? null : iso(started),
       finished_at: status === "succeeded" ? iso(started + DEMO_STAGE_SEC * 1000) : null,
       input: { demo: true, stage: key },
-      output: status === "pending" ? {} : { demo: `${key} 완료 (가상)` },
+      output: status === "pending" ? {} : { demo: tr("office.demo.stageDone", "{key} 완료 (가상)").replace("{key}", key) },
       error: "",
     };
   });
@@ -77,7 +79,7 @@ export function demoRunState(): DemoRunState {
       status: done ? "completed" : "running",
       created_at: iso(demoRunStart),
       updated_at: iso(Date.now()),
-      input: { task: "(demo) dev_review 파이프라인 시연" },
+      input: { task: tr("office.demo.task", "(demo) dev_review 파이프라인 시연") },
       approvals: [],
       audit,
       error: "",

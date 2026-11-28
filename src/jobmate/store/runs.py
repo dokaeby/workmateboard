@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..models import Approval, AuditEvent, Run, RunStatus, StageRun, StageStatus
 from . import orgctx
@@ -187,7 +187,75 @@ class RunStoreMixin:
         self.audit(
             run.id, "system", "run_created", run.id, {"workflow": workflow_key, "version": version}
         )
+        # spec 006 US2 FR-008 — threshold_action='require_approval' 정책의
+        # 임계 초과 스코프에서는 run을 waiting_approval(예산 사유)로 생성한다.
+        # execute_run 스케줄은 호출자가 run.status를 보고 건너뛰고, 승인 또는
+        # 예산 상향 재개 전까지 jobs._execute_run_job 가드가 실행을 차단한다.
+        # 평가 실패가 run 생성을 깨면 안 되므로 예외는 삼킨다(fail-open —
+        # 승인 게이트는 알림/차단 정책이지 생성 자체를 막지 않는다).
+        try:
+            self._maybe_mark_budget_approval(run, input_data, agent_id, oid)
+        except Exception:
+            logger.warning("budget approval admission check failed run=%s", run.id, exc_info=True)
         return run
+
+    def _maybe_mark_budget_approval(
+        self, run: Run, input_data: dict[str, Any], agent_id: str, org_id: str
+    ) -> None:
+        """require_approval 정책 임계 초과 시 run을 budget 승인 대기로 마킹."""
+        from .. import budget_scope
+
+        task_id = ""
+        meta = input_data.get("meta")
+        if isinstance(meta, dict):
+            task_id = str(meta.get("task_id") or "")
+        project = str(run.project or "")
+
+        def _eval() -> list[dict[str, Any]]:
+            return budget_scope.pending_budget_approvals(
+                cast(Any, self),
+                run.workflow_key,
+                project,
+                agent_id=agent_id,
+                task_id=task_id,
+            )
+
+        # 정책 목록은 org ctx로 필터된다 — run의 org와 ctx가 다르면
+        # run org로 재스코프해 평가·마킹 모두 같은 조직 규칙을 보게 한다.
+        if org_id and orgctx.current_org_id() != org_id:
+            with orgctx.org_scope(org_id):
+                pending = _eval()
+                marked = self.mark_run_budget_approval(run.id, pending) if pending else False
+        else:
+            pending = _eval()
+            marked = self.mark_run_budget_approval(run.id, pending) if pending else False
+        if marked:
+            # 반환된 Run 객체도 waiting으로 맞춘다 — DB만 바꾸면 호출자
+            # (admit_run→라우터)가 stale status=queued를 보고 execute_run을
+            # 예약해버린다.
+            run.status = RunStatus.WAITING_APPROVAL
+            meta = run.metadata if isinstance(run.metadata, dict) else {}
+            run.metadata = {
+                **meta,
+                self._BUDGET_APPROVAL_KEY: {
+                    "state": "waiting",
+                    "policies": [
+                        {
+                            "policy_id": str(p.get("policy_id") or ""),
+                            "scope_type": str(p.get("scope_type") or ""),
+                            "scope_id": str(p.get("scope_id") or ""),
+                            "scope": str(p.get("scope") or ""),
+                        }
+                        for p in (pending or [])
+                        if isinstance(p, dict)
+                    ],
+                },
+            }
+            logger.info(
+                "run %s waiting budget approval policies=%s",
+                run.id,
+                [str(p.get("policy_id") or "") for p in pending],
+            )
 
     def get_run(self, run_id: str) -> Run | None:
         row = self._conn.execute(
@@ -409,6 +477,21 @@ class RunStoreMixin:
                     f"{row['stage_key']}#{row['attempt']}",
                     {"status": status_enum.value},
                 )
+        elif status_enum == StageStatus.FAILED:
+            # spec 006 US1 FR-003 — stage 실패를 alert 규칙 이벤트로 평가.
+            # 비동기라 run 실행 경로를 블로킹하지 않고, 실패해도 삼킨다.
+            try:
+                row = self._conn.execute(
+                    "SELECT run_id, stage_key FROM stage_runs WHERE id=?", (stage_run_id,)
+                ).fetchone()
+                if row:
+                    from ..services import alert_rules as _alerts
+
+                    _alerts.emit_stage_failed_event(
+                        cast(Any, self), str(row["run_id"]), stage_run_id
+                    )
+            except Exception:
+                logger.debug("alert stage emit failed sr=%s", stage_run_id, exc_info=True)
 
     def get_stage_runs(self, run_id: str) -> list[StageRun]:
         rows = self._conn.execute(
@@ -502,6 +585,74 @@ class RunStoreMixin:
             for r in rows
         ]
 
+    # ---- retry-from-stage (spec 006 US4 / FR-018) ----
+    # 재시도 허용 상태 — running/queued/waiting_approval/waiting_review 등
+    # 진행 중 상태는 전이하지 않는다(호출자가 409 invalid_state로 매핑).
+    _RETRYABLE_STATUSES = (
+        "completed",
+        "failed",
+        "rejected",
+        "budget_exhausted",
+        "needs_human",
+        "cancelled",
+    )
+
+    def reset_run_for_retry(self, run_id: str, from_stage: str, actor: str = "") -> bool:
+        """retry-from-stage 상태 전이 — 허용 상태의 run만 queued로 원자 전이.
+
+        WHERE status IN (...) 조건부 UPDATE로 동시 retry/approve 경합을
+        직렬화한다 — rowcount 0이면 이미 진행 중이므로 호출자는 409.
+        stage_runs는 건드리지 않는다 — 이전 시도는 이력으로 보존되고,
+        재실행 단계는 runner가 새 attempt 레코드를 만든다(FR-018/019).
+        error는 ''로 초기화한다(error 컬럼은 NOT NULL DEFAULT '').
+
+        budget_approval 마커 정규화(M1): TTL 만료 등으로 cancelled된 run은
+        metadata에 state='waiting' 마커가 남을 수 있다 — 그대로 queued로
+        전이하면 _execute_run_job 가드가 영구 차단하고 approve도 409라
+        재시도 불가 상태가 된다. 재시도는 항상 새 admission 판정을 거치므로
+        (routers/runs.py retry_run) 마커를 'cleared'로 종결해 stale
+        'waiting'이 실행을 막지 않게 한다. 상태 전이와 같은 UPDATE로
+        원자적으로 처리해 사이에 크래시가 끼어들지 않게 한다."""
+        now = _iso(_now())
+        conds = ",".join("?" for _ in self._RETRYABLE_STATUSES)
+        with self.tx() as c:
+            row = c.execute(
+                "SELECT metadata FROM runs WHERE id=?"  # noqa: S608
+                f" AND status IN ({conds}) AND (org_id=? OR ?='')",
+                (run_id, *self._RETRYABLE_STATUSES, *_org_bind()),
+            ).fetchone()
+            if row is None:
+                return False
+            meta = _loads(row["metadata"])
+            set_meta = ""
+            meta_params: list[Any] = []
+            if isinstance(meta, dict):
+                marker = self._budget_approval_marker(meta)
+                if marker is not None:
+                    cleared = dict(marker)
+                    cleared["state"] = "cleared"
+                    cleared["cleared_at"] = now
+                    cleared["cleared_reason"] = "retry"
+                    meta = {**meta, self._BUDGET_APPROVAL_KEY: cleared}
+                    set_meta = ", metadata=?"
+                    meta_params = [json.dumps(meta, ensure_ascii=False)]
+            cur = c.execute(
+                "UPDATE runs SET status='queued', error='', updated_at=?"  # noqa: S608
+                + set_meta
+                + f" WHERE id=? AND status IN ({conds}) AND (org_id=? OR ?='')",
+                (now, *meta_params, run_id, *self._RETRYABLE_STATUSES, *_org_bind()),
+            )
+        ok = int(getattr(cur, "rowcount", 0) or 0) > 0
+        if ok:
+            self.audit(
+                run_id,
+                actor or "system",
+                "run_retry",
+                from_stage,
+                {"from_stage": from_stage, "to_status": "queued"},
+            )
+        return ok
+
     # ---- audit ----
     def audit(
         self,
@@ -552,3 +703,234 @@ class RunStoreMixin:
             )
             for r in rows
         ]
+
+    # ---- spec 006 US2 — budget require_approval 대기 run ----
+    # run.metadata["budget_approval"] 마커:
+    #   {"state": "waiting"|"approved"|"dispatched"|"rejected",
+    #    "policies": [{policy_id, scope_type, scope_id, scope, used_pct}],
+    #    "requested_at": iso}
+    # state=waiting + status=waiting_approval 동안 execute_run은 차단되고,
+    # 승인/예산 상향 재개 시 approved→queued로 전이해 실행 스케줄러가 집는다.
+    _BUDGET_APPROVAL_KEY = "budget_approval"
+
+    @staticmethod
+    def _budget_approval_marker(metadata: Any) -> dict[str, Any] | None:
+        if not isinstance(metadata, dict):
+            return None
+        m = metadata.get(RunStoreMixin._BUDGET_APPROVAL_KEY)
+        return m if isinstance(m, dict) else None
+
+    def run_budget_approval_state(self, run_id: str) -> str:
+        """budget_approval 마커 state — 없으면 ''. 실행 차단 판정용."""
+        row = self._conn.execute("SELECT metadata FROM runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            return ""
+        marker = self._budget_approval_marker(_loads(row["metadata"]))
+        return str((marker or {}).get("state") or "")
+
+    def mark_run_budget_approval(self, run_id: str, policies: list[dict[str, Any]]) -> bool:
+        """생성 직후 run을 budget 승인 대기로 전이 — status=waiting_approval.
+
+        queued 상태에서만 전이한다(생성~마킹 사이 실행 스케줄이 끼어들지
+        않도록 호출측에서 즉시 호출). metadata에 트리거 정책 목록을 남겨
+        승인 재심사·인시던트 재개 매칭에 사용한다."""
+        now = _iso(_now())
+        with self.tx() as c:
+            row = c.execute(
+                "SELECT metadata FROM runs WHERE id=? AND status='queued'",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            meta = _loads(row["metadata"])
+            if not isinstance(meta, dict):
+                meta = {}
+            meta[self._BUDGET_APPROVAL_KEY] = {
+                "state": "waiting",
+                "policies": [
+                    {
+                        "policy_id": str(p.get("policy_id") or ""),
+                        "scope_type": str(p.get("scope_type") or ""),
+                        "scope_id": str(p.get("scope_id") or ""),
+                        "scope": str(p.get("scope") or ""),
+                        "used_pct": p.get("used_pct"),
+                    }
+                    for p in (policies or [])
+                    if isinstance(p, dict)
+                ],
+                "requested_at": now,
+            }
+            cur = c.execute(
+                "UPDATE runs SET status='waiting_approval', metadata=?, updated_at=?"
+                " WHERE id=? AND status='queued'",
+                (json.dumps(meta, ensure_ascii=False), now, run_id),
+            )
+        if cur.rowcount > 0:
+            self.audit(
+                run_id,
+                "system",
+                "run_budget_approval_wait",
+                run_id,
+                {"policies": [str(p.get("policy_id") or "") for p in (policies or [])]},
+            )
+        return cur.rowcount > 0
+
+    def approve_run_budget_approval(self, run_id: str) -> bool:
+        """budget 승인 — marker state waiting→approved, status→queued.
+
+        실제 실행 스케줄은 호출자(라우터/사이클)가 담당한다."""
+        now = _iso(_now())
+        with self.tx() as c:
+            row = c.execute(
+                "SELECT metadata FROM runs WHERE id=? AND status='waiting_approval'",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            meta = _loads(row["metadata"])
+            marker = self._budget_approval_marker(meta)
+            if not marker or str(marker.get("state") or "") != "waiting":
+                return False
+            marker["state"] = "approved"
+            marker["approved_at"] = now
+            cur = c.execute(
+                "UPDATE runs SET status='queued', metadata=?, updated_at=?"
+                " WHERE id=? AND status='waiting_approval'",
+                (json.dumps(meta, ensure_ascii=False), now, run_id),
+            )
+        return cur.rowcount > 0
+
+    def reject_run_budget_approval(self, run_id: str) -> bool:
+        """budget 승인 거절 — status=rejected, marker state=rejected."""
+        now = _iso(_now())
+        with self.tx() as c:
+            row = c.execute(
+                "SELECT metadata FROM runs WHERE id=? AND status='waiting_approval'",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            meta = _loads(row["metadata"])
+            marker = self._budget_approval_marker(meta)
+            if not marker or str(marker.get("state") or "") != "waiting":
+                return False
+            marker["state"] = "rejected"
+            marker["resolved_at"] = now
+            cur = c.execute(
+                "UPDATE runs SET status='rejected', error='budget_approval_rejected',"
+                " metadata=?, updated_at=? WHERE id=? AND status='waiting_approval'",
+                (json.dumps(meta, ensure_ascii=False), now, run_id),
+            )
+        return cur.rowcount > 0
+
+    def mark_budget_approval_dispatched(self, run_id: str) -> bool:
+        """approved→dispatched — 실행 스케줄러가 run을 집었음을 기록해
+        automation loop/cron tick 중복 발사를 막는다."""
+        with self.tx() as c:
+            row = c.execute(
+                "SELECT metadata FROM runs WHERE id=? AND status='queued'",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            meta = _loads(row["metadata"])
+            marker = self._budget_approval_marker(meta)
+            if not marker or str(marker.get("state") or "") != "approved":
+                return False
+            marker["state"] = "dispatched"
+            marker["dispatched_at"] = _iso(_now())
+            cur = c.execute(
+                "UPDATE runs SET metadata=?, updated_at=? WHERE id=? AND status='queued'",
+                (json.dumps(meta, ensure_ascii=False), _iso(_now()), run_id),
+            )
+        return cur.rowcount > 0
+
+    def _runs_with_budget_marker(self, states: set[str], status: str | None = None) -> list[Any]:
+        """marker state+status 조건의 run row — Python 필터(대기 run은 소수)."""
+        sql = "SELECT * FROM runs WHERE 1=1"
+        params: list[Any] = []
+        if status:
+            sql += " AND status=?"
+            params.append(status)
+        rows = self._conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            marker = self._budget_approval_marker(_loads(r["metadata"]))
+            if marker and str(marker.get("state") or "") in states:
+                out.append(r)
+        return out
+
+    def list_budget_approval_waits(self) -> list[Any]:
+        """state=waiting + waiting_approval run rows (시스템 스윕용, 무필터)."""
+        return self._runs_with_budget_marker({"waiting"}, status="waiting_approval")
+
+    def list_budget_approval_approved(self) -> list[Any]:
+        """승인됐지만 아직 실행 스케줄되지 않은 run rows."""
+        return self._runs_with_budget_marker({"approved"}, status="queued")
+
+    def expire_budget_approval_waits(self, ttl_hours: float) -> list[str]:
+        """TTL 초과 budget 승인 대기를 cancelled 처리 — 반환: run id 목록.
+
+        requested_at은 metadata JSON 안에 있어 Python 필터로 판정한다.
+        대기 run 수는 소수라 전체 스캔 비용은 무시할 수준이다."""
+        if ttl_hours <= 0:
+            return []
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
+        now = _iso(_now())
+        expired: list[str] = []
+        for row in self.list_budget_approval_waits():
+            marker = self._budget_approval_marker(_loads(row["metadata"])) or {}
+            try:
+                req = datetime.fromisoformat(str(marker.get("requested_at") or ""))
+            except ValueError:
+                req = None
+            if req is None or req.tzinfo is None:
+                req = req.replace(tzinfo=UTC) if req is not None else cutoff
+            if req > cutoff:
+                continue
+            rid = str(row["id"])
+            with self.tx() as c:
+                cur = c.execute(
+                    "UPDATE runs SET status='cancelled',"
+                    " error='budget_approval_expired', updated_at=?"
+                    " WHERE id=? AND status='waiting_approval'",
+                    (now, rid),
+                )
+            if cur.rowcount > 0:
+                expired.append(rid)
+                self.audit(
+                    rid,
+                    "system",
+                    "run_budget_approval_expired",
+                    rid,
+                    {"ttl_hours": ttl_hours},
+                )
+        return expired
+
+    def count_budget_approval_waits(self, scope_type: str = "", scope_id: str = "") -> int:
+        """org 컨텍스트 내 budget 승인 대기 수 — scope 지정 시 해당 스코프만.
+
+        list_budget_approval_waits는 시스템용 무필터라 요청 경로의
+        overview 집계에는 이 메서드를 쓴다(_org_bind 적용)."""
+        rows = self._conn.execute(
+            "SELECT metadata FROM runs WHERE status='waiting_approval' AND (org_id=? OR ?='')",
+            *_org_bind(),
+        ).fetchall()
+        n = 0
+        for r in rows:
+            marker = self._budget_approval_marker(_loads(r["metadata"]))
+            if not marker or str(marker.get("state") or "") != "waiting":
+                continue
+            if scope_type:
+                policies = marker.get("policies") or []
+                if not any(
+                    str(p.get("scope_type") or "") == scope_type
+                    and (not scope_id or str(p.get("scope_id") or "") == scope_id)
+                    for p in policies
+                    if isinstance(p, dict)
+                ):
+                    continue
+            n += 1
+        return n

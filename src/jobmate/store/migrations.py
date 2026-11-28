@@ -62,6 +62,9 @@ _ORG_SCOPED_TABLES = (
     # backup_runs는 플랫폼 레벨 운영 이력이라 org 스코프가 아니다.
     "webhook_subscriptions",
     "webhook_deliveries",
+    # spec 006 US1 — 알림 규칙/발사 이력(조직 리소스).
+    "alert_rules",
+    "alert_rule_fires",
 )
 
 
@@ -367,6 +370,7 @@ class MigrationStoreMixin:
                 "amount_microusd",
                 "reservation_microusd",
                 "unpriced_usage_policy",
+                "threshold_action",
             ],
             "ddl": """CREATE TABLE {t} (
   id TEXT PRIMARY KEY,
@@ -376,6 +380,7 @@ class MigrationStoreMixin:
   amount_usd REAL NOT NULL,
   warn_percent INTEGER NOT NULL DEFAULT 80,
   hard_stop_enabled INTEGER NOT NULL DEFAULT 1,
+  threshold_action TEXT NOT NULL DEFAULT 'alert',
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -1672,6 +1677,8 @@ class MigrationStoreMixin:
                 "amount_microusd": f"{big} NOT NULL DEFAULT 0",
                 "reservation_microusd": f"{big} NOT NULL DEFAULT 0",
                 "unpriced_usage_policy": "TEXT NOT NULL DEFAULT 'allow'",
+                # spec 006 US2 FR-007 — 임계 도달 시 액션(alert|pause|require_approval)
+                "threshold_action": "TEXT NOT NULL DEFAULT 'alert'",
             },
         )
         self._ensure_columns(

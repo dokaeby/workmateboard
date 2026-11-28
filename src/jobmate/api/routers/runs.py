@@ -15,9 +15,11 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ... import budget_scope, wakeups
-from ...models import AgentCapability, StageStatus, canonical_agent_status
+from ...models import AgentCapability, RunStatus, StageStatus, canonical_agent_status
 from ...services import agent_management as mgmt
 from ...services import permissions as perm_svc
+from ...services import run_analysis
+from ...services.management_common import row_org_id
 from ...workflows.resolver import resolve_workflow_spec
 from ..jobs import _parse_diff_files
 from ..schemas import ApprovalRequest, RunCreateRequest, RunPatchRequest
@@ -265,6 +267,30 @@ def register(app: FastAPI, ctx: Any) -> None:
             )
         if action == "created":
             run = res["run"]
+            # spec 006 US2 FR-008 — require_approval 정책으로 budget 승인
+            # 대기(waiting_approval)로 생성된 run은 execute_run을 예약하지
+            # 않는다. 승인(POST /runs/{id}/approve) 또는 예산 상향 재개 전까지
+            # jobs._execute_run_job 가드가 실행을 차단한다.
+            if run.status == RunStatus.WAITING_APPROVAL:
+                logger.info(
+                    "run created id=%s workflow=%s status=waiting_approval(budget)",
+                    run.id,
+                    body.workflow,
+                )
+                _audit_api(
+                    request,
+                    "run_budget_approval_wait",
+                    run.id,
+                    {"workflow": body.workflow},
+                )
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        "id": run.id,
+                        "status": run.status.value,
+                        "reason": "budget_approval",
+                    },
+                )
             logger.info("run created id=%s workflow=%s", run.id, body.workflow)
             _schedule_run_jobs(
                 [(run.id, body.workflow, {"task": body.task}, None)], background_tasks
@@ -357,6 +383,22 @@ def register(app: FastAPI, ctx: Any) -> None:
             return gate
         items = store.list_wakeups(limit=limit, run_id=run_id, status=status, source=source)
         return JSONResponse(content={"items": items})
+
+    # spec 006 US4 FR-017 — run 비교 뷰. /runs/{run_id} 보다 먼저 등록해야
+    # 'compare'가 run_id로 잡히지 않는다(stats와 같은 이유).
+    @app.get("/api/v1/runs/compare")
+    def compare_runs(request: Request, run_a: str = "", run_b: str = "") -> JSONResponse:
+        """두 run의 단계별 status·입출력 요약·diff 파일·소요 시간 비교.
+
+        org 스코핑은 store.get_run의 _org_bind에 위임 — 보이지 않는 run은
+        404로 수렴한다(GET /runs/{id}와 동일 게이트)."""
+        a, b = run_a.strip(), run_b.strip()
+        if not a or not b:
+            return err(422, "validation", "run_a and run_b are required", request)
+        data = run_analysis.compare_runs(store, a, b)
+        if data is None:
+            return err(404, "not_found", "run not found", request)
+        return JSONResponse(content=data)
 
     @app.get("/api/v1/runs/{run_id}")
     def get_run(run_id: str, request: Request) -> JSONResponse:
@@ -506,6 +548,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         )
         if denied is not None:
             return denied
+        # spec 006 US2 FR-008 — budget 승인 대기 run은 graph interrupt가
+        # 없으므로 _do_approve(resume) 경로가 아니라 예산 재심사 후
+        # 처음부터 execute_run으로 재개한다.
+        if _appr_run is not None and store.run_budget_approval_state(run_id) == "waiting":
+            return _budget_approve(run_id, body, request, background_tasks)
         result = _do_approve(
             run_id,
             body.decision,
@@ -521,6 +568,92 @@ def register(app: FastAPI, ctx: Any) -> None:
             )
             return err(result["status"], code, str(result["error"]), request)
         return JSONResponse(content=result["run"])
+
+    def _budget_approve(
+        run_id: str,
+        body: ApprovalRequest,
+        request: Request,
+        background_tasks: BackgroundTasks,
+    ) -> JSONResponse:
+        """spec 006 US2 — budget 승인 대기 run의 승인/거절.
+
+        승인 시 evaluate_admission + pending_budget_approvals를 재실행해
+        여전히 임계 초과면 대기를 유지한다(409 budget_still_exceeded).
+        통과하면 approved→queued로 전이한다. 실행 발사는 단일 경로로
+        수렴한다(H2): 여기서 approved→dispatched를 원자 claim에 성공한
+        경우에만 즉시 스케줄하고, claim 실패(경합·이미 dispatched)면
+        jobs._process_budget_approvals가 다음 automation cycle에 집는다 —
+        어느 경로든 dispatched 마커가 중복 runner.invoke를 막는다.
+        run은 처음부터 실행되므로 graph resume이 아니라 신규 invoke다."""
+        run = store.get_run(run_id)
+        if run is None:
+            return err(404, "not_found", "run not found", request)
+        actor = _actor_label(request)
+        if body.decision == "reject":
+            if not store.reject_run_budget_approval(run_id):
+                return err(
+                    409,
+                    "invalid_state",
+                    "run is no longer waiting for budget approval",
+                    request,
+                )
+            store.audit(run_id, actor, "run_budget_approval_reject", run_id, {})
+            _audit_api(request, "run_budget_approval_reject", run_id, {})
+            logger.info("run %s budget approval rejected actor=%s", run_id, actor)
+            d = run_detail(run_id)
+            return JSONResponse(content=d or {"ok": True})
+        # 승인 — 예산 재심사(승인 시점 윈도우/지출 기준)
+        task_id = ""
+        meta = run.input.get("meta") if isinstance(run.input, dict) else None
+        if isinstance(meta, dict):
+            task_id = str(meta.get("task_id") or "")
+        agent_id = str(run.agent_id or "")
+        project = str(run.project or "")
+        blocks = budget_scope.evaluate_admission(
+            store, run.workflow_key, project, agent_id=agent_id, task_id=task_id
+        )
+        pending = budget_scope.pending_budget_approvals(
+            store, run.workflow_key, project, agent_id=agent_id, task_id=task_id
+        )
+        if blocks or pending:
+            _audit_api(
+                request,
+                "run_budget_approval_still_exceeded",
+                run_id,
+                {"blocks": len(blocks), "pending": len(pending)},
+            )
+            return err(
+                409,
+                "budget_still_exceeded",
+                "budget threshold still exceeded; run remains waiting for approval",
+                request,
+            )
+        if not store.approve_run_budget_approval(run_id):
+            return err(
+                409,
+                "invalid_state",
+                "run is no longer waiting for budget approval",
+                request,
+            )
+        store.audit(run_id, actor, "run_budget_approval_approve", run_id, {})
+        _audit_api(request, "run_budget_approval_approve", run_id, {})
+        # approved→dispatched 원자 claim — 성공 시에만 즉시 스케줄한다.
+        # 실패 시 run은 approved+queued로 남아 _process_budget_approvals가
+        # 다음 사이클(~worker_interval_seconds)에 발사하므로 지연만 있고
+        # 중복 실행은 없다. 응답은 어느 쪽이든 202 queued로 동일하다.
+        if store.mark_budget_approval_dispatched(run_id):
+            payload = {"task": str((run.input or {}).get("task") or "")}
+            _schedule_run_jobs([(run.id, run.workflow_key, payload, None)], background_tasks)
+            logger.info("run %s budget approval dispatched actor=%s", run_id, actor)
+        else:
+            logger.info(
+                "run %s budget approval approved; dispatch deferred to automation cycle",
+                run_id,
+            )
+        return JSONResponse(
+            status_code=202,
+            content={"id": run.id, "status": "queued", "budget_approved": True},
+        )
 
     @app.get("/api/v1/runs/{run_id}/diff")
     def run_diff(run_id: str, request: Request) -> JSONResponse:
@@ -603,3 +736,171 @@ def register(app: FastAPI, ctx: Any) -> None:
             logger.info("run %s goal set to %r", run_id, new_goal)
         d = run_detail(run_id)
         return JSONResponse(content=d or {"ok": True})
+
+    # ---- spec 006 US4 FR-018/019 — retry-from-stage ----
+    @app.post("/api/v1/runs/{run_id}/retry")
+    def retry_run(
+        run_id: str,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        from_stage: str = "",
+    ) -> JSONResponse:
+        """from_stage 이후를 pending으로 되돌리고 해당 단계부터 재실행.
+
+        실행 경로는 _execute_run_job → runner.invoke(retry_from=...) —
+        approve resume과 동일한 "checkpoint 이후만 실행" 의미론이며,
+        succeeded 선행 단계는 stage_outputs 시드로 건너뛴다(FR-019).
+        running/queued/waiting_* 상태는 409 invalid_state."""
+        # 재실행은 LLM 비용을 다시 태우므로 run 생성과 같은 버스트 제한.
+        if _run_rate_limited(_actor_label(request)):
+            return err(429, "rate_limited", "run 재실행 요청이 너무 많습니다", request)
+        run = store.get_run(run_id)
+        if run is None:
+            return err(404, "not_found", "run not found", request)
+        plan = run_analysis.retry_plan(store, run, from_stage)
+        if plan.get("error"):
+            err_kind = str(plan.get("error") or "validation")
+            if err_kind == "invalid_state":
+                return err(409, "invalid_state", str(plan.get("message") or ""), request)
+            if err_kind == "unknown_workflow":
+                return err(422, "unknown_workflow", str(plan.get("message") or ""), request)
+            return err(422, "validation", str(plan.get("message") or ""), request)
+        stage_key = str(plan["from_stage"])
+        # 사이드이펙트 워크플로 재실행은 run 생성과 동일하게 lead 이상만.
+        if _workflow_needs_lead(store, run.workflow_key):
+            gate = _lead_gate(request)
+            if gate is not None:
+                return gate
+        # run:execute user-permission — POST /runs와 동일 scope 해석
+        # (meta.task_id + project 태그 → canonical project id).
+        _rt_task_id = ""
+        _rt_project_id = ""
+        _rt_meta = run.input.get("meta") if isinstance(run.input, dict) else None
+        if isinstance(_rt_meta, dict):
+            _rt_task_id = str(_rt_meta.get("task_id") or "")
+        if run.project:
+            _rt_proj = store.get_project(run.project) or store.find_project_by_name(run.project)
+            if _rt_proj is not None:
+                _rt_project_id = str(_rt_proj.get("id") or "")
+        denied = _require_session_capability(
+            request,
+            "run:execute",
+            task_id=_rt_task_id,
+            project_id=_rt_project_id,
+            actor=_actor_label(request),
+        )
+        if denied is not None:
+            return denied
+        # spec 006 US2 — retry도 run 생성(POST /runs)과 동일한 예산 게이트를
+        # 통과한다(H1). 우회하면 pause/require_approval 정책이 재실행 비용을
+        # 막지 못한다. 판정 순서도 create_run과 동일: 레거시 월간 → 스코프드
+        # admission(차단 시 429) → require_approval 마킹(reset 이후).
+        retry_project = budget_scope.clean_scope_id(run.project or "")
+        retry_agent_id = str(run.agent_id or "")
+        budget = _monthly_budget_usd()
+        if budget is not None:
+            mtd = _mtd_llm_cost_usd()
+            if mtd > budget:
+                _audit_api(
+                    request,
+                    "run_budget_exceeded",
+                    run.workflow_key,
+                    {"budget_usd": budget, "mtd_cost_usd": round(mtd, 6), "retry": True},
+                )
+                logger.warning(
+                    "run retry rejected: monthly budget exceeded run=%s mtd=%.4f budget=%.4f",
+                    run_id,
+                    mtd,
+                    budget,
+                )
+                return err(
+                    429,
+                    "budget_exceeded",
+                    "monthly LLM budget exceeded",
+                    request,
+                )
+        blocks = budget_scope.evaluate_admission(
+            store,
+            run.workflow_key,
+            retry_project,
+            agent_id=retry_agent_id,
+            task_id=_rt_task_id,
+        )
+        if blocks:
+            _audit_api(
+                request,
+                "run_budget_exceeded",
+                run.workflow_key,
+                {"blocks": blocks[:5], "retry": True},
+            )
+            logger.warning(
+                "run retry rejected: scoped budget exceeded run=%s blocks=%s",
+                run_id,
+                blocks[:3],
+            )
+            return err(
+                429,
+                "budget_exceeded",
+                f"budget exceeded: {blocks[0]['scope']} "
+                f"(spend ${blocks[0]['month_spend_usd']:.4f} / "
+                f"limit ${blocks[0]['amount_usd']:.4f})",
+                request,
+            )
+        # 원자 상태 전이 — 검증~전이 사이 상태가 바뀌었으면 rowcount 0 → 409.
+        if not store.reset_run_for_retry(run_id, stage_key, actor=_actor_label(request)):
+            return err(409, "invalid_state", "run is not in a retryable state", request)
+        # require_approval 재판정 — reset이 status=queued로 전이했으므로
+        # create_run이 쓰는 것과 동일한 마킹 경로를 재사용한다. 마킹되면
+        # 실행을 예약하지 않고 waiting_approval을 반환한다 — 이후 승인은
+        # POST /runs/{id}/approve, 실행 차단은 _execute_run_job 가드가 담당.
+        # 실패해도 재시도 자체는 유지한다(create_run과 동일한 fail-open).
+        try:
+            run_oid = row_org_id(store, "runs", run_id)
+            store._maybe_mark_budget_approval(  # noqa: SLF001 - create_run과 동일 마킹 경로 재사용
+                run, dict(run.input or {}), retry_agent_id, run_oid
+            )
+        except Exception:
+            logger.warning("budget approval recheck failed on retry run=%s", run_id, exc_info=True)
+        if run.status == RunStatus.WAITING_APPROVAL:
+            _audit_api(
+                request,
+                "run_budget_approval_wait",
+                run_id,
+                {"workflow": run.workflow_key, "retry": True},
+            )
+            logger.info(
+                "run %s retry held for budget approval from_stage=%s",
+                run_id,
+                stage_key,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "id": run_id,
+                    "status": "waiting_approval",
+                    "reason": "budget_approval",
+                    "from_stage": stage_key,
+                },
+            )
+        task = str((run.input or {}).get("task") or "") if isinstance(run.input, dict) else ""
+        _schedule_run_jobs(
+            [
+                (
+                    run_id,
+                    run.workflow_key,
+                    {"task": task},
+                    {"_retry_from": stage_key},
+                )
+            ],
+            background_tasks,
+        )
+        logger.info(
+            "run %s retry scheduled from_stage=%s actor=%s",
+            run_id,
+            stage_key,
+            _actor_label(request),
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"id": run_id, "status": "queued", "from_stage": stage_key},
+        )

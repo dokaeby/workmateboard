@@ -8,6 +8,8 @@ import { OFFICE_STAGES } from "./board/layout";
 import { DEMO_DONE_SEC, DEMO_STAGE_SEC } from "./board/demo";
 import type { BoardAuditEvent, BoardRun, BoardStageRun } from "./board/types";
 import { SESSION_TOOL_LABEL } from "./sprites/bridge";
+import { tr } from "../../shared/i18n";
+import "./i18n";
 
 /** /agent-sessions 응답 — 레거시 live 보드가 읽는 필드만 (health 포함). */
 export interface LiveSession extends AgentSession {
@@ -34,7 +36,8 @@ export function liveSessionsState(list: LiveSession[]): LiveSessionsState | null
   const label = (s: LiveSession) =>
     `${SESSION_TOOL_LABEL[s.tool || ""] || s.tool} · ${s.title || s.project || s.session_key}`;
   const title = active.length
-    ? active.map(label).slice(0, 3).join(", ") + (active.length > 3 ? ` 외 ${active.length - 3}` : "")
+    ? active.map(label).slice(0, 3).join(", ") +
+      (active.length > 3 ? tr("office.live.more", " 외 {n}").replace("{n}", String(active.length - 3)) : "")
     : sessions.map(label).slice(0, 3).join(", ");
   const keys = OFFICE_STAGES.map((s) => s.key);
   let idx = keys.length; // 기본: 전부 succeeded (rest만 있을 때)
@@ -62,7 +65,7 @@ export function liveSessionsState(list: LiveSession[]): LiveSessionsState | null
       started_at: status === "pending" ? null : iso(now - (keys.length - i) * 30000),
       finished_at: status === "succeeded" ? iso(now - (keys.length - i - 1) * 30000) : null,
       input: { live: true, stage: key },
-      output: status === "pending" ? {} : { live: `${key} — 세션 ${sessions.length}개 관측` },
+      output: status === "pending" ? {} : { live: `${key} — ${tr("office.live.observed", "세션 {n}개 관측").replace("{n}", String(sessions.length))}` },
       error: "",
     };
   });
@@ -85,7 +88,11 @@ export function liveSessionsState(list: LiveSession[]): LiveSessionsState | null
       status: active.length && !done ? "running" : "completed",
       created_at: iso(now - 3600000),
       updated_at: iso(now),
-      input: { task: `(live) 에이전트 세션 ${sessions.length}개 — ${title}` },
+      input: {
+        task: tr("office.live.task", "(live) 에이전트 세션 {n}개 — {who}")
+          .replace("{n}", String(sessions.length))
+          .replace("{who}", title),
+      },
       approvals: [],
       audit,
       error: "",

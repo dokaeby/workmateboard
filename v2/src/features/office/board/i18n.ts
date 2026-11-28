@@ -52,6 +52,8 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "office.diffTruncated": "… (이하 생략)",
     "office.diffLoading": "diff 로딩…",
     "office.demoBadge": "DEMO",
+    "office.demo.task": "(demo) dev_review 파이프라인 시연",
+    "office.demo.stageDone": "{key} 완료 (가상)",
   },
   en: {
     "office.chip.elapsed": "Elapsed",
@@ -102,6 +104,8 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "office.diffTruncated": "… (truncated)",
     "office.diffLoading": "Loading diff…",
     "office.demoBadge": "DEMO",
+    "office.demo.task": "(demo) dev_review pipeline demo",
+    "office.demo.stageDone": "{key} done (simulated)",
   },
 };
 

@@ -161,10 +161,23 @@ class WorkflowRunner:
     # ---------- stage executors ----------
     def _make_node(self, stage: StageSpec) -> Callable[[HarnessState], dict[str, Any]]:
         if stage.kind == "llm":
-            return lambda s: self._run_llm_stage(s, stage)
-        if stage.kind == "function":
-            return lambda s: self._run_function_stage(s, stage)
-        return lambda s: self._run_human_stage(s, stage)
+            fn = lambda s: self._run_llm_stage(s, stage)  # noqa: E731
+        elif stage.kind == "function":
+            fn = lambda s: self._run_function_stage(s, stage)  # noqa: E731
+        else:
+            fn = lambda s: self._run_human_stage(s, stage)  # noqa: E731
+
+        # retry-from-stage (spec 006 US4/FR-019) — skip 목록의 단계는 이전
+        # succeeded 출력이 이미 stage_outputs에 시드돼 있으므로 실행하지
+        # 않는다(새 stage_run도 만들지 않음 — 이전 시도는 이력으로 보존).
+        key = stage.key
+
+        def _node(state: HarnessState) -> dict[str, Any]:
+            if key in (state.get("retry_skip_stages") or []):
+                return {}
+            return fn(state)
+
+        return _node
 
     def _attempt(self, state: HarnessState, stage_key: str) -> int:
         attempts = state.setdefault("stage_attempts", {})
@@ -782,11 +795,62 @@ class WorkflowRunner:
         except Exception:
             logger.warning("management projection failed run=%s", run_id, exc_info=True)
 
+    def _seed_retry_state(self, state: HarnessState, run_id: str, from_stage: str) -> list[str]:
+        """retry-from-stage용 초기 상태 시드 (spec 006 US4/FR-019).
+
+        from_stage보다 앞선 spec 순서의 stage 중 최신 stage_run이 succeeded인
+        것만 건너뛴다 — 출력은 stage_outputs에 시드해 후속 단계의 프롬프트
+        컨텍스트로 재사용하고, attempt 번호는 기존 최대값 다음부터 이어간다.
+        succeeded가 아닌 앞 단계는 재실행 대상에 포함하지 않되(브랜치상
+        도달하지 않을 수 있음) attempt 카운터는 전체 stage_runs 기준으로
+        이어져 새 stage_run 번호가 충돌하지 않는다.
+
+        반환: 실제로 skip된 stage_key 목록(state["retry_skip_stages"])."""
+        order = [s.key for s in self.spec.stages]
+        if from_stage not in order:
+            return []
+        cutoff = order.index(from_stage)
+        stage_runs = self.store.get_stage_runs(run_id)
+        latest: dict[str, Any] = {}
+        attempts: dict[str, int] = {}
+        tokens_in = tokens_out = 0
+        cost = 0.0
+        for sr in stage_runs:
+            latest[sr.stage_key] = sr
+            attempts[sr.stage_key] = max(attempts.get(sr.stage_key, 0), sr.attempt)
+            tin = int(sr.tokens_in or 0)
+            tout = int(sr.tokens_out or 0)
+            tokens_in += tin
+            tokens_out += tout
+            # function 단계는 model='' — 원장 기록과 동일하게 unpriced 처리.
+            if sr.model:
+                cost += cost_usd(sr.model, tin, tout)
+        skip: list[str] = []
+        for key in order[:cutoff]:
+            prior = latest.get(key)
+            if prior is not None and prior.status == StageStatus.SUCCEEDED and prior.output:
+                state["stage_outputs"][key] = prior.output
+                skip.append(key)
+        state["stage_attempts"] = attempts
+        state["tokens_in"] = tokens_in
+        state["tokens_out"] = tokens_out
+        state["cost_usd"] = cost
+        state["approval"] = {}  # 이전 실행의 승인 결과가 finalize에 새지 않게
+        state["retry_skip_stages"] = skip
+        return skip
+
     # ---------- public API ----------
     def invoke(
-        self, run_id: str, input_data: dict[str, Any], gmail_ctx: dict[str, Any] | None = None
+        self,
+        run_id: str,
+        input_data: dict[str, Any],
+        gmail_ctx: dict[str, Any] | None = None,
+        retry_from: str | None = None,
     ) -> HarnessState:
         state = initial_state(run_id, self.spec.key, gmail_ctx)
+        if retry_from:
+            skipped = self._seed_retry_state(state, run_id, retry_from)
+            logger.info("run %s retry_from=%s skipped_stages=%s", run_id, retry_from, skipped)
         self.store.update_run(run_id, status=RunStatus.RUNNING)
         logger.info("run %s invoke workflow=%s", run_id, self.spec.key)
         config = graph_config(run_id, workflow=self.spec.key, run_id=run_id)

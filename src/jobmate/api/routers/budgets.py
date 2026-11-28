@@ -77,6 +77,9 @@ def register(app: FastAPI, ctx: Any) -> None:
                     body.hard_stop_enabled if "hard_stop_enabled" in sent else budget_scope.UNSET
                 ),
                 is_active=body.is_active if "is_active" in sent else budget_scope.UNSET,
+                threshold_action=(
+                    body.threshold_action if "threshold_action" in sent else budget_scope.UNSET
+                ),
             )
         except ValueError as e:
             return err(422, "validation", str(e), request)
@@ -90,6 +93,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             {
                 "amount_usd": policy.get("amount_usd"),
                 "is_active": policy.get("is_active"),
+                "threshold_action": policy.get("threshold_action"),
             },
         )
         logger.info(

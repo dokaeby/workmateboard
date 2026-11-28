@@ -41,6 +41,9 @@ class HarnessState(TypedDict, total=False):
     # skill_radar 컨텍스트
     platform: str  # claude|chatgpt|gemini|all
     force: bool
+    # retry-from-stage (spec 006 US4) — 이 목록의 stage_key는 이미 succeeded
+    # 출력이 state.stage_outputs에 시드돼 있으므로 노드 실행을 건너뛴다.
+    retry_skip_stages: list[str]
 
 
 def initial_state(
@@ -60,6 +63,9 @@ def initial_state(
         "cost_usd": 0.0,
         "started_at": time.time(),
         "escalate": "",
+        # 항상 명시 — 같은 thread 재invoke 시 이전 retry의 skip 목록이
+        # 채널에 남아 succeeded 단계를 잘못 건너뛰는 것을 막는다.
+        "retry_skip_stages": [],
     }
     if gmail_ctx:
         s.update(gmail_ctx)  # type: ignore[typeddict-item]

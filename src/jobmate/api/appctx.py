@@ -369,6 +369,13 @@ def build_app_context(
             "OPTIONS",
         ):
             return None
+        # spec 006 US3 — 공유 템플릿 GET도 공개 경로(토큰=capability).
+        if path.startswith("/api/v1/templates/shared/") and request.method in (
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        ):
+            return None
         org = store.get_organization(oid)
         if org is None:
             return None

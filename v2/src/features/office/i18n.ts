@@ -98,6 +98,9 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "office.mgmt.priority.medium": "보통",
     "office.mgmt.priority.high": "높음",
     "office.mgmt.priority.urgent": "긴급",
+    "office.live.more": " 외 {n}",
+    "office.live.task": "(live) 에이전트 세션 {n}개 — {who}",
+    "office.live.observed": "세션 {n}개 관측",
   },
   en: {
     "office.title": "Agent Office",
@@ -194,6 +197,9 @@ export const STR: { ko: Record<string, string>; en: Record<string, string> } = {
     "office.mgmt.priority.medium": "Medium",
     "office.mgmt.priority.high": "High",
     "office.mgmt.priority.urgent": "Urgent",
+    "office.live.more": " +{n} more",
+    "office.live.task": "(live) {n} agent sessions — {who}",
+    "office.live.observed": "observing {n} sessions",
   },
 };
 
