@@ -4,7 +4,7 @@
  *  종료 상태는 PATCH {status:"cancelled"}로 명시한다(구 archive/DELETE는
  *  레거시 호환용으로 남겨두고 UI에서는 cancelled 전이를 사용).
  *  goal 필드: owner_agent_id, success_metrics(JSON), target_at. */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPatch, ApiError } from "../../shared/api/client";
 import { useI18n } from "../../shared/i18n";
@@ -329,6 +329,42 @@ function GoalDrawer({
   const qc = useQueryClient();
   const [mode, setMode] = useState<"view" | "edit" | "addSub">("view");
   const [busy, setBusy] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const pressOutside = useRef(false);
+
+  // 네이티브 <dialog> — showModal()이 inert/포커스/Esc/포커스 복귀를 처리.
+  // 'close' 이벤트(Esc 등)에서 onClose로 React 상태를 동기화한다.
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    if (!d.open) d.showModal();
+    const sync = () => onClose();
+    d.addEventListener("close", sync);
+    return () => d.removeEventListener("close", sync);
+  });
+
+  // 프로그램적 닫기 — d.close()가 'close' 이벤트를 발생시켜 위 리스너가
+  // onClose로 React 상태를 동기화한다(포커스도 invoker로 복귀).
+  const closeDialog = () => {
+    const d = dialogRef.current;
+    if (d) d.close();
+    else onClose();
+  };
+
+  // 라이트 디스미스 — pointerdown·click 모두 dialog 자신(=backdrop 표면)을
+  // 타겟으로 하고 좌표가 패널 rect 밖일 때만 닫는다(선택 드래그·select 오인 방지).
+  const outsideDialog = (e: { clientX: number; clientY: number; currentTarget: HTMLDialogElement }) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  };
+  const onBackdropPointerDown = (e: PointerEvent<HTMLDialogElement>) => {
+    pressOutside.current = outsideDialog(e);
+  };
+  const onBackdropClick = (e: MouseEvent<HTMLDialogElement>) => {
+    const dismiss = pressOutside.current && e.target === e.currentTarget && outsideDialog(e);
+    pressOutside.current = false;
+    if (dismiss) closeDialog();
+  };
 
   const st = statusOf(goal);
   const byId = useMemo(() => new Map(goals.map((x) => [x.id, x])), [goals]);
@@ -354,21 +390,20 @@ function GoalDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-label={goal.title || goal.id}
-        className="absolute inset-y-0 right-0 flex w-full max-w-md flex-col overflow-y-auto border-l border-border bg-surface shadow-xl"
-      >
+    <dialog
+      ref={dialogRef}
+      aria-label={goal.title || goal.id}
+      onPointerDown={onBackdropPointerDown}
+      onClick={onBackdropClick}
+      className="start-auto end-0 top-0 bottom-0 m-0 h-dvh w-full max-w-md max-h-none overflow-y-auto border-l border-border bg-surface p-0 text-ink shadow-xl open:flex flex-col [&:modal]:overscroll-contain [&::backdrop]:overflow-hidden [&::backdrop]:overscroll-contain [&::backdrop]:bg-black/30"
+    >
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <h2 className="min-w-0 flex-1 truncate text-base font-bold text-ink">
             {goal.title || goal.id}
           </h2>
           <button
             type="button"
-            onClick={onClose}
+            onClick={closeDialog}
             aria-label={t("goals.close", "닫기")}
             className="rounded-md px-2 py-1 text-muted hover:bg-surface-hover"
           >
@@ -450,8 +485,7 @@ function GoalDrawer({
             </div>
           )}
         </div>
-      </aside>
-    </div>
+    </dialog>
   );
 }
 
