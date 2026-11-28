@@ -274,13 +274,57 @@ class RunStoreMixin:
         ).fetchone()
         return self._row_to_run(row) if row else None
 
-    def list_runs(self, limit: int = 50, workflow: str | None = None) -> list[Run]:
+    @staticmethod
+    def _like_escape(s: str) -> str:
+        """LIKE 패턴 이스케이프 — %/_/\\를 리터럴로(admin._audit_like_escape와 동일)."""
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def list_runs(
+        self,
+        limit: int = 50,
+        workflow: str | None = None,
+        *,
+        status: str | None = None,
+        days: int | None = None,
+        q: str | None = None,
+        agent: str | None = None,
+    ) -> list[Run]:
+        """run 목록 — spec 012 US3 필터는 전부 AND 조건.
+
+        status: runs.status 정확 일치.
+        days: created_at >= now-days (1~365 클램프는 라우터 책임, 여기서도 방어).
+        q: workflow_key/project/input 부분일치(LIKE, %/_ 이스케이프).
+        agent: runs.agent_id 정확 일치 또는 agents.name 일치(이름→id 해석)."""
+        from datetime import timedelta
+
         limit = _clamp_limit(limit, 50, 500)
         conds: list[str] = ["(org_id=? OR ?='')"]
         params: list[Any] = [*_org_bind()]
         if workflow is not None:
             conds.append("workflow_key=?")
             params.append(workflow)
+        if status:
+            conds.append("status=?")
+            params.append(str(status).strip()[:40])
+        if days is not None:
+            d = max(1, min(int(days), 365))
+            conds.append("created_at >= ?")
+            params.append(_iso(_now() - timedelta(days=d)))
+        if q and q.strip():
+            like = f"%{self._like_escape(q.strip()[:200])}%"
+            conds.append(
+                "(workflow_key LIKE ? ESCAPE '\\'"
+                " OR project LIKE ? ESCAPE '\\'"
+                " OR input LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like, like, like])
+        if agent and agent.strip():
+            av = agent.strip()[:200]
+            conds.append(
+                "(agent_id=? OR agent_id IN"
+                " (SELECT id FROM agents WHERE name=? AND (org_id=? OR ?='')))"
+            )
+            params.extend([av, av, *_org_bind()])
         sql = "SELECT * FROM runs"
         sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY created_at DESC LIMIT ?"

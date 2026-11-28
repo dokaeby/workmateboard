@@ -320,8 +320,31 @@ def register(app: FastAPI, ctx: Any) -> None:
         )
 
     @app.get("/api/v1/runs")
-    def list_runs(limit: int = 50, workflow: str | None = None) -> list[dict[str, Any]]:
-        runs = store.list_runs(max(1, min(limit, 500)), workflow=workflow)
+    def list_runs(
+        request: Request,
+        limit: int = 50,
+        workflow: str | None = None,
+        status: str | None = None,
+        days: int | None = None,
+        q: str | None = None,
+        agent: str | None = None,
+    ) -> Any:
+        # spec 012 US3 — status/days/q/agent는 기존 workflow/limit과 AND.
+        # days는 형제 엔드포인트와 동일하게 1~365 클램프.
+        # q는 인덱스 불가 LIKE 스캔이라 member DoS 표면 — lead로 제한.
+        if q and q.strip():
+            gate = _lead_gate(request)
+            if gate is not None:
+                return gate
+        clamped_days = max(1, min(int(days), 365)) if days is not None else None
+        runs = store.list_runs(
+            max(1, min(limit, 500)),
+            workflow=workflow,
+            status=status,
+            days=clamped_days,
+            q=q,
+            agent=agent,
+        )
         coalesced = store.coalesced_counts_for_runs([r.id for r in runs])
         return [
             {

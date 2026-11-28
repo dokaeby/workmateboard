@@ -118,7 +118,22 @@ class MigrationStoreMixin:
                 "machine": "TEXT",
                 "tokens_in": "INTEGER",
                 "tokens_out": "INTEGER",
+                # spec 012 US1 — 라이브 에이전트 카드 필드(모두 nullable).
+                "model": "TEXT",
+                "progress_pct": "REAL",
+                # PG는 금액 정밀도를 위해 DOUBLE PRECISION(spec 009 선례)
+                "cost_usd": "DOUBLE PRECISION" if self._pg else "REAL",
+                "tool_calls": "INTEGER",
+                "sub_agents": "INTEGER",
             },
+        )
+
+    def _migrate_external_span_columns(self) -> None:
+        """spec 012 — tool-stats가 attributes 전문을 읽지 않고 오류 집계하도록
+        인제스트 시점에 판정한 플래그 컬럼. 기존 행은 0(미판정)으로 남는다."""
+        self._ensure_columns(
+            "external_spans",
+            {"error_flag": "INTEGER NOT NULL DEFAULT 0"},
         )
 
     def _migrate_approval_columns(self) -> None:
@@ -633,6 +648,11 @@ class MigrationStoreMixin:
                 "machine",
                 "tokens_in",
                 "tokens_out",
+                "model",
+                "progress_pct",
+                "cost_usd",
+                "tool_calls",
+                "sub_agents",
                 "last_event_at",
                 "created_at",
                 "updated_at",
@@ -652,6 +672,11 @@ class MigrationStoreMixin:
   machine TEXT,
   tokens_in INTEGER,
   tokens_out INTEGER,
+  model TEXT,
+  progress_pct REAL,
+  cost_usd REAL,
+  tool_calls INTEGER,
+  sub_agents INTEGER,
   last_event_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

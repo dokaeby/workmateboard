@@ -74,6 +74,11 @@ def register(app: FastAPI, ctx: Any) -> None:
             machine=body.machine,
             tokens_in=body.tokens_in,
             tokens_out=body.tokens_out,
+            model=body.model,
+            progress_pct=body.progress_pct,
+            cost_usd=body.cost_usd,
+            tool_calls=body.tool_calls,
+            sub_agents=body.sub_agents,
         )
         # 활동 녹화 — status/doing 변경 또는 60초 경과 시에만 insert(스토어 스로틀)
         try:

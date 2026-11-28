@@ -17,6 +17,7 @@ from datetime import timedelta
 from typing import Any
 
 from . import orgctx
+from .span_error import span_attrs_is_error
 from .util import _clamp_limit, _iso, _loads, _now
 
 # last_used_at 갱신 스로틀 — 인제스트 호출마다 UPDATE하면 쓰기가
@@ -232,12 +233,13 @@ class OtlpIngestStoreMixin:
         created = 0
         with self.tx() as c:
             for r in rows:
-                attrs_json = _attrs_json(r.get("attributes"))
+                attrs = r.get("attributes")
+                attrs_json = _attrs_json(attrs)
                 c.execute(
                     "INSERT INTO external_spans"
                     "(id,org_id,trace_id,span_id,parent_span_id,name,kind,"
-                    "started_at,ended_at,attributes,run_id,created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "started_at,ended_at,attributes,error_flag,run_id,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         str(r.get("id") or uuid.uuid4().hex)[:64],
                         orgctx.org_for_write(str(r.get("org_id") or "") or None),
@@ -249,6 +251,9 @@ class OtlpIngestStoreMixin:
                         str(r.get("started_at") or now),
                         r.get("ended_at") or None,
                         attrs_json,
+                        # spec 012 — tool-stats가 attributes를 다시 읽지 않도록
+                        # 삽입 시점에 오류 여부를 플래그로 저장한다.
+                        1 if span_attrs_is_error(attrs) else 0,
                         str(r.get("run_id") or "")[:64],
                         now,
                     ),
@@ -399,15 +404,27 @@ class OtlpIngestStoreMixin:
                 created += 1
         return created
 
+    @staticmethod
+    def _like_escape(s: str) -> str:
+        """LIKE 패턴 이스케이프 — %/_/\\를 리터럴로."""
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
     def list_external_logs(
         self,
         *,
         days: int = 7,
         trace_id: str = "",
         severity: str = "",
+        q: str = "",
         limit: int = 200,
     ) -> list[dict[str, Any]]:
-        """org 스코프 외부 로그 목록 — 최신 timestamp 순."""
+        """org 스코프 외부 로그 목록 — 최신 timestamp 순.
+
+        spec 012 US3 — q는 body/severityText 부분일치. FTS5는 SQLite
+        전용이라 PG 호환을 위해 LIKE + ESCAPE '\\'를 쓴다. severityText는
+        컬럼이 아니라 attributes JSON 안의 키라 attributes 텍스트의
+        `"severityText": "...` 패턴으로 근사 매칭한다(다른 키의 값이
+        우연히 같은 부분문자열을 포함하면 오탐 가능 — 허용된 근사)."""
         days = max(1, min(int(days), 90))
         cutoff = _iso(_now() - timedelta(days=days))
         frag, params = _org_filter()
@@ -419,6 +436,11 @@ class OtlpIngestStoreMixin:
         if severity:
             conds.append("severity=?")
             qparams.append(str(severity).upper()[:40])
+        qv = str(q or "").strip()[:200]
+        if qv:
+            esc = self._like_escape(qv)
+            conds.append("(body LIKE ? ESCAPE '\\' OR attributes LIKE ? ESCAPE '\\')")
+            qparams.extend([f"%{esc}%", f'%"severityText": "%{esc}%'])
         rows = self._conn.execute(
             "SELECT * FROM external_logs WHERE "  # noqa: S608
             + " AND ".join(conds)

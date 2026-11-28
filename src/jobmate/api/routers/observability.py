@@ -112,6 +112,16 @@ def register(app: FastAPI, ctx: Any) -> None:
             return gate
         return JSONResponse(content=store.observability_agents_live())
 
+    # ---- spec 012 US2: Tool Call 통계 ----
+
+    @app.get("/api/v1/observability/tool-stats")
+    def observability_tool_stats(request: Request, days: int = 7) -> JSONResponse:
+        """external_spans 기반 tool/LLM 호출 통계 — by_name/by_kind 집계."""
+        gate = _lead_gate(request)
+        if gate is not None:
+            return gate
+        return JSONResponse(content=store.observability_tool_stats(days))
+
     @app.get("/api/v1/observability/swarm")
     def observability_swarm(request: Request, run_id: str = "", days: int = 7) -> JSONResponse:
         """노드/엣지 그래프 — run_id 지정 시 해당 run, 아니면 최근 활성 run."""

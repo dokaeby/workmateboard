@@ -59,6 +59,11 @@ class AgentSessionStoreMixin:
         machine: str | None = None,
         tokens_in: int | None = None,
         tokens_out: int | None = None,
+        model: str | None = None,
+        progress_pct: float | None = None,
+        cost_usd: float | None = None,
+        tool_calls: int | None = None,
+        sub_agents: int | None = None,
         org_id: str | None = None,
     ) -> None:
         """(tool, session_key) 기준 upsert.
@@ -134,8 +139,9 @@ class AgentSessionStoreMixin:
             cur = c.execute(
                 "INSERT INTO agent_sessions(id,tool,session_key,project,title,status,"
                 "doing,ask,ended_summary,artifacts,machine,tokens_in,tokens_out,"
+                "model,progress_pct,cost_usd,tool_calls,sub_agents,"
                 "last_event_at,created_at,updated_at,org_id)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT (org_id,tool,session_key) DO UPDATE SET"
                 " project=COALESCE(excluded.project, agent_sessions.project),"
                 " title=COALESCE(excluded.title, agent_sessions.title),"
@@ -154,6 +160,15 @@ class AgentSessionStoreMixin:
                 " AND (agent_sessions.tokens_out IS NULL"
                 " OR excluded.tokens_out>agent_sessions.tokens_out)"
                 " THEN excluded.tokens_out ELSE agent_sessions.tokens_out END,"
+                # spec 012 US1 — model/progress/cost/tool_calls/sub_agents는
+                # 최신 상태 지표라 누적 MAX가 아니라 제공값으로 덮어쓴다
+                # (미제공 None은 COALESCE로 기존 값 유지).
+                " model=COALESCE(excluded.model, agent_sessions.model),"
+                " progress_pct=COALESCE(excluded.progress_pct,"
+                " agent_sessions.progress_pct),"
+                " cost_usd=COALESCE(excluded.cost_usd, agent_sessions.cost_usd),"
+                " tool_calls=COALESCE(excluded.tool_calls, agent_sessions.tool_calls),"
+                " sub_agents=COALESCE(excluded.sub_agents, agent_sessions.sub_agents),"
                 " last_event_at=COALESCE(excluded.last_event_at,"
                 " agent_sessions.last_event_at),"
                 # org_id는 conflict target 컬럼이라 갱신 대상이 아니다 —
@@ -176,6 +191,11 @@ class AgentSessionStoreMixin:
                     machine,
                     tokens_in,
                     tokens_out,
+                    model,
+                    progress_pct,
+                    cost_usd,
+                    tool_calls,
+                    sub_agents,
                     event_at,
                     now,
                     now,
@@ -255,6 +275,7 @@ class AgentSessionStoreMixin:
         sql = (
             "SELECT id,tool,session_key,project,title,status,doing,ask,"
             "ended_summary,artifacts,machine,tokens_in,tokens_out,"
+            "model,progress_pct,cost_usd,tool_calls,sub_agents,"
             "last_event_at,created_at,updated_at,org_id"
             " FROM agent_sessions"
         )

@@ -66,8 +66,16 @@ class AgentSessionRequest(BaseModel):
         default=None, max_length=10
     )
     machine: str | None = Field(default=None, max_length=128)
-    tokens_in: int | None = Field(default=None, ge=0)
-    tokens_out: int | None = Field(default=None, ge=0)
+    # int4 상한 — 초과 시 PG INTEGER 오버플로로 500이 되므로 미리 거부
+    tokens_in: int | None = Field(default=None, ge=0, le=2_147_483_647)
+    tokens_out: int | None = Field(default=None, ge=0, le=2_147_483_647)
+    # spec 012 US1 — 라이브 에이전트 카드 필드. 전부 optional, 미전송 시
+    # 기존 값 유지(스토어 COALESCE). 범위는 느슨하게 검증한다.
+    model: str | None = Field(default=None, max_length=128)
+    progress_pct: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    tool_calls: int | None = Field(default=None, ge=0, le=2_147_483_647)
+    sub_agents: int | None = Field(default=None, ge=0, le=2_147_483_647)
 
 
 class AskRequest(BaseModel):

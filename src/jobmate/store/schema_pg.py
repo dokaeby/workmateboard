@@ -327,6 +327,11 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   machine TEXT,
   tokens_in INTEGER,
   tokens_out INTEGER,
+  model TEXT,
+  progress_pct REAL,
+  cost_usd DOUBLE PRECISION,
+  tool_calls INTEGER,
+  sub_agents INTEGER,
   last_event_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -692,10 +697,9 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_eval_runs_eval ON eval_runs(eval_id);
 CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
--- 온라인 평가 dedupe — (schedule_id, run_id)당 eval_run 1건. 수동 실행
--- (schedule_id='')은 대상 아님. 기존 DB는 _migrate_reporting_ext_columns가 생성.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_runs_online_dedupe
-  ON eval_runs(schedule_id, run_id) WHERE schedule_id != '';
+-- 온라인 평가 dedupe 인덱스(idx_eval_runs_online_dedupe)는 여기 두지 않는다 —
+-- 기존 DB는 schedule_id 컬럼이 없어 스키마 단계에서 실패한다.
+-- _migrate_reporting_ext_columns가 컬럼 보강 후 항상 생성한다.
 
 -- agent-management 1차 (paperclip spec): SQLite판과 동일 구조
 CREATE TABLE IF NOT EXISTS tasks (
@@ -1237,6 +1241,7 @@ CREATE TABLE IF NOT EXISTS external_spans (
   started_at TEXT NOT NULL,
   ended_at TEXT,
   attributes TEXT NOT NULL DEFAULT '{}',
+  error_flag INTEGER NOT NULL DEFAULT 0,
   run_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );

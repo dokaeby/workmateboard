@@ -127,6 +127,7 @@ class Store(
             with self._conn:
                 self._conn.executescript(SCHEMA)
         self._migrate_agent_session_columns()
+        self._migrate_external_span_columns()
         self._migrate_approval_columns()
         self._migrate_user_columns()
         self._migrate_org_columns()

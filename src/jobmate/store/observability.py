@@ -741,9 +741,10 @@ class ObservabilityStoreMixin:
 
         agent_sessions의 org 필터 규약을 따른다('' 공유 행은 전 조직에
         노출 — 브릿지가 env 키로 푸시하는 플랫폼 세션). 모델/진행률/
-        tool_calls/sub_agents/비용은 세션 스키마에 대응 컬럼이 없어
-        null로 반환한다 — llm_usage는 세션 키가 없어 세션별 조인이
-        불가능하고, 비용은 stage_run→run 경로에만 존재한다.
+        tool_calls/sub_agents/비용은 spec 012 US1에서 추가된
+        agent_sessions 컬럼(model/progress_pct/cost_usd/tool_calls/
+        sub_agents)을 그대로 노출한다 — 브릿지가 보내지 않은 세션은
+        null 유지(추정 금지).
         last_heartbeat_at은 전용 컬럼이 없어 last_event_at(브릿지가
         보낸 마지막 이벤트 시각)을 사용한다."""
         oid = orgctx.current_org_id()
@@ -751,7 +752,11 @@ class ObservabilityStoreMixin:
         params: list[Any] = [oid] if oid else []
         rows = self._conn.execute(
             "SELECT id,tool,session_key,project,title,status,doing,ask,"  # noqa: S608
-            " tokens_in,tokens_out,last_event_at,created_at,updated_at"
+            # spec 012 US1 — model/progress/cost/tool_calls/sub_agents는
+            # agent_sessions 컬럼에서 읽는다. 미전송 세션은 null 유지
+            # (추정 금지 — spec 수용 기준).
+            " tokens_in,tokens_out,model,progress_pct,cost_usd,tool_calls,"
+            " sub_agents,last_event_at,created_at,updated_at"
             " FROM agent_sessions"
             + frag
             + " ORDER BY COALESCE(last_event_at, updated_at, created_at) DESC"
@@ -772,16 +777,18 @@ class ObservabilityStoreMixin:
                     "session_key": str(r["session_key"] or ""),
                     "name": str(r["title"] or r["session_key"] or r["tool"] or ""),
                     "role": str(r["tool"] or ""),
-                    "model": None,
+                    "model": str(r["model"]) if r["model"] is not None else None,
                     "status": self._live_agent_status(r["status"]),
                     "current_task": str(r["doing"] or ""),
-                    "progress_pct": None,
+                    "progress_pct": (
+                        float(r["progress_pct"]) if r["progress_pct"] is not None else None
+                    ),
                     "started_at": str(r["created_at"] or ""),
                     "elapsed_s": elapsed,
                     "tokens": tokens,
-                    "cost_usd": None,
-                    "tool_calls": None,
-                    "sub_agents": None,
+                    "cost_usd": float(r["cost_usd"]) if r["cost_usd"] is not None else None,
+                    "tool_calls": (int(r["tool_calls"]) if r["tool_calls"] is not None else None),
+                    "sub_agents": (int(r["sub_agents"]) if r["sub_agents"] is not None else None),
                     "last_heartbeat_at": heartbeat,
                     "project": str(r["project"] or ""),
                 }
@@ -1003,3 +1010,110 @@ class ObservabilityStoreMixin:
                 }
             )
         return {"nodes": nodes, "edges": edges}
+
+    # ---- spec 012 US2: Tool Call 통계 ----
+    _TOOL_STATS_SCAN_LIMIT = 20000  # 윈도우 내 스팬 스캔 상한(초과 시 truncated)
+    _TOOL_STATS_TOP_N = 50
+
+    # 오류 판정 규칙은 span_error.span_attrs_is_error 단일 소스 —
+    # 인제스트 시 external_spans.error_flag에 저장되고 여기서는 그 값을 읽는다.
+    # 마이그레이션 이전 행은 error_flag=0(미판정)이라 오류로 세지 않는다.
+    @classmethod
+    def _span_attr_is_error(cls, attrs: dict[str, Any]) -> bool:
+        """attributes dict → 오류 여부. 판정 규칙은 span_error 모듈 단일 소스."""
+        from .span_error import span_attrs_is_error
+
+        return span_attrs_is_error(attrs)
+
+    def observability_tool_stats(self, days: int) -> dict[str, Any]:
+        """external_spans 기반 Tool Call 통계 (spec 012 US2).
+
+        name+kind별 count/error_count/avg_duration_ms, kind별 count,
+        전체 error_rate. kind가 비어 있으면 '' 그룹으로 둔다(추정 금지).
+        스캔 상한(_TOOL_STATS_SCAN_LIMIT) 초과 시 truncated=True —
+        집계는 스캔된 행 기준 하한 근사다."""
+        days = max(1, min(int(days), 365))
+        cutoff = _iso(_now() - timedelta(days=days))
+        frag, params = _org_filter()
+        # attributes는 행당 수백KB까지 커질 수 있어 SELECT하지 않는다 —
+        # 오류 여부는 인제스트 시 계산된 error_flag를 사용(기존 행은 0).
+        # LIMIT+1로 정확한 truncated 판정.
+        rows = self._conn.execute(
+            "SELECT name,kind,started_at,ended_at,error_flag"  # noqa: S608
+            " FROM external_spans WHERE started_at >= ?"
+            + frag
+            + " ORDER BY started_at DESC LIMIT ?",
+            (cutoff, *params, self._TOOL_STATS_SCAN_LIMIT + 1),
+        ).fetchall()
+        truncated = len(rows) > self._TOOL_STATS_SCAN_LIMIT
+        rows = rows[: self._TOOL_STATS_SCAN_LIMIT]
+
+        by_name: dict[tuple[str, str], dict[str, Any]] = {}
+        by_kind: dict[str, int] = {}
+        total_calls = 0
+        total_errors = 0
+        for r in rows:
+            name = str(r["name"] or "")
+            kind = str(r["kind"] or "")
+            is_err = bool(int(r["error_flag"] or 0))
+            dur_ms: float | None = None
+            s, e = _aware(_dt(r["started_at"])), _aware(_dt(r["ended_at"]))
+            if s is not None and e is not None:
+                dur_ms = max(0.0, (e - s).total_seconds() * 1000)
+
+            total_calls += 1
+            total_errors += 1 if is_err else 0
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+            b = by_name.setdefault(
+                (name, kind), {"count": 0, "error_count": 0, "dur_sum": 0.0, "dur_n": 0}
+            )
+            b["count"] += 1
+            b["error_count"] += 1 if is_err else 0
+            if dur_ms is not None:
+                b["dur_sum"] += dur_ms
+                b["dur_n"] += 1
+
+        def _avg(b: dict[str, Any]) -> float | None:
+            return round(b["dur_sum"] / b["dur_n"], 1) if b["dur_n"] else None
+
+        ranked = sorted(by_name.items(), key=lambda kv: (-kv[1]["count"], kv[0][0], kv[0][1]))
+        items: list[dict[str, Any]] = []
+        rest_count = rest_err = 0
+        rest_dur = 0.0
+        rest_dur_n = 0
+        for (name, kind), b in ranked[: self._TOOL_STATS_TOP_N]:
+            items.append(
+                {
+                    "name": name,
+                    "kind": kind,
+                    "count": b["count"],
+                    "error_count": b["error_count"],
+                    "avg_duration_ms": _avg(b),
+                }
+            )
+        for _key, b in ranked[self._TOOL_STATS_TOP_N :]:
+            rest_count += b["count"]
+            rest_err += b["error_count"]
+            rest_dur += b["dur_sum"]
+            rest_dur_n += b["dur_n"]
+        if rest_count:
+            items.append(
+                {
+                    "name": "기타",
+                    "kind": "",
+                    "count": rest_count,
+                    "error_count": rest_err,
+                    "avg_duration_ms": round(rest_dur / rest_dur_n, 1) if rest_dur_n else None,
+                }
+            )
+        return {
+            "days": days,
+            "total_calls": total_calls,
+            "by_name": items,
+            "by_kind": [
+                {"kind": k, "count": by_kind[k]}
+                for k in sorted(by_kind, key=lambda k: (-by_kind[k], k))
+            ],
+            "error_rate": round(total_errors / total_calls, 4) if total_calls else 0.0,
+            "truncated": truncated,
+        }

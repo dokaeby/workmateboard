@@ -786,6 +786,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         days: int = 7,
         trace_id: str = "",
         severity: str = "",
+        q: str = "",
         limit: int = 200,
     ) -> JSONResponse:
         gate = _lead_gate(request)
@@ -794,7 +795,11 @@ def register(app: FastAPI, ctx: Any) -> None:
         clamped_days = max(1, min(int(days), 90))
         clamped_limit = max(1, min(int(limit), 1000))
         rows = store.list_external_logs(
-            days=clamped_days, trace_id=trace_id, severity=severity, limit=clamped_limit
+            days=clamped_days,
+            trace_id=trace_id,
+            severity=severity,
+            q=q,
+            limit=clamped_limit,
         )
         return JSONResponse(
             content={
