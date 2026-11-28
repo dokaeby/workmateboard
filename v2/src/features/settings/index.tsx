@@ -433,6 +433,26 @@ function DeleteAccountZone() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ msg: string; tone?: "ok" | "err" }>({ msg: "" });
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  // 네이티브 <dialog> — showModal()이 inert/포커스/Esc/포커스 복귀를 처리한다.
+  // 'close' 이벤트(Esc·프로그램적 close)에서 React 상태를 동기화한다.
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    if (!d.open) d.showModal();
+    const sync = () => setConfirmOpen(false);
+    d.addEventListener("close", sync);
+    return () => d.removeEventListener("close", sync);
+  });
+
+  // 프로그램적 닫기 — d.close()가 'close' 이벤트를 발생시켜 위 리스너가
+  // confirmOpen을 false로 동기화한다(포커스도 invoker로 복귀).
+  const closeConfirm = () => {
+    const d = dialogRef.current;
+    if (d) d.close();
+    else setConfirmOpen(false);
+  };
 
   const open = () => {
     if (!value.trim()) {
@@ -456,7 +476,7 @@ function DeleteAccountZone() {
           throw e1;
         }
       }
-      setConfirmOpen(false);
+      closeConfirm();
       setStatus({ msg: t("settings.danger.done", "계정이 삭제되었습니다 — 로그인 화면으로 이동합니다"), tone: "ok" });
       try { await apiPost("/auth/logout"); } catch { /* 이미 폐기됨 */ }
       try { localStorage.removeItem("jobmate_api_key"); } catch { /* noop */ }
@@ -487,20 +507,22 @@ function DeleteAccountZone() {
         <span className={`mt-1 block text-xs ${status.tone === "ok" ? "text-ok" : "text-err"}`}>{status.msg}</span>
       )}
       {confirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-md rounded-xl border border-border bg-surface p-6 shadow-lg">
-            <p className="text-base font-bold text-err">{t("settings.danger.dialog.title", "정말 계정을 삭제하시겠습니까?")}</p>
-            <p className="mb-4 mt-2 text-sm text-muted">{t("settings.danger.dialog.body", "계정과 모든 관련 데이터가 즉시 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")}</p>
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" className="px-3 py-1.5 text-xs" disabled={busy} onClick={() => setConfirmOpen(false)}>
-                {t("settings.danger.cancel", "취소")}
-              </Button>
-              <Button variant="danger" className="px-3 py-1.5 text-xs" disabled={busy} onClick={doDelete}>
-                {busy ? t("settings.danger.working", "삭제 중…") : t("settings.danger.confirm", "삭제")}
-              </Button>
-            </div>
+        <dialog
+          ref={dialogRef}
+          aria-labelledby="jm-delete-account-title"
+          className="m-auto start-0 end-0 top-0 bottom-0 w-[calc(100%_-_2rem)] max-w-md rounded-xl border border-border bg-surface p-6 text-ink shadow-lg [&:modal]:overscroll-contain [&::backdrop]:overflow-hidden [&::backdrop]:overscroll-contain [&::backdrop]:bg-black/40"
+        >
+          <p id="jm-delete-account-title" className="text-base font-bold text-err">{t("settings.danger.dialog.title", "정말 계정을 삭제하시겠습니까?")}</p>
+          <p className="mb-4 mt-2 text-sm text-muted">{t("settings.danger.dialog.body", "계정과 모든 관련 데이터가 즉시 영구 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")}</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" className="px-3 py-1.5 text-xs" disabled={busy} onClick={closeConfirm}>
+              {t("settings.danger.cancel", "취소")}
+            </Button>
+            <Button variant="danger" className="px-3 py-1.5 text-xs" disabled={busy} onClick={doDelete}>
+              {busy ? t("settings.danger.working", "삭제 중…") : t("settings.danger.confirm", "삭제")}
+            </Button>
           </div>
-        </div>
+        </dialog>
       )}
     </section>
   );
