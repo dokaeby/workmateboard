@@ -534,3 +534,22 @@ def register(app: FastAPI, ctx: Any) -> None:
                 "updated_at": new_state.get("updated_at"),
             }
         )
+
+    # ---------- UI 언어 (spec 006 FR-028) ----------
+
+    @app.patch("/api/v1/me/locale")
+    def me_locale_patch(body: dict[str, Any], request: Request) -> Any:
+        """사용자별 UI 언어 저장 — 'ko'|'en'|''(자동 감지로 복귀)."""
+        user = _session_user(request)
+        if user is None:
+            return err(401, "unauthorized", "로그인이 필요합니다", request)
+        locale = body.get("locale") if isinstance(body, dict) else None
+        if locale not in ("ko", "en", ""):
+            return err(422, "validation", "locale must be 'ko', 'en' or ''", request)
+        uid = str(user["id"])
+        # 동일 값 재설정은 no-op — 감사 행 중복 방지
+        if str(user.get("locale") or "") == str(locale):
+            return JSONResponse({"locale": locale})
+        store.set_user_locale(uid, str(locale))
+        _audit_api(request, "me_locale_update", uid, {"locale": locale})
+        return JSONResponse({"locale": locale})

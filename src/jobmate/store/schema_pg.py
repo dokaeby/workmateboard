@@ -223,6 +223,7 @@ CREATE TABLE IF NOT EXISTS users (
   last_login_ip TEXT NOT NULL DEFAULT '',
   last_login_fingerprint TEXT NOT NULL DEFAULT '',
   last_login_at TEXT NOT NULL DEFAULT '',
+  locale TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

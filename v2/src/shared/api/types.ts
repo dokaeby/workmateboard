@@ -16,6 +16,8 @@ export interface Me {
   name?: string;
   role?: Role;
   email_verified?: boolean;
+  /** 서버 저장 UI 언어 (spec 006 FR-028) — ''/undefined면 localStorage 자동 감지 */
+  locale?: "ko" | "en" | "";
 }
 
 export interface ApprovalItem {

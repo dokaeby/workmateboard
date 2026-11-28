@@ -29,9 +29,9 @@ export function apiHeaders(extra?: Record<string, string>): Record<string, strin
 
 export async function api<T = unknown>(
   path: string,
-  opts: RequestInit & { json?: unknown } = {},
+  opts: RequestInit & { json?: unknown; silent401?: boolean } = {},
 ): Promise<T> {
-  const { json, headers, ...rest } = opts;
+  const { json, headers, silent401, ...rest } = opts;
   const h = apiHeaders(headers as Record<string, string> | undefined);
   let body = rest.body;
   if (json !== undefined) {
@@ -66,7 +66,7 @@ export async function api<T = unknown>(
     // 상태만으로 세션 만료와 구분할 수 없으므로 /auth/* 401은 이벤트를
     // 발생시키지 않는다. 세션 만료는 /auth/me가 null을 반환하거나
     // 일반 API의 401로 감지된다.
-    if (!path.startsWith("/auth/")) {
+    if (!path.startsWith("/auth/") && !silent401) {
       window.dispatchEvent(new CustomEvent("jm:unauthorized"));
     }
     throw new ApiError(
@@ -95,6 +95,9 @@ export async function api<T = unknown>(
 export const apiGet = <T = unknown>(path: string) => api<T>(path);
 export const apiPost = <T = unknown>(path: string, json?: unknown) =>
   api<T>(path, { method: "POST", json });
-export const apiPatch = <T = unknown>(path: string, json?: unknown) =>
-  api<T>(path, { method: "PATCH", json });
+export const apiPatch = <T = unknown>(
+  path: string,
+  json?: unknown,
+  opts?: { silent401?: boolean },
+) => api<T>(path, { method: "PATCH", json, ...opts });
 export const apiDelete = <T = unknown>(path: string) => api<T>(path, { method: "DELETE" });

@@ -129,6 +129,8 @@ class MigrationStoreMixin:
                 "last_login_ip": "TEXT NOT NULL DEFAULT ''",
                 "last_login_fingerprint": "TEXT NOT NULL DEFAULT ''",
                 "last_login_at": "TEXT NOT NULL DEFAULT ''",
+                # spec 006 FR-028 — 사용자별 UI 언어(ko|en, ''=미설정)
+                "locale": "TEXT NOT NULL DEFAULT ''",
             },
         )
         # 세션 유휴 만료(spec 002 FR-017) — 마지막 활동 시각

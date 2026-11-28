@@ -1120,6 +1120,8 @@ def build_app_context(
             "email": u["email"],
             "display_name": u["display_name"],
             "role": _effective_role(u),
+            # spec 006 FR-028 — 저장된 UI 언어(없으면 '' → 클라이언트 자동 감지)
+            "locale": str(u.get("locale") or ""),
         }
 
     def _maybe_first_user_admin(user: dict[str, Any], request: Request | None = None) -> None:

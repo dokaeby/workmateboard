@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet, ApiError } from "../shared/api/client";
 import type { Me, Prefs, ViewKey } from "../shared/api/types";
 import { useAppStore, roleAllows } from "../shared/store/appStore";
-import { useI18n, getLang, registerI18n, type Lang } from "../shared/i18n";
+import { useI18n, getLang, setLang, registerI18n, type Lang } from "../shared/i18n";
 import { NAV_ITEMS } from "./nav";
 import { STR as APP_I18N } from "./i18n";
 import { ViewLoader } from "./views";
@@ -67,6 +67,11 @@ export default function App() {
   useEffect(() => {
     if (me.data !== undefined) setRole(me.data?.role ?? "member");
   }, [me.data, setRole]);
+  // spec 006 FR-028 — 서버에 저장된 언어가 있으면 localStorage 감지값보다 우선
+  useEffect(() => {
+    const loc = me.data?.locale;
+    if ((loc === "ko" || loc === "en") && loc !== getLang()) setLang(loc);
+  }, [me.data]);
   useEffect(() => {
     if (settings.data) setPrefs(settings.data);
   }, [settings.data, setPrefs]);

@@ -41,6 +41,8 @@ class UserStoreMixin:
             "created_at": r["created_at"],
             # 세션 조직 컨텍스트(spec 003) — 세션 JOIN SELECT에만 존재
             "current_org_id": r["current_org_id"] if "current_org_id" in r.keys() else "",
+            # UI 언어(spec 006 FR-028) — 컬럼 없는 구 스키마 SELECT는 ''
+            "locale": r["locale"] if "locale" in r.keys() else "",
         }
 
     def create_user(
@@ -87,6 +89,14 @@ class UserStoreMixin:
     def get_user_by_google_sub(self, sub: str) -> dict[str, Any] | None:
         r = self._conn.execute("SELECT * FROM users WHERE google_sub=?", (sub,)).fetchone()
         return self._user_json(r) if r else None
+
+    def set_user_locale(self, uid: str, locale: str) -> None:
+        """UI 언어 설정(spec 006 FR-028) — 'ko'|'en'|''(미설정=자동 감지)."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE users SET locale=?, updated_at=? WHERE id=?",
+                (locale, _iso(_now()), uid),
+            )
 
     def link_google_sub(self, uid: str, google_sub: str) -> None:
         with self.tx() as c:
@@ -146,6 +156,7 @@ class UserStoreMixin:
         갱신해 요청당 쓰기를 제한한다."""
         r = self._conn.execute(
             "SELECT u.id, u.email, u.display_name, u.google_sub, u.role, u.created_at,"
+            " u.locale,"
             " s.expires_at, s.created_at AS sess_created_at, s.last_seen_at,"
             " s.current_org_id"
             " FROM auth_sessions s JOIN users u ON u.id = s.user_id"
