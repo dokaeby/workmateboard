@@ -58,6 +58,10 @@ _ORG_SCOPED_TABLES = (
     "agent_sessions",
     "session_activity",
     "audit_events",
+    # spec 004 US1 — 고객 웹훅 구독/전달 이력(조직 리소스).
+    # backup_runs는 플랫폼 레벨 운영 이력이라 org 스코프가 아니다.
+    "webhook_subscriptions",
+    "webhook_deliveries",
 )
 
 

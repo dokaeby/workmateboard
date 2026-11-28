@@ -84,6 +84,19 @@ def register(app: FastAPI, ctx: Any) -> None:
             return gate
         started = float(getattr(app.state, "started_at", time.time()))
         bridge = store.agent_sessions_bridge_info()
+        # spec 004 US2 (FR-013) — 의존성 실측 컴포넌트 상태를 기존 필드에 추가.
+        # 체크 실패는 서비스 계층에서 컴포넌트 down으로 격리되므로 여기서
+        # 예외가 나면 건너뛰고 기존 응답을 유지한다.
+        components: dict[str, Any] = {}
+        overall = ""
+        try:
+            from ...services import health as health_svc
+
+            report = health_svc.run_health_checks(store, ctx.settings)
+            components = report.get("components") or {}
+            overall = str(report.get("status") or "")
+        except Exception as e:
+            logger.warning("health detail components failed: %s", type(e).__name__)
         return JSONResponse(
             content={
                 "api": {"uptime_s": round(time.time() - started, 1)},
@@ -93,6 +106,8 @@ def register(app: FastAPI, ctx: Any) -> None:
                     "last_tick_at": _last_cron_tick_at(store),
                     "reaper": dict(_REAPER_STATE),
                 },
+                "status": overall,
+                "components": components,
                 "version": "0.1.0",
             }
         )

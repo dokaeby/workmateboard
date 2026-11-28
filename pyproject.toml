@@ -30,6 +30,10 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+# spec 004 US4 — Sentry는 선택 연동. 미설치 시 services.sentry가 no-op.
+sentry = [
+    "sentry-sdk>=2,<3",
+]
 
 [build-system]
 requires = ["hatchling"]

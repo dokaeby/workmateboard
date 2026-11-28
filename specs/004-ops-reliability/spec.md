@@ -89,7 +89,7 @@ Prometheus 스크래이퍼가 `/api/v1/metrics`에서 표준 text exposition(0.0
 
 **Acceptance Scenarios**:
 
-1. **Given** run 3건 완료 + 1건 실패, **When** `GET /api/v1/metrics` 인증 호출, **Then** `jobmate_runs_total{workflow="dev_review",status="completed"}` 등 카운터가 증가분만큼 정확히 노출된다.
+1. **Given** run 3건 완료 + 1건 실패, **When** `GET /api/v1/metrics` 인증 호출, **Then** `jobmate_runs{workflow="dev_review",status="completed"}` 등 상태 분포가 정확히 노출된다(게이지 — FR-030 주석 참조).
 2. **Given** 비인증 클라이언트(기본 정책), **When** `/api/v1/metrics` 호출, **Then** 401; `JOBMATE_METRICS_TOKEN` bearer 또는 세션/API 키로는 200이다.
 3. **Given** 임의의 요청 경로 `/api/v1/runs/abc123`, **When** 메트릭 수집, **Then** `path` 라벨이 라우트 템플릿(`/api/v1/runs/{run_id}`)으로 정규화되고 원문 ID가 라벨에 나타나지 않는다.
 
@@ -157,7 +157,7 @@ Prometheus 스크래이퍼가 `/api/v1/metrics`에서 표준 text exposition(0.0
 **메트릭**
 
 - **FR-029**: `GET /api/v1/metrics`가 Prometheus text exposition format 0.0.4(`text/plain; version=0.0.4`)를 반환해야 한다. 신규 런타임 의존성 없이 `services/metrics.py`의 경량 레지스트리(counter/gauge/histogram)로 구현하거나 `prometheus-client` 추가는 계획 단계에서 결정한다 — 단, exposition 형식과 라벨 규칙은 본 스펙을 MUST로 한다.
-- **FR-030**: 노출 메트릭 최소 세트: `jobmate_http_requests_total{method,route,status}`(카운터), `jobmate_http_request_duration_seconds{route}`(히스토그램, 버킷 상한), `jobmate_runs_total{workflow,status}`(카운터), `jobmate_runs_in_flight`(게이지), `jobmate_webhook_deliveries_total{event,status}`, `jobmate_webhook_pending`(게이지), `jobmate_llm_tokens_total{model,direction}`, `jobmate_llm_cost_usd_total{model}`, `jobmate_backup_last_success_timestamp`, `jobmate_health_status{component}`(0/1 또는 enum gauge), `jobmate_inbox_unread`(게이지).
+- **FR-030**: 노출 메트릭 최소 세트: `jobmate_http_requests_total{method,route,status}`(카운터), `jobmate_http_request_duration_seconds{route}`(히스토그램, 버킷 상한), `jobmate_runs{workflow,status}`(게이지 — DB 스냅샷은 상태 전이·retention 삭제로 비단조라 counter 부적합), `jobmate_runs_in_flight`(게이지), `jobmate_webhook_deliveries{event,status}`(게이지), `jobmate_webhook_pending`(게이지), `jobmate_llm_tokens{model,direction}`(게이지), `jobmate_llm_cost_usd{model}`(게이지), `jobmate_backup_last_success_timestamp`, `jobmate_health_status{component}`(0/1 또는 enum gauge), `jobmate_inbox_unread`(게이지).
 - **FR-031**: 라벨 카디널리티 규칙(MUST): `user_id`/`email`/`run_id`/`request_id`/원시 `path`를 라벨 값으로 사용 금지. HTTP `route`는 FastAPI 라우트 템플릿(`request.scope["route"].path` 또는 등록 패턴)으로 정규화하고 매칭 실패 시 `"unmatched"`로 묶는다. `status`는 HTTP 상태 코드 버킷(2xx/4xx/5xx) 또는 고정 enum, `workflow`/`model`/`event`/`component`는 등록된 유한 집합으로 제한한다. 위반 라벨은 렌더링 단계에서 드롭한다.
 - **FR-032**: `/api/v1/metrics` 인증 정책: 기본은 기존 인증(API 키/세션) 필요 — 보안 미들웨어의 `/api/*` 규칙을 그대로 적용한다. 스크래이퍼용으로 `JOBMATE_METRICS_TOKEN`(별도 bearer) 설정 시 해당 토큰도 허용한다. 두 경로 모두 `store.audit` 불필요(고빈도) 대신 접근 로그는 기존 미들웨어가 기록한다.
 - **FR-033**: 메트릭 수집은 요청 핫패스에 무거운 store 쿼리를 추가하지 않아야 한다 — HTTP 카운터/히스토그램은 미들웨어에서 인메모리 갱신, DB 기반 메트릭(runs/webhook/backup/health)은 마지막 계산값을 TTL(기본 15초) 캐시로 제공한다.

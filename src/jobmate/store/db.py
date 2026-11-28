@@ -24,6 +24,7 @@ from ..models import StageStatus as StageStatus
 from .admin import AdminStoreMixin
 from .agent_sessions import AgentSessionStoreMixin
 from .agents import AgentStoreMixin
+from .backups import BackupStoreMixin
 from .budgets import BudgetStoreMixin
 from .builder import BuilderStoreMixin
 from .comms import CommsStoreMixin
@@ -49,12 +50,14 @@ from .task_collab import TaskCollabStoreMixin
 from .usage import UsageStoreMixin
 from .users import UserStoreMixin
 from .wakeups import WakeupStoreMixin
+from .webhooks import WebhookStoreMixin
 
 logger = logging.getLogger("jobmate.store")
 
 
 class Store(
     MigrationStoreMixin,
+    BackupStoreMixin,
     RunStoreMixin,
     CommsStoreMixin,
     RadarStoreMixin,
@@ -78,6 +81,7 @@ class Store(
     PermissionStoreMixin,
     ExternalSyncStoreMixin,
     OrgStoreMixin,
+    WebhookStoreMixin,
 ):
     """동기 store. path가 postgres(ql):// DSN이면 PostgreSQL, 아니면 SQLite 파일."""
 

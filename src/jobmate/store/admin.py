@@ -51,6 +51,11 @@ class AdminStoreMixin:
         - agent_events: created_at < now-90d 삭제 — heartbeat 등 고빈도
           이벤트 포함 전체 타입 동일 기준. tasks/task_runs는 업무 이력
           소유권이라 별도 정책이 없어 보존한다.
+        - webhook_deliveries: 종결 상태(success|dead|cancelled)이고
+          created_at < now-90d 삭제 — dead 배달이 무한 누적돼 webhook
+          헬스 컴포넌트가 영구 degraded로 고정되는 것을 막는다.
+          pending/failed/delivering(진행·재시도 대상)은 보존한다.
+          webhook_subscriptions는 구독 설정이므로 삭제하지 않는다.
         - org_invitations: expires_at < now-30d 삭제(초대 이력은 audit_events 보존)
         반환값: 테이블별 삭제/정리 건수."""
         now = now or _now()
@@ -142,6 +147,15 @@ class AdminStoreMixin:
             # 최근 키만 의미가 있고, 장기 보존 감사는 audit_events(90d)가 담당.
             cur = c.execute("DELETE FROM agent_events WHERE created_at < ?", (d90,))
             counts["agent_events"] = int(getattr(cur, "rowcount", 0) or 0)
+            # 종결 webhook delivery 정리 — dead가 영구 누적되면 webhook
+            # 헬스 체크가 계속 degraded를 보고한다. 재시도 대상
+            # (pending/failed/delivering)은 절대 삭제하지 않는다.
+            cur = c.execute(
+                "DELETE FROM webhook_deliveries"
+                " WHERE status IN ('success','dead','cancelled') AND created_at < ?",
+                (d90,),
+            )
+            counts["webhook_deliveries"] = int(getattr(cur, "rowcount", 0) or 0)
         counts.update(self.purge_deleted_organizations(now=now))
         return counts
 

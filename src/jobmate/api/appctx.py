@@ -710,6 +710,24 @@ def build_app_context(
             _run_slots().release()
         store.mark_inbox_read_dedupe(f"approval:{run_id}")
         store.audit(run_id, actor, f"run_{decision}", run_id, {"comment": comment[:200]})
+        # spec 004 US1 — approval.decided webhook. actor(이메일 가능)·comment
+        # 본문은 payload에 넣지 않는다(FR-007 식별자 수준만).
+        try:
+            from ..services import webhooks as _webhooks
+
+            _webhooks.emit_event(
+                store,
+                "approval.decided",
+                f"approval:{run_id}:decided:{decision}:{uuid.uuid4().hex[:8]}",
+                {
+                    "run_id": run_id,
+                    "workflow": run.workflow_key,
+                    "decision": decision,
+                    "status": "waiting_approval",
+                },
+            )
+        except Exception:
+            logger.warning("webhook emit failed run=%s", run_id, exc_info=True)
         logger.info("run %s resume decision=%s actor=%s", run_id, decision, actor)
         # resume이 run을 종결시켰으면 wakeup 마감 + deferred promote
         try:

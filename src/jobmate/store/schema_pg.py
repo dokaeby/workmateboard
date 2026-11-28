@@ -1024,4 +1024,55 @@ CREATE INDEX IF NOT EXISTS idx_org_invites_lookup
 CREATE INDEX IF NOT EXISTS idx_org_invites_email ON org_invitations(email);
 
 
+-- spec 004 US1 — 아웃바운드 웹훅 구독 (조직 스코프).
+-- secret_enc는 Fernet 암호문만 저장, 원문 미저장(FR-005).
+CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL,
+  secret_enc TEXT NOT NULL,
+  events TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_delivery_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL DEFAULT '',
+  subscription_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_retry_at TEXT,
+  last_http_status INTEGER,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  delivered_at TEXT,
+  UNIQUE(subscription_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due
+  ON webhook_deliveries(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_sub
+  ON webhook_deliveries(subscription_id, created_at);
+
+-- spec 004 US3 — 백업 실행 이력 (플랫폼 레벨 — org 스코프 아님)
+CREATE TABLE IF NOT EXISTS backup_runs (
+  id TEXT PRIMARY KEY,
+  backend TEXT NOT NULL,
+  file_path TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER,
+  status TEXT NOT NULL,
+  verify_status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  verified_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_backup_runs_started ON backup_runs(started_at);
+
 """

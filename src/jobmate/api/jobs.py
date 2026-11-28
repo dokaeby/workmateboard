@@ -32,6 +32,77 @@ logger = logging.getLogger("jobmate.api")
 worker_logger = logging.getLogger("jobmate.worker")
 
 
+# run.status → 아웃바운드 웹훅 이벤트 타입 (spec 004 US1, FR-003).
+# waiting_approval도 여기서 emit한다 — event_id에 updated_at 지문을 넣어
+# _check_waiting_approvals의 재대기 감지와 (subscription_id,event_id)
+# UNIQUE로 상호 멱등된다.
+_RUN_WEBHOOK_EVENTS = {
+    "completed": "run.completed",
+    "failed": "run.failed",
+    "needs_human": "run.needs_human",
+    "waiting_approval": "run.waiting_approval",
+}
+
+
+def _emit_run_webhook(store: Store, run_id: str) -> None:
+    """run 상태 → webhook 이벤트 emit — 실패가 run 경로를 깨지 않게 전부 삼킨다."""
+    try:
+        from ..services import webhooks as _webhooks
+
+        run = store.get_run(run_id)
+        if run is None:
+            return
+        status = str(getattr(run.status, "value", run.status) or "")
+        event_type = _RUN_WEBHOOK_EVENTS.get(status)
+        if event_type is None:
+            return
+        updated = run.updated_at.isoformat() if run.updated_at else ""
+        data: dict[str, Any] = {
+            "run_id": run.id,
+            "workflow": run.workflow_key,
+            "status": status,
+        }
+        if run.error:
+            data["error"] = str(run.error)[:200]
+        _webhooks.emit_event(store, event_type, f"run:{run.id}:{status}:{updated}", data)
+    except Exception:
+        worker_logger.warning("webhook emit failed run=%s", run_id, exc_info=True)
+
+
+def _emit_event_webhook(store: Store, event_type: str, event_id: str, data: dict[str, Any]) -> None:
+    """범용 webhook 이벤트 emit — 실패가 호출 경로를 깨지 않게 삼킨다."""
+    try:
+        from ..services import webhooks as _webhooks
+
+        _webhooks.emit_event(store, event_type, event_id, data)
+    except Exception:
+        worker_logger.warning(
+            "webhook emit failed event=%s id=%s", event_type, event_id, exc_info=True
+        )
+
+
+def _process_webhook_deliveries(store: Store, settings: Settings) -> None:
+    """spec 004 US1 — due webhook delivery 배치 전송 (FR-008).
+
+    건당 timeout(webhook_timeout_seconds)·배치 상한(webhook_batch)·
+    구독당 in-flight 1건으로 사이클 지연이 제한된다. HTTP 전송은 빠른
+    외부 호출이라 run job defer 큐를 타지 않고 사이클 안에서 처리한다
+    (cron tick 경로에서도 동일하게 동작 — FR-036)."""
+    try:
+        from ..services import webhooks as _webhooks
+
+        _webhooks.process_webhook_deliveries(store, settings)
+    except Exception as exc:
+        worker_logger.warning("webhook delivery cycle failed", exc_info=True)
+        # spec 004 US4/FR-026 — Sentry 캡처(미설정 시 no-op).
+        try:
+            from ..services import sentry as _sentry
+
+            _sentry.capture_exception(exc, tags={"component": "webhook_deliveries"})
+        except Exception:
+            worker_logger.debug("sentry capture failed", exc_info=True)
+
+
 def _project_management(store: Store, run_id: str) -> None:
     """run→task/agent 상태 투영 (management 1차 E항).
 
@@ -136,14 +207,52 @@ def run_automation_cycle(
     if flush_jobs is not None:
         flush_jobs(jobs)
     _check_waiting_approvals(store, adapters)
+    # spec 004 US1 — due webhook delivery 배치 (FR-008). 서버리스 cron tick
+    # 경로에서도 동일하게 동작해야 하므로 사이클 본체에 포함한다.
+    _process_webhook_deliveries(store, settings)
+    # spec 004 US3 — 백업 스케줄·복원 검증 (주기 게이트는 서비스 내부).
+    try:
+        from ..services import backup as _backup
+
+        _backup.maybe_run_backup(store, settings)
+        _backup.maybe_verify_backup(store, settings)
+    except Exception as exc:
+        worker_logger.warning("backup cycle failed", exc_info=True)
+        # spec 004 US4/FR-026 — Sentry 캡처(미설정 시 no-op).
+        try:
+            from ..services import sentry as _sentry
+
+            _sentry.capture_exception(exc, tags={"component": "backup"})
+        except Exception:
+            worker_logger.debug("sentry capture failed", exc_info=True)
+    # spec 004 US2 — 헬스 체크 + 상태 전이 알림.
+    try:
+        from ..services import health as _health
+
+        _health.run_health_cycle(store, settings)
+    except Exception as exc:
+        worker_logger.warning("health cycle failed", exc_info=True)
+        # spec 004 US4/FR-026 — Sentry 캡처(미설정 시 no-op).
+        try:
+            from ..services import sentry as _sentry
+
+            _sentry.capture_exception(exc, tags={"component": "health"})
+        except Exception:
+            worker_logger.debug("sentry capture failed", exc_info=True)
     # watchdog 1 cycle — spec 2차 E. 감지/복구/escalation은 내부에서
     # batch 상한(JOBMATE_WATCHDOG_BATCH)과 중복 방지를 적용한다.
     try:
         from ..services import watchdog as _watchdog
 
         _watchdog.run_cycle(store)
-    except Exception:
+    except Exception as exc:
         watchdog_log.warning(watchdog_message, exc_info=True)
+        try:
+            from ..services import sentry as _sentry
+
+            _sentry.capture_exception(exc, tags={"component": "watchdog"})
+        except Exception:
+            worker_logger.debug("sentry capture failed", exc_info=True)
     # 전역 자동화(gmail 폴링·radar·자동 리포트)는 행 단위 org_id가 없으므로
     # 기본 조직으로 스코프한다 — 생성되는 message/run/report/inbox가
     # default 조직에 귀속된다(spec 003 FR-019, FR-015 백필 조직).
@@ -273,6 +382,7 @@ def _execute_run_job(
         store.update_run(run_id, status=RunStatus.FAILED, error="concurrency_timeout")
         store.audit(run_id, "system", "run_queue_timeout", run_id, {})
         _project_management(store, run_id)
+        _emit_run_webhook(store, run_id)
         _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
         return
     try:
@@ -293,6 +403,8 @@ def _execute_run_job(
     run = store.get_run(run_id)
     logger.info("run %s finished status=%s", run_id, getattr(run, "status", "?"))
     _project_management(store, run_id)
+    # spec 004 US1 — 종결/대기 상태 webhook 이벤트 (실패는 emit 내부에서 삼킴)
+    _emit_run_webhook(store, run_id)
     _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
 
 
@@ -352,6 +464,18 @@ def _process_due_schedules(
                     "schedule_budget_exceeded",
                     sid,
                     {"workflow": workflow, "scope": blocks[0]["scope"]},
+                )
+                # spec 004 US1 — budget.exceeded webhook (월 1회 dedupe).
+                _emit_event_webhook(
+                    store,
+                    "budget.exceeded",
+                    f"schedule-budget:{sid}:{fired:%Y-%m}",
+                    {
+                        "schedule_id": sid,
+                        "workflow": workflow,
+                        "scope": str(blocks[0].get("scope") or ""),
+                        "source": "schedule",
+                    },
                 )
                 worker_logger.warning(
                     "schedule %s skipped: budget exceeded scope=%s", sid, blocks[0]["scope"]
@@ -634,6 +758,21 @@ def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
             except Exception:
                 logger.debug("messenger notify failed", exc_info=True)
             logger.info("waiting_approval push sent run=%s", run.id)
+            # spec 004 US1 — 승인 대기 진입 webhook. run.waiting_approval은
+            # _execute_run_job과 event_id(상태+updated_at 지문)가 같아
+            # UNIQUE로 중복 전송되지 않고, approval.requested는 지문을
+            # 포함해 재대기 시 새 이벤트로 발행된다.
+            _emit_run_webhook(store, run.id)
+            _emit_event_webhook(
+                store,
+                "approval.requested",
+                f"approval:{run.id}:requested:{fp}",
+                {
+                    "run_id": run.id,
+                    "workflow": run.workflow_key,
+                    "status": "waiting_approval",
+                },
+            )
         finally:
             orgctx.reset_org_context(org_tok)
     if changed:
@@ -783,8 +922,15 @@ def _automation_loop(
             # 배치 상한이 있어 대량 DB에서도 tick을 막지 않는다(2차 C).
             cost_ledger.maybe_backfill_cost_events(store)
             run_automation_cycle(store, settings, llm, adapters)
-        except Exception:
+        except Exception as exc:
             worker_logger.exception("automation loop error")
+            # spec 004 US4/FR-026 — Sentry 캡처(미설정 시 no-op).
+            try:
+                from ..services import sentry as _sentry
+
+                _sentry.capture_exception(exc, tags={"component": "automation_loop"})
+            except Exception:
+                worker_logger.debug("sentry capture failed", exc_info=True)
         stop.wait(settings.worker_interval_seconds)
 
 
@@ -964,6 +1110,7 @@ def _create_and_run(
         except Exception:
             logger.warning("run %s FAILED 마킹 실패", run.id, exc_info=True)
         _project_management(store, run.id)
+        _emit_run_webhook(store, run.id)
         _promote_deferred_runs(store, settings, llm, adapters, run.id)
         raise RuntimeError(f"run {run.id} concurrency slot timeout")
     invoke_error: Exception | None = None
@@ -989,6 +1136,9 @@ def _create_and_run(
     done = store.get_run(run.id)
     logger.info("run %s finished status=%s", run.id, getattr(done, "status", "?"))
     _project_management(store, run.id)
+    # spec 004 US1 — 메시지 intake 등 _execute_run_job을 거치지 않는
+    # run 종결 경로도 동일 이벤트를 emit한다(event_id 멱등).
+    _emit_run_webhook(store, run.id)
     _promote_deferred_runs(store, settings, llm, adapters, run.id)
     if invoke_error is not None:
         raise invoke_error

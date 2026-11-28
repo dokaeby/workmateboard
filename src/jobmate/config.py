@@ -103,6 +103,23 @@ class Settings(BaseSettings):
     cronjob_radar_job_id: str = ""  # 레이더 수집 job id (선택)
     public_base_url: str = ""  # JOBMATE_PUBLIC_BASE_URL — cron-job.org job URL 생성용
 
+    # spec 004 — 운영·신뢰성 (아웃바운드 웹훅/백업/헬스/Sentry/메트릭)
+    webhook_batch: int = 20  # JOBMATE_WEBHOOK_BATCH — 주기당 최대 delivery 처리
+    webhook_timeout_seconds: float = 10.0
+    backup_interval_hours: float = 0.0  # 0=비활성
+    backup_dir: Path = Path("data/backups")
+    backup_retention_days: int = 14
+    backup_keep_count: int = 10
+    backup_encryption: bool = False  # JOBMATE_BACKUP_ENCRYPTION
+    backup_verify_interval_hours: float = 24.0
+    backup_stale_hours: float = 30.0
+    health_check_timeout: float = 2.0  # JOBMATE_HEALTH_CHECK_TIMEOUT
+    disk_min_free_pct: float = 15.0  # JOBMATE_DISK_MIN_FREE_PCT — 미만이면 degraded
+    sentry_dsn: str = Field(default="", repr=False)  # JOBMATE_SENTRY_DSN
+    sentry_traces_sample_rate: float = 0.0  # 에러만 기본, 트레이스는 opt-in
+    sentry_environment: str = ""  # 기본 settings.mode
+    metrics_token: str = Field(default="", repr=False)  # JOBMATE_METRICS_TOKEN
+
     def model_for(self, role: str, tier: str = "default") -> ModelConfig:
         """역할별 오버라이드 → 티어 기본값 순으로 ModelConfig를 만든다.
         debug 모드에서는 tier와 무관하게 항상 default(gemini)만 사용한다."""

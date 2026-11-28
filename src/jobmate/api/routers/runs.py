@@ -101,6 +101,22 @@ def register(app: FastAPI, ctx: Any) -> None:
                     body.workflow,
                     {"budget_usd": budget, "mtd_cost_usd": round(mtd, 6)},
                 )
+                # spec 004 US1 — budget.exceeded webhook (분 단위 dedupe).
+                try:
+                    from ...services import webhooks as _webhooks
+
+                    _webhooks.emit_event(
+                        store,
+                        "budget.exceeded",
+                        f"run-budget:{body.workflow}:monthly:{datetime.now(UTC):%Y%m%d%H%M}",
+                        {
+                            "workflow": body.workflow,
+                            "scope": "monthly_llm_budget",
+                            "source": "api",
+                        },
+                    )
+                except Exception:
+                    logger.warning("webhook emit failed budget deny", exc_info=True)
                 logger.warning(
                     "run rejected: monthly budget exceeded mtd=%.4f budget=%.4f",
                     mtd,
@@ -168,6 +184,24 @@ def register(app: FastAPI, ctx: Any) -> None:
                 body.workflow,
                 {"blocks": blocks[:5]},
             )
+            # spec 004 US1 — budget.exceeded webhook (분 단위 dedupe).
+            try:
+                from ...services import webhooks as _webhooks
+
+                _webhooks.emit_event(
+                    store,
+                    "budget.exceeded",
+                    f"run-budget:{body.workflow}:{blocks[0]['scope']}:"
+                    f"{datetime.now(UTC):%Y%m%d%H%M}",
+                    {
+                        "workflow": body.workflow,
+                        "scope": str(blocks[0].get("scope") or ""),
+                        "project": project,
+                        "source": "api",
+                    },
+                )
+            except Exception:
+                logger.warning("webhook emit failed budget deny", exc_info=True)
             logger.warning(
                 "run rejected: scoped budget exceeded workflow=%s blocks=%s",
                 body.workflow,
