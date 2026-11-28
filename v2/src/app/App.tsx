@@ -10,10 +10,9 @@ import { ViewLoader } from "./views";
 import { useSseInvalidation } from "../shared/stream";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
-import { HeaderActions } from "./components/HeaderActions";
+import { GlobalHeader } from "./components/GlobalHeader";
 import { MobileBar } from "./components/MobileBar";
 import { LoginOverlay } from "./components/LoginOverlay";
-import { LangToggle } from "./components/LangToggle";
 
 registerI18n(APP_I18N, { core: true });
 
@@ -107,15 +106,12 @@ export default function App() {
 
   return (
     <div className="flex h-dvh flex-col">
+      {/* spec 010 US2 — 데스크톱 Global Header (모바일은 Header가 대체) */}
+      <GlobalHeader />
       <Header />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* 데스크톱 상단바 — 레거시 .app-header (푸시/설정/로그아웃) */}
-          <header className="sticky top-0 z-20 hidden h-14 items-center gap-1 border-b border-border bg-surface/90 px-4 backdrop-blur lg:flex">
-            <span className="text-sm font-semibold text-ink">{t("app.tagline", "Agent Office")}</span>
-            <div className="ml-auto flex items-center gap-0.5"><LangToggle /><HeaderActions /></div>
-          </header>
           <main className="min-w-0 flex-1 overflow-y-auto pb-16 lg:pb-0">
             <ViewLoader view={view} />
           </main>

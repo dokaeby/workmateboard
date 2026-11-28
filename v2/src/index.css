@@ -1,27 +1,43 @@
 @import "tailwindcss";
 
+/* spec 010 — 다크 테마 (docs/UI_DESIGN_GUIDE.md §5 팔레트).
+ * 기존 토큰명은 유지하고 값만 다크 팔레트로 매핑해 컴포넌트 무수정 전환.
+ * surface=panel, elevated=상위 패널, sidebar=좌측 내비 배경. */
 @theme {
-  --color-bg: #f8fafc;
-  --color-surface: #ffffff;
-  --color-surface-hover: #f1f5f9;
-  --color-border: #e2e8f0;
-  --color-border-strong: #cbd5e1;
-  --color-ink: #0f172a;
-  --color-ink-2: #334155;
-  --color-muted: #64748b;
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  --color-accent-soft: #eff6ff;
-  --color-accent-border: #bfdbfe;
-  --color-ok: #16a34a;
-  --color-ok-soft: #f0fdf4;
-  --color-ok-border: #bbf7d0;
-  --color-warn: #b45309;
-  --color-warn-soft: #fffbeb;
-  --color-warn-border: #fde68a;
-  --color-err: #dc2626;
-  --color-err-soft: #fef2f2;
-  --color-err-border: #fecaca;
+  --color-bg: #070b12;            /* app 배경 */
+  --color-surface: #0d1520;       /* panel */
+  --color-surface-hover: #182638; /* hover */
+  --color-elevated: #131e2c;      /* elevated 패널 */
+  --color-sidebar: #090f18;       /* sidebar 배경 */
+  --color-grid: #172331;          /* grid line */
+  --color-border: #26394e;
+  --color-border-strong: #3b5570;
+  --color-ink: #e8f1fa;
+  --color-ink-2: #a0b2c5;
+  --color-muted: #8295ab;
+  --color-disabled: #526174;
+  --color-accent: #00e5ff;
+  --color-accent-hover: #4fe9ff;
+  --color-accent-2: #398bff;
+  --color-accent-3: #a78bfa;
+  --color-accent-soft: rgba(0, 229, 255, 0.08);
+  --color-accent-border: rgba(0, 229, 255, 0.35);
+  --color-on-accent: #04222b;     /* cyan 배경 위 텍스트 */
+  --color-ok: #00e6a0;
+  --color-ok-soft: rgba(0, 230, 160, 0.08);
+  --color-ok-border: rgba(0, 230, 160, 0.3);
+  --color-warn: #ffb020;
+  --color-warn-soft: rgba(255, 176, 32, 0.08);
+  --color-warn-border: rgba(255, 176, 32, 0.3);
+  --color-err: #ff475d;
+  --color-err-soft: rgba(255, 71, 93, 0.08);
+  --color-err-border: rgba(255, 71, 93, 0.3);
+}
+
+/* 타이포그래피 — JetBrains Mono 스택(시스템 mono 폴백, 웹폰트 번들 금지). */
+@theme {
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, "Liberation Mono", monospace;
 }
 
 /* 3D 보드 실행 중 노드의 컬러 오브와 동일한 무지개 스피너 */
@@ -32,7 +48,7 @@
   to { filter: hue-rotate(360deg); }
 }
 .jm-spinner {
-  background: #cbd5e1; /* conic-gradient 미지원 폴백 */
+  background: #26394e; /* conic-gradient 미지원 폴백 */
   background: conic-gradient(from 0deg,
     transparent 0 8%, #8b5cf6 20%, #22d3ee 38%, #48f0a5 55%,
     #f4b43c 72%, #ff5267 88%, transparent 100%);
@@ -41,7 +57,13 @@
     jm-rainbow-hue 2.8s linear infinite;
 }
 
-html { color-scheme: light; }
+/* 가이드 §5.6 — 활성/위험 테두리 + 제한적 glow 유틸 */
+.border-accent-active { border-color: rgba(0, 229, 255, 0.5); }
+.glow-cyan { box-shadow: 0 0 16px rgba(0, 229, 255, 0.12); }
+.glow-green { box-shadow: 0 0 12px rgba(0, 230, 160, 0.12); }
+.glow-red { box-shadow: 0 0 16px rgba(255, 71, 93, 0.18); }
+
+html { color-scheme: dark; }
 body {
   @apply bg-bg text-ink antialiased;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard",

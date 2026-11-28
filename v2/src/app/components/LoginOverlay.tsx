@@ -172,7 +172,7 @@ export function LoginOverlay({ authError, onClose }: { authError?: string | null
           <button
             type="submit"
             disabled={busy || !email.trim() || !password || (mode === "signup" && !agree)}
-            className="w-full rounded-[10px] border border-border-strong bg-accent px-4 py-2.5 font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="w-full rounded-[10px] border border-border-strong bg-accent px-4 py-2.5 font-semibold text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {busy
               ? t("common.loading", "로딩…")

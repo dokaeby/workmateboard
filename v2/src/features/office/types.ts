@@ -153,3 +153,57 @@ export interface ExternalLog {
   timestamp?: string;
 }
 export interface ExternalLogsResponse { items?: ExternalLog[] }
+
+/** spec 011 US2 — 관측 센터 확장 엔드포인트 계약.
+ *  GET /observability/notifications|funnel|agents/live|swarm. */
+export interface ObsNotificationPoint { t?: string; count?: number }
+export interface ObsNotificationRecent {
+  id?: string; title?: string; created_at?: string; status?: string;
+}
+export interface ObsNotificationsResponse {
+  days?: number;
+  total?: number;
+  open?: number;
+  resolved?: number;
+  series?: ObsNotificationPoint[];
+  recent?: ObsNotificationRecent[];
+}
+
+export interface ObsFunnelStage { key?: string; label?: string; count?: number }
+export interface ObsFunnelResponse { days?: number; stages?: ObsFunnelStage[] }
+
+export interface ObsLiveAgent {
+  id?: string;
+  name?: string;
+  role?: string;
+  model?: string;
+  status?: string;
+  current_task?: string;
+  progress_pct?: number | null;
+  started_at?: string;
+  elapsed_s?: number | null;
+  tokens?: number | null;
+  cost_usd?: number | null;
+  tool_calls?: number | null;
+  sub_agents?: number | null;
+  last_heartbeat_at?: string | null;
+  /** 상세 화면 연결용 선택 필드 — 없으면 카드 비활성. */
+  run_id?: string;
+  session_id?: string;
+  session_key?: string;
+}
+export interface ObsLiveAgentsResponse { count?: number; items?: ObsLiveAgent[] }
+
+export interface ObsSwarmNode {
+  id?: string;
+  label?: string;
+  kind?: string;
+  agent?: string;
+  status?: string;
+  progress_pct?: number | null;
+  tokens?: number | null;
+  latency_ms?: number | null;
+  error_count?: number | null;
+}
+export interface ObsSwarmEdge { source?: string; target?: string; kind?: string }
+export interface ObsSwarmResponse { nodes?: ObsSwarmNode[]; edges?: ObsSwarmEdge[] }

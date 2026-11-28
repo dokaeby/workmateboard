@@ -28,7 +28,7 @@ registerI18n({
 
 type BtnVariant = "primary" | "secondary" | "danger" | "ghost";
 const btnCls: Record<BtnVariant, string> = {
-  primary: "bg-accent text-white hover:bg-accent-hover disabled:opacity-50",
+  primary: "bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50",
   secondary: "bg-surface text-ink-2 border border-border hover:bg-surface-hover disabled:opacity-50",
   danger: "bg-err text-white hover:opacity-90 disabled:opacity-50",
   ghost: "text-accent hover:bg-accent-soft disabled:opacity-50",

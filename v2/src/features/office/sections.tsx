@@ -76,13 +76,21 @@ function isForbidden(e: unknown): boolean {
 
 // ---------- KPI 카드 ----------
 
-export function KpiCard({ id, label, value, sub, tone = "muted", onClick }: {
+export function KpiCard({ id, label, value, sub, tone = "muted", delta, onClick }: {
   id?: string; label: string; value: string; sub?: string;
-  tone?: "ok" | "warn" | "err" | "accent" | "muted"; onClick?: () => void;
+  tone?: "ok" | "warn" | "err" | "accent" | "muted";
+  /** 이전 기간 대비 변화율(%). invert=true면 상승이 나쁨(오류율 등). */
+  delta?: { pct: number; invert?: boolean } | null;
+  onClick?: () => void;
 }) {
   const valCls =
     tone === "err" ? "text-red-500" : tone === "warn" ? "text-amber-500"
     : tone === "ok" ? "text-emerald-500" : tone === "accent" ? "text-accent" : "text-ink";
+  const deltaCls = delta == null ? ""
+    : Math.abs(delta.pct) < 0.05 ? "text-muted"
+    : (delta.pct > 0) !== !!delta.invert ? "text-emerald-600" : "text-red-500";
+  const deltaText = delta == null ? null
+    : `${delta.pct > 0 ? "+" : delta.pct < 0 ? "−" : ""}${Math.abs(delta.pct).toFixed(1)}%`;
   return (
     <button
       id={id}
@@ -91,8 +99,13 @@ export function KpiCard({ id, label, value, sub, tone = "muted", onClick }: {
       className="rounded-lg border border-border bg-surface px-3 py-2 text-left transition-colors hover:bg-surface-hover"
     >
       <div className="text-[11px] text-muted">{label}</div>
-      <div className={`text-lg font-semibold ${valCls}`}>{value}</div>
-      {sub && <div className="truncate text-[10px] text-muted">{sub}</div>}
+      <div className={`text-lg font-semibold tabular-nums ${valCls}`}>{value}</div>
+      {(deltaText || sub) && (
+        <div className="flex items-baseline gap-1.5">
+          {deltaText && <span className={`text-[10px] font-medium tabular-nums ${deltaCls}`}>{deltaText}</span>}
+          {sub && <span className="truncate text-[10px] text-muted">{sub}</span>}
+        </div>
+      )}
     </button>
   );
 }

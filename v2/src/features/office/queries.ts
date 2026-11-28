@@ -3,10 +3,13 @@
  *  "approvals"/"agent-sessions")과 맞춰 실시간 갱신을 받는다.
  *  lead 전용 엔드포인트는 retry:false + 에러 시 해당 섹션만 강등 표시. */
 import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "../../shared/api/client";
+import { apiGet, ApiError } from "../../shared/api/client";
+import { useAppStore, roleAllows } from "../../shared/store/appStore";
 import type {
   LlmStats, ObsAnomaliesResponse, ObsApprovalsResponse, ObsCostsResponse,
-  ObsErrorsResponse, RunListItem, RunStats, SessionRow, UsageSummary,
+  ObsErrorsResponse, ObsFunnelResponse, ObsLiveAgentsResponse,
+  ObsNotificationsResponse, ObsSwarmResponse, RunListItem, RunStats,
+  SessionRow, UsageSummary,
 } from "./types";
 
 const opt = { retry: false } as const;
@@ -38,7 +41,7 @@ export function useOfficeData() {
   const sessionsQ = useQuery({
     queryKey: ["agent-sessions", "office"],
     queryFn: () => apiGet<SessionRow[] | { sessions?: SessionRow[]; agent_sessions?: SessionRow[] }>(
-      "/agent-sessions?limit=50&include_ended=false",
+      "/agent-sessions?limit=500&include_ended=false",
     ),
     refetchInterval: 10000,
   });
@@ -78,3 +81,57 @@ export function useOfficeData() {
 }
 
 export type OfficeData = ReturnType<typeof useOfficeData>;
+
+// ---------- spec 011 US2 — 관측 센터 확장 쿼리 ----------
+// lead 전용 엔드포인트 — role 게이트로 member의 403 폴링을 차단하고,
+// 조회 중 권한이 회수(403)되면 interval refetch를 중지한다.
+
+function useObsGate(intervalMs: number) {
+  const role = useAppStore((s) => s.role);
+  return {
+    enabled: roleAllows("lead", role),
+    // 403 응답 후에는 주기 폴링을 멈춘다 (섹션의 forbidden Empty가 표시됨)
+    refetchInterval: (q: { state: { error: unknown } }) =>
+      q.state.error instanceof ApiError && q.state.error.status === 403 ? false : intervalMs,
+  } as const;
+}
+
+export function useObsNotifications(days: number) {
+  const gate = useObsGate(60000);
+  return useQuery({
+    queryKey: ["observability", "notifications", "office", days],
+    queryFn: () => apiGet<ObsNotificationsResponse>(`/observability/notifications?days=${days}`),
+    ...opt,
+    ...gate,
+  });
+}
+
+export function useObsFunnel(days: number) {
+  const gate = useObsGate(60000);
+  return useQuery({
+    queryKey: ["observability", "funnel", "office", days],
+    queryFn: () => apiGet<ObsFunnelResponse>(`/observability/funnel?days=${days}`),
+    ...opt,
+    ...gate,
+  });
+}
+
+export function useObsLiveAgents() {
+  const gate = useObsGate(10000);
+  return useQuery({
+    queryKey: ["observability", "agents-live", "office"],
+    queryFn: () => apiGet<ObsLiveAgentsResponse>("/observability/agents/live"),
+    ...opt,
+    ...gate,
+  });
+}
+
+export function useObsSwarm(days: number) {
+  const gate = useObsGate(30000);
+  return useQuery({
+    queryKey: ["observability", "swarm", "office", days],
+    queryFn: () => apiGet<ObsSwarmResponse>(`/observability/swarm?days=${days}`),
+    ...opt,
+    ...gate,
+  });
+}

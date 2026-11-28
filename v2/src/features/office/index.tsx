@@ -3,6 +3,7 @@
  *  SSE(/api/v1/stream) 이벤트가 runs/run/approvals/agent-sessions queryKey를
  *  무효화하고, 각 쿼리는 refetchInterval로 폴링 백업한다. */
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "../../shared/i18n";
 import { Button, PageHead } from "../../shared/ui";
 import { usd } from "../../shared/lib/format";
@@ -11,6 +12,7 @@ import {
   AttentionStrip, CostSection, ErrorSection, KpiCard, LiveRuns, SessionsSection,
 } from "./sections";
 import { ExternalTelemetry } from "./telemetry";
+import { FunnelSection, LiveAgentsSection, NotificationsSection, SwarmSection } from "./observability";
 import "./i18n";
 
 function fmtSecs(v: number | null | undefined): string {
@@ -30,6 +32,7 @@ function scrollTo(id: string) {
 
 export default function OfficePage() {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const d = useOfficeData();
   // 경과 시간 표시용 분 단위 리렌더 틱 — now는 렌더 중 Date 호출 대신 state로 유지
   const [now, setNow] = useState(() => new Date());
@@ -60,8 +63,28 @@ export default function OfficePage() {
     const backlog =
       d.approvalsQ.data?.stats?.waiting ?? llm?.approval_backlog?.waiting ?? (waitingRuns || null);
 
+    // KPI 델타 — stats.daily/llm.daily가 같은 윈도우의 전일 데이터를 포함하므로
+    // 오늘 vs 어제 일별 값으로 계산. 비교 불가(전일 0/누락)면 null → 미표시.
+    const prevDay = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+    const runsPrev = stats?.daily?.find((x) => x.date === prevDay)?.runs ?? null;
+    const deltaRunsToday =
+      runsToday != null && runsPrev != null && runsPrev > 0
+        ? ((runsToday - runsPrev) / runsPrev) * 100 : null;
+    const llmDayRate = (key: string): number | null => {
+      const d = llm?.daily?.find((x) => x.date === key);
+      const r = Number(d?.runs) || 0;
+      return r > 0 ? ((Number(d?.errors) || 0) / r) * 100 : null;
+    };
+    const errToday = llmDayRate(today);
+    const errPrev = llmDayRate(prevDay);
+    const deltaErrorRate =
+      errToday != null && errPrev != null && errPrev > 0
+        ? ((errToday - errPrev) / errPrev) * 100 : null;
+
     return {
       runsToday,
+      deltaRunsToday,
+      deltaErrorRate,
       successRate,
       errorRate,
       p95: llm?.latency_s?.p95 ?? null,
@@ -89,6 +112,8 @@ export default function OfficePage() {
     void d.approvalsQ.refetch();
     void d.errorsQ.refetch();
     void d.anomaliesQ.refetch();
+    // spec 011 확장 섹션(퍼널/알림/라이브에이전트/스웜)도 함께 갱신
+    void queryClient.invalidateQueries({ queryKey: ["observability"] });
   };
 
   return (
@@ -104,6 +129,8 @@ export default function OfficePage() {
         <KpiCard
           label={t("office.kpi.runsToday", "오늘 실행")}
           value={kpis.runsToday != null ? String(kpis.runsToday) : "-"}
+          delta={kpis.deltaRunsToday != null ? { pct: kpis.deltaRunsToday } : null}
+          sub={kpis.deltaRunsToday != null ? t("office.kpi.vsPrev", "전일 대비") : undefined}
           onClick={() => scrollTo("office-live")}
         />
         <KpiCard
@@ -116,6 +143,8 @@ export default function OfficePage() {
           label={t("office.kpi.errorRate", "오류율")}
           value={pct1(kpis.errorRate)}
           tone={kpis.errorRate != null && kpis.errorRate > 10 ? "err" : kpis.errorRate != null && kpis.errorRate > 0 ? "warn" : "ok"}
+          delta={kpis.deltaErrorRate != null ? { pct: kpis.deltaErrorRate, invert: true } : null}
+          sub={kpis.deltaErrorRate != null ? t("office.kpi.vsPrev", "전일 대비") : undefined}
           onClick={() => scrollTo("office-errors")}
         />
         <KpiCard
@@ -165,6 +194,24 @@ export default function OfficePage() {
       {/* 활성 세션 */}
       <div id="office-sessions" className="scroll-mt-4">
         <SessionsSection d={d} />
+      </div>
+
+      {/* spec 011 — 실행 퍼널 + 알림 현황 */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div id="office-funnel" className="scroll-mt-4">
+          <FunnelSection />
+        </div>
+        <div id="office-notifications" className="scroll-mt-4">
+          <NotificationsSection />
+        </div>
+      </div>
+
+      {/* 라이브 에이전트 + 스웜 그래프 */}
+      <div id="office-live-agents" className="scroll-mt-4">
+        <LiveAgentsSection />
+      </div>
+      <div id="office-swarm" className="scroll-mt-4">
+        <SwarmSection />
       </div>
 
       {/* 외부 텔레메트리 — OTLP metrics/logs (lead+ 전용) */}
