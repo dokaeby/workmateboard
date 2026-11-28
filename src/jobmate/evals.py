@@ -182,7 +182,7 @@ def validate_eval_fields(
     """create/patch 공용 필드 검증 — (에러 메시지, http_status) 또는 (None, 200).
 
     name 중복은 409 conflict, 나머지는 422 validation."""
-    from .workflows import WORKFLOWS  # 지연 import — 순환 방지
+    from .workflows.resolver import resolve_workflow_spec  # 지연 import — 순환 방지
 
     if "name" in fields:
         name = str(fields["name"] or "").strip()
@@ -195,7 +195,7 @@ def validate_eval_fields(
             return ERR_NAME_CONFLICT, 409
     if "workflow_key" in fields:
         wk = str(fields["workflow_key"] or "").strip()
-        if wk not in WORKFLOWS:
+        if resolve_workflow_spec(store, wk) is None:
             return f"unknown workflow '{wk}'", 422
     if "status" in fields:
         st = str(fields["status"] or "").strip().lower()

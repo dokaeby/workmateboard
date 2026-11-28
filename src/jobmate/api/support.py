@@ -25,7 +25,6 @@ from typing import Any
 
 from ..adapters import LoggingNotifier, WebPushNotifier
 from ..config import Settings
-from ..models import WorkflowSpec
 from ..radar import GitHubAPI
 from ..store.db import Store
 from ..workflows import WORKFLOWS
@@ -249,34 +248,12 @@ def _default_adapters(settings: Settings, store: Store) -> dict[str, Any]:
 
 
 # ---------- custom workflow registry ----------
-# 내장 WORKFLOWS는 모듈 상수 — custom_workflows 테이블 내용을 여기에 동기화해
-# POST /runs·플레이북·스케줄·트리거 등 모든 해석 경로가 커스텀 spec을 쓰게 한다.
+# 내장 WORKFLOWS는 모듈 상수로 전역 유지. 커스텀 워크플로 spec은 전역 dict에
+# 주입하지 않는다 — spec 003 US3: custom_workflows 테이블이 정본이며 조회는
+# workflows.resolver.resolve_workflow_spec이 현재 조직 컨텍스트로 수행한다.
+# (name, org_id) PK를 공유하는 두 조직의 동명 spec이 서로를 덮어쓰거나 한
+# 조직의 변경이 다른 조직 항목을 evict하는 일이 구조적으로 불가능하다.
 _BUILTIN_WF_KEYS = set(WORKFLOWS)
-_CUSTOM_WF_KEYS: set[str] = set()
-
-
-def _sync_workflow_registry(store: Store) -> int:
-    """custom_workflows 테이블 → WORKFLOWS dict 동기화 (앱 시작/등록·삭제 후).
-
-    이전에 주입한 커스텀 키는 제거 후 재등록 — 앱 재시작 시 테이블에서 복원되므로
-    별도 영속 레지스트리 없이도 해석이 유지된다. 내장 키와 충돌하는 spec은 스킵."""
-    global _CUSTOM_WF_KEYS
-    for key in _CUSTOM_WF_KEYS:
-        WORKFLOWS.pop(key, None)
-    _CUSTOM_WF_KEYS = set()
-    for row in store.list_custom_workflows():
-        name = str(row.get("name") or "")
-        try:
-            spec = WorkflowSpec.model_validate(row.get("spec"))
-        except Exception as e:
-            logger.warning("custom workflow %s spec invalid: %s", name, str(e)[:120])
-            continue
-        if spec.key in _BUILTIN_WF_KEYS:
-            logger.warning("custom workflow %s collides with builtin — skipped", name)
-            continue
-        WORKFLOWS[spec.key] = spec
-        _CUSTOM_WF_KEYS.add(spec.key)
-    return len(_CUSTOM_WF_KEYS)
 
 
 # 외부 부수효과(실제 캘린더/알림 쓰기, 외부 명령 실행)가 있는 function stage —
@@ -290,7 +267,7 @@ _SIDE_EFFECT_FUNCTIONS = frozenset(
 _BUILTIN_SIDE_EFFECT_FUNCTIONS = frozenset({"gmail_register", "gmail_notify", "radar_publish"})
 
 
-def _workflow_needs_lead(key: str) -> bool:
+def _workflow_needs_lead(store: Store, key: str) -> bool:
     """POST /runs 실행에 lead 이상이 필요한 워크플로인지 판정.
 
     - gmail_calendar: 실제 Google Calendar에 일정을 쓰는 유일한 내장 워크플로
@@ -300,13 +277,18 @@ def _workflow_needs_lead(key: str) -> bool:
       포함하면 member의 POST /runs 직접 실행을 막는다.
     - 커스텀 워크플로: 레지스트리에 없는 function 이름이면 lead 전용.
       레지스트리 import 실패 시 보수적으로 lead 요구.
-    - 그 외 내장(dev_review* 등)과 읽기성 커스텀은 member 허용."""
+    - 그 외 내장(dev_review* 등)과 읽기성 커스텀은 member 허용.
+
+    spec은 요청 조직 컨텍스트로 해석한다 — 조직별 동명 커스텀 spec이
+    서로 다른 권한 판정을 받지 않게 하기 위함(spec 003 US3)."""
     if key == "gmail_calendar":
         return True
-    spec = WORKFLOWS.get(key)
+    from ..workflows.resolver import resolve_workflow_spec
+
+    spec = resolve_workflow_spec(store, key)
     if spec is None:
         return True
-    is_custom = key in _CUSTOM_WF_KEYS
+    is_custom = WORKFLOWS.get(key) is None
     _fn_registry: dict[str, Any] | None = None
     try:
         from ..engine.functions import FUNCTIONS

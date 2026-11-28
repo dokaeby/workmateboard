@@ -17,7 +17,8 @@ from ...sensors import (
     verify_slack_signature,
     verify_telegram_secret,
 )
-from ..jobs import run_automation_cycle
+from ...store import orgctx
+from ..jobs import _default_org_id, run_automation_cycle
 from ..support import _mark_cron_tick
 
 logger = logging.getLogger("jobmate.api")
@@ -101,37 +102,42 @@ def register(app: FastAPI, ctx: Any) -> None:
         ts = event.get("ts", "")
         source_id = f"{team}:{channel}:{ts}"
         text = event.get("text", "")
-        # 중복 방지를 커맨드 처리보다 먼저 수행 — 재전송/재시도 웹훅이
-        # 동일 커맨드로 run을 중복 생성·비용을 반복 청구하는 것을 막는다.
-        created = store.save_message_extraction(
-            "slack",
-            source_id,
-            event.get("thread_ts") or ts,
-            {},
-            "pending",
-            source_text=text[:8000],
-            retry_at=_command_lease(),
-        )
-        if not created:
-            return JSONResponse(content={"status": "duplicate", "source_id": source_id})
-        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
-        try:
-            handled = _messenger_handle(
+        # spec 003 FR-019 — webhook은 ctx=''라 메시지 저장·커맨드 처리
+        # (run 생성 포함)가 부모 없이 org를 못 얻는다. 채널 소유 조직을
+        # 알 방법이 없으므로 기본 조직으로 스코프한다(세션 요청이면
+        # current_org_id가 우선 — 이 경로는 비인증 webhook이라 항상 '').
+        with orgctx.org_scope(orgctx.current_org_id() or _default_org_id(store)):
+            # 중복 방지를 커맨드 처리보다 먼저 수행 — 재전송/재시도 웹훅이
+            # 동일 커맨드로 run을 중복 생성·비용을 반복 청구하는 것을 막는다.
+            created = store.save_message_extraction(
                 "slack",
-                channel,
-                text,
-                background_tasks,
-                sender_id=str(event.get("user") or ""),
+                source_id,
+                event.get("thread_ts") or ts,
+                {},
+                "pending",
+                source_text=text[:8000],
+                retry_at=_command_lease(),
             )
-        except Exception:
-            # 커맨드 처리 실패 — 리스를 즉시 해제해 intake 경로가 처리하게 한다
+            if not created:
+                return JSONResponse(content={"status": "duplicate", "source_id": source_id})
+            # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
+            try:
+                handled = _messenger_handle(
+                    "slack",
+                    channel,
+                    text,
+                    background_tasks,
+                    sender_id=str(event.get("user") or ""),
+                )
+            except Exception:
+                # 커맨드 처리 실패 — 리스를 즉시 해제해 intake 경로가 처리하게 한다
+                store.finish_message("slack", source_id, "pending")
+                raise
+            if handled:
+                store.finish_message("slack", source_id, "processed")
+                return JSONResponse(content={"status": "command"})
             store.finish_message("slack", source_id, "pending")
-            raise
-        if handled:
-            store.finish_message("slack", source_id, "processed")
-            return JSONResponse(content={"status": "command"})
-        store.finish_message("slack", source_id, "pending")
-        return JSONResponse(content={"status": "processed", "source_id": source_id})
+            return JSONResponse(content={"status": "processed", "source_id": source_id})
 
     @app.post("/api/v1/webhooks/telegram")
     async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
@@ -157,37 +163,40 @@ def register(app: FastAPI, ctx: Any) -> None:
         if not text.strip() or not allowed_identifier(chat_id, settings.telegram_chat_ids):
             return JSONResponse(content={"status": "ignored"})
         source_id = f"{chat_id}:{msg.get('message_id', '')}"
-        # 중복 방지를 커맨드 처리보다 먼저 수행 — Telegram secret에는
-        # 타임스탬프가 없어 재전송이 무기한 가능하므로 특히 필요하다.
-        created = store.save_message_extraction(
-            "telegram",
-            source_id,
-            str(msg.get("message_thread_id") or msg.get("message_id", "")),
-            {},
-            "pending",
-            source_text=text[:8000],
-            retry_at=_command_lease(),
-        )
-        if not created:
-            return JSONResponse(content={"status": "duplicate", "source_id": source_id})
-        # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
-        try:
-            handled = _messenger_handle(
+        # spec 003 FR-019 — webhook은 ctx=''라 메시지 저장·커맨드 처리를
+        # 기본 조직으로 스코프한다(slack webhook과 동일 규칙).
+        with orgctx.org_scope(orgctx.current_org_id() or _default_org_id(store)):
+            # 중복 방지를 커맨드 처리보다 먼저 수행 — Telegram secret에는
+            # 타임스탬프가 없어 재전송이 무기한 가능하므로 특히 필요하다.
+            created = store.save_message_extraction(
                 "telegram",
-                chat_id,
-                text,
-                background_tasks,
-                sender_id=str((msg.get("from") or {}).get("id") or ""),
+                source_id,
+                str(msg.get("message_thread_id") or msg.get("message_id", "")),
+                {},
+                "pending",
+                source_text=text[:8000],
+                retry_at=_command_lease(),
             )
-        except Exception:
-            # 커맨드 처리 실패 — 리스를 즉시 해제해 intake 경로가 처리하게 한다
+            if not created:
+                return JSONResponse(content={"status": "duplicate", "source_id": source_id})
+            # 메신저 커맨드 — 인식되면 답장만 하고 캘린더 수신함 처리로는 넘기지 않는다
+            try:
+                handled = _messenger_handle(
+                    "telegram",
+                    chat_id,
+                    text,
+                    background_tasks,
+                    sender_id=str((msg.get("from") or {}).get("id") or ""),
+                )
+            except Exception:
+                # 커맨드 처리 실패 — 리스를 즉시 해제해 intake 경로가 처리하게 한다
+                store.finish_message("telegram", source_id, "pending")
+                raise
+            if handled:
+                store.finish_message("telegram", source_id, "processed")
+                return JSONResponse(content={"status": "command"})
             store.finish_message("telegram", source_id, "pending")
-            raise
-        if handled:
-            store.finish_message("telegram", source_id, "processed")
-            return JSONResponse(content={"status": "command"})
-        store.finish_message("telegram", source_id, "pending")
-        return JSONResponse(content={"status": "processed", "source_id": source_id})
+            return JSONResponse(content={"status": "processed", "source_id": source_id})
 
     @app.get("/api/v1/messages")
     def list_messages(
@@ -362,14 +371,17 @@ def register(app: FastAPI, ctx: Any) -> None:
             message_at = ""
             if ts.isdigit():
                 message_at = datetime.fromtimestamp(int(ts) / 1000, UTC).isoformat()
-            store.save_email_summary(
-                "gmail",
-                mid,
-                subject=msg.get("subject", ""),
-                sender=msg.get("from_addr", ""),
-                summary=summary,
-                message_at=message_at,
-            )
+            # spec 003 FR-019 — cron secret 경로는 ctx=''라 email_summaries
+            # 행의 org를 명시한다(세션 lead 호출이면 current_org_id 유지).
+            with orgctx.org_scope(orgctx.current_org_id() or _default_org_id(store)):
+                store.save_email_summary(
+                    "gmail",
+                    mid,
+                    subject=msg.get("subject", ""),
+                    sender=msg.get("from_addr", ""),
+                    summary=summary,
+                    message_at=message_at,
+                )
             cards.append(
                 {
                     "source_id": mid,

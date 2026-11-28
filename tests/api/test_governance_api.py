@@ -10,6 +10,7 @@ from jobmate.api.app import create_app
 from jobmate.config import Settings
 from jobmate.models import RunStatus
 from jobmate.security import hash_token
+from jobmate.store import orgctx
 from jobmate.store.db import Store
 
 API_KEY = "gov-test-key"
@@ -31,6 +32,9 @@ def _session(client: TestClient, store: Store, email: str, role: str) -> None:
     user = store.create_user(email, password_hash="x" * 32, email_verified=True)
     assert user is not None
     store.set_user_role(user["id"], role)
+    _orgs = store.list_organizations()
+    assert _orgs
+    store.add_org_member(_orgs[0]["id"], user["id"], "member")
     token = f"sess-{email}"
     store.create_session(user["id"], hash_token(token))
     client.cookies.set("jobmate_session", token)
@@ -94,7 +98,11 @@ def test_high_risk_decision_requires_explicit_user(monkeypatch):
     """spec D — high/critical은 API 키(머신)만으로 결정 불가."""
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
     client, store = _client()
-    agent = store.create_agent("term-me", "claude", status="active")
+    # spec 003 US3 — 머신 키(ctx=기본 조직)가 만든 리소스와 같은 조직에
+    # 스탬프해야 approval의 resource/run 검증을 통과한다.
+    _oid = store.list_organizations()[0]["id"]
+    with orgctx.org_scope(_oid):
+        agent = store.create_agent("term-me", "claude", status="active")
     assert agent is not None
     # 머신 키로 high-risk 요청 생성은 가능(lead gate는 api key를 admin 취급)
     # — agent_terminate는 resource 바인딩이 필수다(H1).
@@ -139,7 +147,9 @@ def test_low_risk_machine_decision_allowed(monkeypatch):
     medium floor의 run_resume으로 검증한다."""
     monkeypatch.setenv("JOBMATE_API_KEY", API_KEY)
     client, store = _client()
-    run = store.create_run("dev_review", "1", {"task": "t"}, trace_id="x")
+    _oid = store.list_organizations()[0]["id"]
+    with orgctx.org_scope(_oid):
+        run = store.create_run("dev_review", "1", {"task": "t"}, trace_id="x")
     r = client.post(
         "/api/v1/management/approvals",
         json={

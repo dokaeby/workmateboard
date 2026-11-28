@@ -79,6 +79,27 @@ def emit_event(
     )
 
 
+def row_org_id(store: Store, table: str, row_id: str) -> str:
+    """행의 org_id를 org 컨텍스트 필터와 무관하게 직접 읽는다 (spec 003 FR-019).
+
+    스케줄러·스레드 경계처럼 contextvar이 전파되지 않는 경로에서 "이 행이
+    속한 조직"을 org_scope로 재적용할 때 사용한다. table은 이 모듈의
+    고정 호출자(api/jobs, services/watchdog)만 넘기는 내부 식별자다."""
+    try:
+        row = store._conn.execute(  # noqa: SLF001 — org 필터를 우회하는 단건 조회
+            f"SELECT org_id FROM {table} WHERE id=?",  # noqa: S608 — table은 내부 고정 식별자, 값은 바인딩
+            (row_id,),
+        ).fetchone()
+    except Exception:
+        return ""
+    if row is None:
+        return ""
+    try:
+        return str(row["org_id"] or "")
+    except Exception:
+        return ""
+
+
 def _require_agent(store: Store, agent_id: str) -> dict[str, Any]:
     agent = store.get_agent(agent_id)
     if agent is None:

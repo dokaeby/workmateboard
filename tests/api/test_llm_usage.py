@@ -11,6 +11,7 @@ from jobmate.config import Settings
 from jobmate.llm import MeteredLLM
 from jobmate.llm.client import FakeLLM
 from jobmate.models.spec import ModelConfig
+from jobmate.store import orgctx
 from jobmate.store.db import Store
 
 
@@ -111,9 +112,12 @@ def test_llm_usage_summary_days_filter():
 def test_usage_endpoint_aggregates(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("JOBMATE_API_KEY", "secret-key")
     client, store = _client(llm=FakeLLM())
-    store.record_llm_usage("gemini-x", 1000, 200)
-    store.record_llm_usage("gemini-x", 500, 100)
-    store.record_llm_usage("codex/gpt", 50, 25)
+    # spec 003 US3 — API 키(ctx=기본 조직)가 보는 행과 같은 조직에 기록
+    _oid = store.list_organizations()[0]["id"]
+    with orgctx.org_scope(_oid):
+        store.record_llm_usage("gemini-x", 1000, 200)
+        store.record_llm_usage("gemini-x", 500, 100)
+        store.record_llm_usage("codex/gpt", 50, 25)
     r = client.get("/api/v1/usage/llm?days=7", headers=_headers())
     assert r.status_code == 200
     d = r.json()
@@ -142,7 +146,9 @@ def test_app_wraps_llm_with_metering(monkeypatch: pytest.MonkeyPatch):
     with client:  # lifespan 실행 → app.state.llm 설정 (종료 시 store.close)
         llm = client.app.state.llm
         assert isinstance(llm, MeteredLLM)
-        llm.complete(model=ModelConfig(model="via-app"), system="s", user="u")
+        _oid = store.list_organizations()[0]["id"]
+        with orgctx.org_scope(_oid):
+            llm.complete(model=ModelConfig(model="via-app"), system="s", user="u")
         d = client.get("/api/v1/usage/llm", headers=_headers()).json()
     assert d["models"]["via-app"]["calls"] == 1
     store.close()

@@ -32,9 +32,11 @@ from ..config import Settings
 from ..engine.trace import graph_config
 from ..models import RunStatus
 from ..pricing import cost_usd
+from ..store import orgctx
 from ..store.db import Store
 from ..workflows import WORKFLOWS
 from ..workflows.registry_builder import build_runner
+from ..workflows.resolver import resolve_workflow_spec
 from .jobs import _execute_run_job
 from .schemas import TriggerCreateRequest
 from .support import _acquire_run_slot, _run_slots
@@ -142,6 +144,11 @@ def build_app_context(
         from .. import budget_scope
         from .. import wakeups as _wakeups
 
+        # 조직 컨텍스트 기준 spec 해석 — 미해석 workflow로 run을 만들지 않는다.
+        wf_spec = resolve_workflow_spec(store, workflow)
+        if wf_spec is None:
+            logger.warning("submit_run rejected: unknown workflow %s", workflow)
+            return ""
         # 스코프드 예산 — POST /runs·스케줄·트리거와 동일하게 admit 전에
         # hard_stop 초과를 검사한다. 차단 시 run을 만들지 않고 ""를 반환
         # (호출자: 메신저 start는 빈 id를 거절 메시지로 처리).
@@ -172,7 +179,7 @@ def build_app_context(
             input_data=input_data,
             source="api",
             created_by=created_by,
-            version=WORKFLOWS[workflow].version,
+            version=wf_spec.version,
             job_payload={"task": task},
         )
         if res["action"] == "invalid_goal":
@@ -203,6 +210,13 @@ def build_app_context(
         user = store.get_session_user(hash_token(token), idle_days=_session_idle_days())
         return user if user and email_allowed(user["email"]) else None
 
+    def _org_ctx_or_none(org_id: str) -> str:
+        """인증 행위자의 조직 컨텍스트 — 소속 조직이 하나도 없으면
+        존재하지 않는 조직 id를 돌려준다. ''(무필터)를 돌려주면
+        `_org_filter`의 `?=''` 이스케이프가 전 조직 데이터를 노출하므로,
+        멤버십 0 사용자에게는 어떤 행도 보이지 않게 한다."""
+        return org_id or "__no_org__"
+
     def _request_org_id(request: Request) -> str:
         """요청의 조직 컨텍스트(spec 003 US3, NFR-001).
 
@@ -217,14 +231,39 @@ def build_app_context(
             # 멤버십 이탈·조직 삭제 후 stale 컨텍스트는 기본 조직으로 복귀
             if oid and store.get_org_membership(oid, uid) is not None:
                 return oid
-            return store.user_default_org_id(uid)
+            return _org_ctx_or_none(store.user_default_org_id(uid))
         ka = _db_api_key(request)
         if ka is not None:
             owner = str(ka.get("owner_user_id") or "")
             if owner:
-                return store.user_default_org_id(owner)
-        # env 키/무인증 로컬 — 첫 번째 활성 조직(대개 default 백필 조직)
-        orgs = store.list_organizations()
+                return _org_ctx_or_none(store.user_default_org_id(owner))
+            # ownerless DB 키 — 플랫폼 주체로 첫 활성 조직에 귀속.
+            # ''(무필터) 컨텍스트는 스코프드 키의 교차 조직 읽기를 허용하므로
+            # 머신 주체에게는 절대 돌려주지 않는다.
+            return _first_active_org(store)
+        # env API 키 — 소유자가 없으므로 첫 활성 조직에 귀속시킨다.
+        # 단일 테넌트 배포에서 env 키가 만든 데이터가 조직 사용자의
+        # 기본 조직에 보여야 하기 때문이다. '' 컨텍스트는 webhook·공유·
+        # 크론 같은 비인증 경로 전용으로 남긴다.
+        from ..security import api_key, authorized
+
+        if api_key() and authorized(request):
+            return _first_active_org(store)
+        # 비인증 경로(webhook·공유·cron·로컬 오픈)는 컨텍스트를 비운다 —
+        # capability 토큰이 인가 수단이고, 읽기는 무필터·쓰기는 부모 행의
+        # org_id를 따르므로 default 조직을 잘못 찍지 않는다.
+        return ""
+
+    def _first_active_org(store: Store) -> str:
+        """머신 주체(env/ownerless 키)의 조직 컨텍스트 — 첫 활성 조직.
+
+        jobs._default_org_id와 동일 규칙. 조직이 하나도 없으면 '' —
+        이 경우 인증 행위자 분기는 위에서 이미 '__no_org__'로 막히고,
+        여기 도달하는 것은 비인증이 아닌 머신 키뿐이다."""
+        try:
+            orgs = store.list_organizations()
+        except Exception:
+            return ""
         return str(orgs[0]["id"]) if orgs else ""
 
     def _normalize_role(role: Any) -> str:
@@ -468,6 +507,20 @@ def build_app_context(
         run = store.get_run(run_id)
         if run is None:
             return {"ok": False, "status": 404, "error": "run not found"}
+        # spec 003 US3 — resume의 spec 해석·stage/approval 쓰기가 run의 조직에
+        # 귀속되도록 행 org_id로 재스코프한다(_execute_run_job과 동일 규칙).
+        # 요청자 ctx와 run org가 다르면(크로스org 승인·ctx='' 경로) 커스텀
+        # spec이 엉뚱한 조직 것으로 해석되는 것을 막는다.
+        _oid = ""
+        try:
+            from ..services.management_common import row_org_id
+
+            _oid = row_org_id(store, "runs", run_id)
+        except Exception:
+            _oid = ""
+        if _oid and orgctx.current_org_id() != _oid:
+            with orgctx.org_scope(_oid):
+                return _do_approve(run_id, decision, comment, actor, background_tasks)
         if run.status != RunStatus.WAITING_APPROVAL:
             return {
                 "ok": False,
@@ -773,11 +826,15 @@ def build_app_context(
         elif action == "start":
             wf = str(cmd.get("workflow") or "")
             task = str(cmd.get("task") or "")
-            if wf not in WORKFLOWS:
+            if resolve_workflow_spec(store, wf) is None:
+                avail = sorted(
+                    set(WORKFLOWS)
+                    | {str(r.get("name") or "") for r in store.list_custom_workflows()}
+                )
                 _messenger_reply(
                     provider,
                     chat_id,
-                    f"알 수 없는 workflow: {wf}\n사용 가능: {', '.join(sorted(WORKFLOWS))}",
+                    f"알 수 없는 workflow: {wf}\n사용 가능: {', '.join(avail)}",
                 )
                 return True
             jobs: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] = []
@@ -1603,7 +1660,10 @@ document.getElementById('f').addEventListener('submit', async (e) => {{
                 f"action.type must be one of {sorted(_TRIGGER_ACTION_TYPES)}",
                 request,
             )
-        if atype == "run_workflow" and str(action.get("workflow") or "") not in WORKFLOWS:
+        if (
+            atype == "run_workflow"
+            and resolve_workflow_spec(store, str(action.get("workflow") or "")) is None
+        ):
             return err(404, "unknown_workflow", "action.workflow not found", request)
         if (
             atype == "run_playbook"

@@ -6,7 +6,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from . import orgctx
 from .util import _iso, _now
+
+
+def _org_clause() -> tuple[str, list[Any]]:
+    """spec 003 US3 — ctx 조직 필터. ctx=''는 org_id='' 명시 매칭.
+
+    무필터로 두면 ctx='' 호출이 임의 조직의 정책/인시던트 행을 집어
+    upsert가 다른 조직 행을 UPDATE하는 cross-org 오염이 생긴다 — 시스템
+    컨텍스트는 플랫폼(org_id='') 스코프만 본다. 스케줄러·크론 등 org 행이
+    필요한 경로는 호출부에서 org_scope로 ctx를 심는다(api/jobs.py 패턴)."""
+    return "org_id=?", [orgctx.current_org_id()]
 
 
 class BudgetStoreMixin:
@@ -87,6 +98,7 @@ class BudgetStoreMixin:
         wk = (window_kind or "calendar_month_utc").strip().lower()
         if wk not in self._WINDOW_KINDS:
             wk = "calendar_month_utc"
+        org_id = orgctx.org_for_write()
         for _attempt in range(2):
             existing = self.get_budget_policy(scope_type, scope_id)
             now = _iso(_now())
@@ -97,8 +109,8 @@ class BudgetStoreMixin:
                             "INSERT INTO budget_policies(id,scope_type,scope_id,window_kind,"
                             "amount_usd,amount_microusd,reservation_microusd,"
                             "unpriced_usage_policy,warn_percent,hard_stop_enabled,"
-                            "is_active,created_at,updated_at)"
-                            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "is_active,created_at,updated_at,org_id)"
+                            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (
                                 uuid.uuid4().hex[:12],
                                 scope_type,
@@ -113,6 +125,7 @@ class BudgetStoreMixin:
                                 1 if is_active else 0,
                                 now,
                                 now,
+                                org_id,
                             ),
                         )
                     else:
@@ -141,28 +154,43 @@ class BudgetStoreMixin:
 
     def get_budget_policy(self, scope_type: str, scope_id: str = "") -> dict[str, Any] | None:
         scope_id = "" if scope_type == "global" else (scope_id or "").strip()[:200]
-        row = self._conn.execute(
-            "SELECT * FROM budget_policies WHERE scope_type=? AND scope_id=?",
-            (scope_type, scope_id),
-        ).fetchone()
+        clause, vals = _org_clause()
+        sql = "SELECT * FROM budget_policies WHERE scope_type=? AND scope_id=?"
+        params: list[Any] = [scope_type, scope_id]
+        if clause:
+            sql += f" AND {clause}"
+            params.extend(vals)
+        row = self._conn.execute(sql, params).fetchone()
         return self._policy_json(row) if row else None
 
     def list_budget_policies(self, active_only: bool = False) -> list[dict[str, Any]]:
         sql = "SELECT * FROM budget_policies"
+        params: list[Any] = []
+        conds: list[str] = []
         if active_only:
-            sql += " WHERE is_active=1"
+            conds.append("is_active=1")
+        clause, vals = _org_clause()
+        if clause:
+            conds.append(clause)
+            params.extend(vals)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY scope_type, scope_id"
-        return [self._policy_json(r) for r in self._conn.execute(sql).fetchall()]
+        return [self._policy_json(r) for r in self._conn.execute(sql, params).fetchall()]
 
     def deactivate_budget_policy(self, scope_type: str, scope_id: str = "") -> bool:
         """DELETE 의미 — 행 삭제 대신 is_active=0 (인시던트/이력 보존)."""
         scope_id = "" if scope_type == "global" else (scope_id or "").strip()[:200]
+        clause, vals = _org_clause()
+        sql = (
+            "UPDATE budget_policies SET is_active=0, updated_at=? WHERE scope_type=? AND scope_id=?"
+        )
+        params: list[Any] = [_iso(_now()), scope_type, scope_id]
+        if clause:
+            sql += f" AND {clause}"
+            params.extend(vals)
         with self.tx() as c:
-            cur = c.execute(
-                "UPDATE budget_policies SET is_active=0, updated_at=?"
-                " WHERE scope_type=? AND scope_id=?",
-                (_iso(_now()), scope_type, scope_id),
-            )
+            cur = c.execute(sql, params)
         return cur.rowcount > 0
 
     # ---- budget_incidents (임계 초과 사건) ----
@@ -233,13 +261,18 @@ class BudgetStoreMixin:
         except (TypeError, ValueError):
             unpriced_n = 0
         iid = uuid.uuid4().hex[:12]
+        # spec 003 US3 — 인시던트는 부모 정책의 조직을 상속(ctx='' 스케줄러 경로 대응)
+        prow = self._conn.execute(
+            "SELECT org_id FROM budget_policies WHERE id=?", (policy_id,)
+        ).fetchone()
+        org_id = str(prow["org_id"]) if prow and prow["org_id"] else orgctx.org_for_write()
         try:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO budget_incidents(id,policy_id,scope_type,scope_id,window_start,"
                     "threshold_type,amount_limit,amount_observed,status,note,created_at,"
-                    "observed_spend_microusd,unpriced_event_count,reason_code)"
-                    " VALUES(?,?,?,?,?,?,?,?,'open',?,?,?,?,?)",
+                    "observed_spend_microusd,unpriced_event_count,reason_code,org_id)"
+                    " VALUES(?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?)",
                     (
                         iid,
                         policy_id,
@@ -254,6 +287,7 @@ class BudgetStoreMixin:
                         observed_spend_microusd,
                         unpriced_n,
                         (reason_code or "")[:100],
+                        org_id,
                     ),
                 )
         except self._integrity_errors:
@@ -261,9 +295,13 @@ class BudgetStoreMixin:
         return iid
 
     def get_budget_incident(self, incident_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM budget_incidents WHERE id=?", (incident_id,)
-        ).fetchone()
+        clause, vals = _org_clause()
+        sql = "SELECT * FROM budget_incidents WHERE id=?"
+        params: list[Any] = [incident_id]
+        if clause:
+            sql += f" AND {clause}"
+            params.extend(vals)
+        row = self._conn.execute(sql, params).fetchone()
         return self._incident_json(row) if row else None
 
     def list_budget_incidents(
@@ -271,9 +309,16 @@ class BudgetStoreMixin:
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM budget_incidents"
         params: list[Any] = []
+        conds: list[str] = []
         if status:
-            sql += " WHERE status=?"
+            conds.append("status=?")
             params.append(status)
+        clause, vals = _org_clause()
+        if clause:
+            conds.append(clause)
+            params.extend(vals)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(max(1, min(int(limit), 500)))
         return [self._incident_json(r) for r in self._conn.execute(sql, params).fetchall()]
@@ -294,12 +339,17 @@ class BudgetStoreMixin:
         resolved_at: str | None = None,
     ) -> bool:
         """status: resolved|dismissed. 이미 종료된 인시던트는 False."""
+        clause, vals = _org_clause()
+        sql = (
+            "UPDATE budget_incidents SET status=?, note=CASE WHEN ?<>'' THEN ? ELSE note END,"
+            " resolved_at=? WHERE id=? AND status='open'"
+        )
+        params: list[Any] = [status, note, note, resolved_at or _iso(_now()), incident_id]
+        if clause:
+            sql += f" AND {clause}"
+            params.extend(vals)
         with self.tx() as c:
-            cur = c.execute(
-                "UPDATE budget_incidents SET status=?, note=CASE WHEN ?<>'' THEN ? ELSE note END,"
-                " resolved_at=? WHERE id=? AND status='open'",
-                (status, note, note, resolved_at or _iso(_now()), incident_id),
-            )
+            cur = c.execute(sql, params)
         return cur.rowcount > 0
 
     def resolve_open_budget_incidents_for_policy(
@@ -335,6 +385,10 @@ class BudgetStoreMixin:
             " JOIN runs r ON r.id = sr.run_id WHERE sr.started_at >= ?"
         )
         params: list[Any] = [since_iso]
+        clause, vals = _org_clause()
+        if clause:
+            sql += f" AND r.{clause}"
+            params.extend(vals)
         if scope_type == "workflow" and scope_id:
             sql += " AND r.workflow_key = ?"
             params.append(scope_id)

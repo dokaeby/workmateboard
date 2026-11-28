@@ -52,6 +52,12 @@ def _sessions(client: TestClient, store: Store) -> tuple[TestClient, TestClient]
     ul = store.create_user("l@b.com", password_hash="x" * 32, email_verified=True)
     assert um is not None and ul is not None
     store.set_user_role(ul["id"], "lead")
+    # spec 003 US3 — 조직 멤버십 없는 세션 사용자는 어떤 org 데이터도
+    # 보지 못한다. 머신 키 데이터가 놓이는 기본 조직에 합류시킨다.
+    _orgs = store.list_organizations()
+    assert _orgs
+    store.add_org_member(_orgs[0]["id"], um["id"], "member")
+    store.add_org_member(_orgs[0]["id"], ul["id"], "member")
     tm = f"sess-m-{um['id']}"
     tl = f"sess-l-{ul['id']}"
     store.create_session(um["id"], hash_token(tm))

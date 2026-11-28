@@ -14,9 +14,19 @@ import json
 import uuid
 from typing import Any
 
+from . import orgctx
 from .util import _iso, _now
 
 _AGENT_KINDS = ("workflow", "external")
+
+
+def _org_bind() -> list[str]:
+    """org_id 필터 바인딩 — `AND (org_id=? OR ?='')` 조건에 넘길 [oid, oid].
+
+    ctx=''이면 OR 우항이 항상 참이라 전 조직 조회(시스템/스케줄러),
+    ctx가 있으면 해당 조직 행만 조회·갱신한다(spec 003 US3/FR-013)."""
+    oid = orgctx.current_org_id()
+    return [oid, oid]
 
 
 class AgentStoreMixin:
@@ -69,6 +79,7 @@ class AgentStoreMixin:
         monthly_budget_usd: float | None = None,
         monthly_budget_microusd: int = 0,
         created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any] | None:
         """에이전트 생성. name은 trim 후 lower() 기준 중복 시 None."""
         name = name.strip()[:100]
@@ -93,14 +104,22 @@ class AgentStoreMixin:
             microusd = 0
         aid = uuid.uuid4().hex[:12]
         now = _iso(_now())
+        # org_id 해석(FR-013) — reports_to 상위의 org를 우선 전파하고,
+        # 없으면 명시 인자 → 요청 컨텍스트 순.
+        oid = ""
+        if rt is not None:
+            prow = self._conn.execute("SELECT org_id FROM agents WHERE id=?", (rt,)).fetchone()
+            if prow is not None:
+                oid = str(prow["org_id"] or "")
+        oid = oid or orgctx.org_for_write(org_id)
         try:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO agents(id,name,adapter_type,role,title,description,"
                     "capabilities,kind,adapter_config,reports_to,status,"
                     "monthly_budget_usd,monthly_budget_microusd,created_by,"
-                    "created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "org_id,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         aid,
                         name,
@@ -116,6 +135,7 @@ class AgentStoreMixin:
                         monthly_budget_usd,
                         microusd,
                         created_by[:200],
+                        oid,
                         now,
                         now,
                     ),
@@ -125,22 +145,25 @@ class AgentStoreMixin:
         return self.get_agent(aid)
 
     def get_agent(self, agent_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
+        row = self._conn.execute(
+            "SELECT * FROM agents WHERE id=? AND (org_id=? OR ?='')",
+            (agent_id, *_org_bind()),
+        ).fetchone()
         return self._agent_json(row) if row else None
 
     def find_agent_by_name(self, name: str) -> dict[str, Any] | None:
         """에이전트 이름 조회 — trim + case-insensitive."""
         row = self._conn.execute(
-            "SELECT * FROM agents WHERE lower(name)=lower(?)",
-            (name.strip()[:100],),
+            "SELECT * FROM agents WHERE lower(name)=lower(?) AND (org_id=? OR ?='')",
+            (name.strip()[:100], *_org_bind()),
         ).fetchone()
         return self._agent_json(row) if row else None
 
     def list_agents(self, status: str | None = None) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM agents"
-        params: list[Any] = []
+        sql = "SELECT * FROM agents WHERE (org_id=? OR ?='')"
+        params: list[Any] = [*_org_bind()]
         if status:
-            sql += " WHERE status=?"
+            sql += " AND status=?"
             params.append(status.strip().lower()[:20])
         sql += " ORDER BY lower(name), name"
         return [self._agent_json(r) for r in self._conn.execute(sql, params).fetchall()]
@@ -227,8 +250,9 @@ class AgentStoreMixin:
         try:
             with self.tx() as c:
                 c.execute(
-                    f"UPDATE agents SET {sets}, updated_at=? WHERE id=?",  # noqa: S608 - keys는 고정 허용 목록
-                    (*updates.values(), _iso(_now()), agent_id),
+                    f"UPDATE agents SET {sets}, updated_at=? WHERE id=?"  # noqa: S608 - keys는 고정 허용 목록
+                    " AND (org_id=? OR ?='')",
+                    (*updates.values(), _iso(_now()), agent_id, *_org_bind()),
                 )
         except self._integrity_errors:
             return None
@@ -246,12 +270,14 @@ class AgentStoreMixin:
         canonical terminated라 이 경로에 도달하지 않는다(전이 거부됨)."""
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE agents SET status=?, updated_at=? WHERE id=? AND lower(status)=?",
+                "UPDATE agents SET status=?, updated_at=? WHERE id=? AND lower(status)=?"
+                " AND (org_id=? OR ?='')",
                 (
                     to_status.strip().lower()[:20],
                     _iso(_now()),
                     agent_id,
                     from_status.strip().lower()[:20],
+                    *_org_bind(),
                 ),
             )
         if int(getattr(cur, "rowcount", 0) or 0) <= 0:
@@ -262,8 +288,9 @@ class AgentStoreMixin:
         """소프트 삭제 — status='archived'. runs가 참조 중이어도 행은 보존."""
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE agents SET status='archived', updated_at=? WHERE id=?",
-                (_iso(_now()), agent_id),
+                "UPDATE agents SET status='archived', updated_at=? WHERE id=?"
+                " AND (org_id=? OR ?='')",
+                (_iso(_now()), agent_id, *_org_bind()),
             )
         return cur.rowcount > 0
 
@@ -291,18 +318,20 @@ class AgentStoreMixin:
 
         last_run_at은 기간 제한 없이 전체 이력의 최신 run 시각."""
         out: dict[str, dict[str, Any]] = {}
+        org_params = _org_bind()
         rows = self._conn.execute(
             "SELECT agent_id, COUNT(*) AS c FROM runs"
             " WHERE agent_id IS NOT NULL AND agent_id <> '' AND created_at >= ?"
-            " GROUP BY agent_id",
-            (since_iso,),
+            " AND (org_id=? OR ?='') GROUP BY agent_id",
+            (since_iso, *org_params),
         ).fetchall()
         for r in rows:
             out.setdefault(str(r["agent_id"]), {})["runs_30d"] = int(r["c"])
         rows = self._conn.execute(
             "SELECT agent_id, MAX(created_at) AS m FROM runs"
             " WHERE agent_id IS NOT NULL AND agent_id <> ''"
-            " GROUP BY agent_id"
+            " AND (org_id=? OR ?='') GROUP BY agent_id",
+            org_params,
         ).fetchall()
         for r in rows:
             out.setdefault(str(r["agent_id"]), {})["last_run_at"] = r["m"]
@@ -316,7 +345,8 @@ class AgentStoreMixin:
             "SELECT r.agent_id AS agent_id, sr.model AS model,"
             " sr.tokens_in AS tokens_in, sr.tokens_out AS tokens_out"
             " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
-            " WHERE sr.started_at >= ? AND r.agent_id IS NOT NULL AND r.agent_id <> ''",
-            (since_iso,),
+            " WHERE sr.started_at >= ? AND r.agent_id IS NOT NULL AND r.agent_id <> ''"
+            " AND (r.org_id=? OR ?='')",
+            (since_iso, *_org_bind()),
         ).fetchall()
         return [dict(r) for r in rows]

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -14,10 +15,13 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
+from ...models import WorkflowSpec
 from ...workflows import WORKFLOWS
 from ..support import _REAPER_STATE, _last_cron_tick_at
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
+
+logger = logging.getLogger("jobmate.api")
 
 
 def register(app: FastAPI, ctx: Any) -> None:
@@ -94,8 +98,8 @@ def register(app: FastAPI, ctx: Any) -> None:
 
     @app.get("/api/v1/workflows")
     def list_workflows() -> list[dict[str, Any]]:
-        return [
-            {
+        def _wf_out(w: Any) -> dict[str, Any]:
+            return {
                 "key": w.key,
                 "version": w.version,
                 "description": w.description,
@@ -110,5 +114,24 @@ def register(app: FastAPI, ctx: Any) -> None:
                     for s in w.stages
                 ],
             }
-            for w in WORKFLOWS.values()
-        ]
+
+        items = [_wf_out(w) for w in WORKFLOWS.values()]
+        # 커스텀 워크플로 — 현재 조직 컨텍스트의 custom_workflows 행을
+        # spec으로 복원해 목록에 포함한다(구 전역 sync와 동일한 노출,
+        # 단 조직별로 올바르게 스코프됨 — spec 003 US3).
+        seen = {w.key for w in WORKFLOWS.values()}
+        try:
+            rows = store.list_custom_workflows()
+        except Exception:
+            rows = []
+        for r in rows:
+            try:
+                spec = WorkflowSpec.model_validate(r.get("spec"))
+            except Exception as e:
+                logger.debug("custom workflow spec skipped in catalog: %s", str(e)[:120])
+                continue
+            if spec.key in seen:
+                continue
+            seen.add(spec.key)
+            items.append(_wf_out(spec))
+        return items

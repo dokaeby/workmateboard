@@ -13,7 +13,17 @@ import json
 import uuid
 from typing import Any
 
+from . import orgctx
 from .util import _iso, _now
+
+
+def _org_bind() -> list[str]:
+    """org_id 필터 바인딩 — `AND (org_id=? OR ?='')` 조건에 넘길 [oid, oid].
+
+    ctx=''이면 OR 우항이 항상 참이라 전 조직 조회(시스템/스케줄러),
+    ctx가 있으면 해당 조직 행만 조회·갱신한다(spec 003 US3/FR-013)."""
+    oid = orgctx.current_org_id()
+    return [oid, oid]
 
 
 class GoalStoreMixin:
@@ -57,6 +67,7 @@ class GoalStoreMixin:
         success_metrics: Any = None,
         target_at: str | None = None,
         created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any] | None:
         """목표 생성. title trim 후 비어있으면 None.
 
@@ -70,11 +81,20 @@ class GoalStoreMixin:
             return None
         gid = uuid.uuid4().hex[:12]
         now = _iso(_now())
+        # org_id 해석(FR-013) — parent goal의 org를 우선 전파하고,
+        # 없으면 명시 인자 → 요청 컨텍스트 순.
+        oid = ""
+        if pid is not None:
+            prow = self._conn.execute("SELECT org_id FROM goals WHERE id=?", (pid,)).fetchone()
+            if prow is not None:
+                oid = str(prow["org_id"] or "")
+        oid = oid or orgctx.org_for_write(org_id)
         with self.tx() as c:
             c.execute(
                 "INSERT INTO goals(id,title,description,parent_id,status,"
                 "owner_agent_id,success_metrics,target_at,"
-                "created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "created_by,org_id,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     gid,
                     title,
@@ -85,6 +105,7 @@ class GoalStoreMixin:
                     self._metrics_json(success_metrics if success_metrics is not None else {}),
                     (target_at or "").strip()[:64] or None,
                     created_by[:200],
+                    oid,
                     now,
                     now,
                 ),
@@ -92,7 +113,10 @@ class GoalStoreMixin:
         return self.get_goal(gid)
 
     def get_goal(self, goal_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM goals WHERE id=?", (goal_id,)).fetchone()
+        row = self._conn.execute(
+            "SELECT * FROM goals WHERE id=? AND (org_id=? OR ?='')",
+            (goal_id, *_org_bind()),
+        ).fetchone()
         return self._goal_json(row) if row else None
 
     def list_goals(self, status: str | None = None) -> list[dict[str, Any]]:
@@ -100,11 +124,14 @@ class GoalStoreMixin:
 
         cancelled 목표의 자식도 parent_id를 유지한다(계약: 프론트가 트리
         렌더링 시 처리). status 필터는 정확 일치."""
-        sql = "SELECT * FROM goals"
-        params: list[Any] = []
+        conds: list[str] = ["(org_id=? OR ?='')"]
+        params: list[Any] = [*_org_bind()]
         if status:
-            sql += " WHERE status=?"
+            conds.append("status=?")
             params.append(status.strip().lower()[:20])
+        sql = "SELECT * FROM goals"
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY created_at, id"
         rows = [self._goal_json(r) for r in self._conn.execute(sql, params).fetchall()]
         counts = self._goal_children_counts()
@@ -115,13 +142,16 @@ class GoalStoreMixin:
     def _goal_children_counts(self) -> dict[str, int]:
         rows = self._conn.execute(
             "SELECT parent_id, COUNT(*) AS c FROM goals"
-            " WHERE parent_id IS NOT NULL AND parent_id <> '' GROUP BY parent_id"
+            " WHERE parent_id IS NOT NULL AND parent_id <> ''"
+            " AND (org_id=? OR ?='') GROUP BY parent_id",
+            _org_bind(),
         ).fetchall()
         return {str(r["parent_id"]): int(r["c"]) for r in rows}
 
     def count_goal_children(self, goal_id: str) -> int:
         row = self._conn.execute(
-            "SELECT COUNT(*) AS c FROM goals WHERE parent_id=?", (goal_id,)
+            "SELECT COUNT(*) AS c FROM goals WHERE parent_id=? AND (org_id=? OR ?='')",
+            (goal_id, *_org_bind()),
         ).fetchone()
         return int(row["c"] or 0) if row is not None else 0
 
@@ -168,8 +198,9 @@ class GoalStoreMixin:
         sets = ", ".join(f"{k}=?" for k in updates)
         with self.tx() as c:
             c.execute(
-                f"UPDATE goals SET {sets}, updated_at=? WHERE id=?",  # noqa: S608 - keys는 고정 허용 목록
-                (*updates.values(), _iso(_now()), goal_id),
+                f"UPDATE goals SET {sets}, updated_at=? WHERE id=?"  # noqa: S608 - keys는 고정 허용 목록
+                " AND (org_id=? OR ?='')",
+                (*updates.values(), _iso(_now()), goal_id, *_org_bind()),
             )
         return self.get_goal(goal_id)
 
@@ -181,8 +212,9 @@ class GoalStoreMixin:
         결정한다(계약상 허용)."""
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE goals SET status='cancelled', updated_at=? WHERE id=?",
-                (_iso(_now()), goal_id),
+                "UPDATE goals SET status='cancelled', updated_at=? WHERE id=?"
+                " AND (org_id=? OR ?='')",
+                (_iso(_now()), goal_id, *_org_bind()),
             )
         return cur.rowcount > 0
 

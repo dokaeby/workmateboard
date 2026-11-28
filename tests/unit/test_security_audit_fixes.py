@@ -304,6 +304,15 @@ def test_custom_workflow_side_effect_needs_lead(monkeypatch):
         json={"email": "m2@b.com", "password": "Str0ng#Passw0rd!", "agree_terms": True},
     )
     _verify_session(client, store, "m2@b.com")
+    # spec 003 US3 — 커스텀 워크플로는 조직 스코프다. m2의 조직에는 아직
+    # cw_sidefx가 없으므로(404가 맞는 격리 동작) member의 게이트 판정을
+    # 검증하려면 m2 조직에 동일 spec을 직접 심는다.
+    from jobmate.store import orgctx
+
+    m2_uid = store.get_user_by_email("m2@b.com")["id"]
+    m2_org = str(store.list_user_orgs(m2_uid)[0]["id"])
+    with orgctx.org_scope(m2_org):
+        store.save_custom_workflow("cw_sidefx", spec)
     r2 = client.post("/api/v1/runs", json={"workflow": "cw_sidefx", "task": "t"})
     assert r2.status_code == 403
 

@@ -8,22 +8,36 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
+from . import orgctx
 from .util import _dt, _iso, _loads, _now
+
+
+def _org_filter(alias: str = "") -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND [alias.]org_id=?` 조건 — ctx=''는 무필터."""
+    oid = orgctx.current_org_id()
+    if not oid:
+        return "", []
+    col = f"{alias}.org_id" if alias else "org_id"
+    return f" AND {col}=?", [oid]
 
 
 class UsageStoreMixin:
     # ---- llm_usage (LLM 토큰 사용량) ----
-    def record_llm_usage(self, model: str, tokens_in: int, tokens_out: int) -> None:
+    def record_llm_usage(
+        self, model: str, tokens_in: int, tokens_out: int, org_id: str | None = None
+    ) -> None:
         """LLM 호출 1건의 토큰 사용량 기록. 프롬프트/응답 본문은 저장하지 않는다."""
         with self.tx() as c:
             c.execute(
-                "INSERT INTO llm_usage(id,model,tokens_in,tokens_out,created_at) VALUES(?,?,?,?,?)",
+                "INSERT INTO llm_usage(id,model,tokens_in,tokens_out,created_at,org_id)"
+                " VALUES(?,?,?,?,?,?)",
                 (
                     uuid.uuid4().hex[:12],
                     model,
                     int(tokens_in or 0),
                     int(tokens_out or 0),
                     _iso(_now()),
+                    orgctx.org_for_write(org_id),
                 ),
             )
 
@@ -31,9 +45,11 @@ class UsageStoreMixin:
         """최근 days일 사용량 — 모델별 합계(models) + 일별 시계열(daily)."""
         days = max(1, min(int(days), 365))
         cutoff = _iso(_now() - timedelta(days=days))
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT model,tokens_in,tokens_out,created_at FROM llm_usage WHERE created_at >= ?",
-            (cutoff,),
+            "SELECT model,tokens_in,tokens_out,created_at FROM llm_usage"  # noqa: S608
+            " WHERE created_at >= ?" + frag,
+            (cutoff, *params),
         ).fetchall()
         models: dict[str, dict[str, int]] = {}
         daily: dict[str, dict[str, int]] = {}
@@ -60,7 +76,11 @@ class UsageStoreMixin:
         return d
 
     def create_schedule(
-        self, workflow: str, input_data: dict[str, Any], interval_minutes: int
+        self,
+        workflow: str,
+        input_data: dict[str, Any],
+        interval_minutes: int,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         now = _now()
         nxt = now + timedelta(minutes=interval_minutes)
@@ -68,7 +88,8 @@ class UsageStoreMixin:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO workflow_schedules(id,workflow,input,interval_minutes,"
-                "enabled,last_run_at,next_run_at,created_at) VALUES(?,?,?,?,1,NULL,?,?)",
+                "enabled,last_run_at,next_run_at,created_at,org_id)"
+                " VALUES(?,?,?,?,1,NULL,?,?,?)",
                 (
                     sid,
                     workflow,
@@ -76,20 +97,27 @@ class UsageStoreMixin:
                     int(interval_minutes),
                     _iso(nxt),
                     _iso(now),
+                    orgctx.org_for_write(org_id),
                 ),
             )
         sched = self.get_schedule(sid)
         return sched if sched is not None else {"id": sid}
 
     def list_schedules(self) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT * FROM workflow_schedules ORDER BY created_at DESC"
+            "SELECT * FROM workflow_schedules"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY created_at DESC",
+            tuple(params),
         ).fetchall()
         return [self._schedule_json(r) for r in rows]
 
     def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM workflow_schedules WHERE id=?", (schedule_id,)
+            "SELECT * FROM workflow_schedules WHERE id=?" + frag,  # noqa: S608
+            (schedule_id, *params),
         ).fetchone()
         return self._schedule_json(row) if row else None
 
@@ -102,16 +130,21 @@ class UsageStoreMixin:
         if enabled:
             nxt = _now() + timedelta(minutes=int(sched["interval_minutes"]))
             next_run = _iso(nxt)
+        frag, fparams = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE workflow_schedules SET enabled=?, next_run_at=? WHERE id=?",
-                (1 if enabled else 0, next_run, schedule_id),
+                "UPDATE workflow_schedules SET enabled=?, next_run_at=? WHERE id=?" + frag,  # noqa: S608
+                (1 if enabled else 0, next_run, schedule_id, *fparams),
             )
         return self.get_schedule(schedule_id)
 
     def delete_schedule(self, schedule_id: str) -> bool:
+        frag, params = _org_filter()
         with self.tx() as c:
-            cur = c.execute("DELETE FROM workflow_schedules WHERE id=?", (schedule_id,))
+            cur = c.execute(
+                "DELETE FROM workflow_schedules WHERE id=?" + frag,  # noqa: S608
+                (schedule_id, *params),
+            )
         return cur.rowcount > 0
 
     def due_schedules(self) -> list[dict[str, Any]]:
@@ -159,19 +192,21 @@ class UsageStoreMixin:
         """최근 days일 run/stage_runs 집계. created_at 기준 윈도우."""
         days = max(1, min(int(days), 365))
         cutoff = _iso(_now() - timedelta(days=days))
+        frag, fparams = _org_filter()
+        frag_r, fparams_r = _org_filter("r")
         # workflow_key=None이면 전체 — "? IS NULL OR" 패턴으로 분기 없이 처리
-        run_params: list[Any] = [cutoff, workflow_key, workflow_key]
-        stage_params: list[Any] = [cutoff, workflow_key, workflow_key]
+        run_params: list[Any] = [cutoff, workflow_key, workflow_key, *fparams]
+        stage_params: list[Any] = [cutoff, workflow_key, workflow_key, *fparams_r]
         run_rows = self._conn.execute(
-            "SELECT id,status,created_at,updated_at FROM runs"
-            " WHERE created_at >= ? AND (? IS NULL OR workflow_key=?)",
+            "SELECT id,status,created_at,updated_at FROM runs"  # noqa: S608
+            " WHERE created_at >= ? AND (? IS NULL OR workflow_key=?)" + frag,
             run_params,
         ).fetchall()
         stage_rows = self._conn.execute(
-            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.tokens_in,"
+            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.tokens_in,"  # noqa: S608
             " sr.tokens_out, sr.started_at FROM stage_runs sr"
             " JOIN runs r ON r.id = sr.run_id"
-            " WHERE r.created_at >= ? AND (? IS NULL OR r.workflow_key=?)",
+            " WHERE r.created_at >= ? AND (? IS NULL OR r.workflow_key=?)" + frag_r,
             stage_params,
         ).fetchall()
 
@@ -246,18 +281,20 @@ class UsageStoreMixin:
         대체 지표로 stage call·실패율, eval pass rate 대체로 승인 대기 수)"""
         days = max(1, min(int(days), 365))
         cutoff = _iso(_now() - timedelta(days=days))
+        frag, fparams = _org_filter()
+        frag_r, fparams_r = _org_filter("r")
         run_rows = self._conn.execute(
-            "SELECT id,workflow_key,status,created_at,updated_at,error,project,trace_id"
-            " FROM runs WHERE created_at >= ?",
-            (cutoff,),
+            "SELECT id,workflow_key,status,created_at,updated_at,error,project,trace_id"  # noqa: S608
+            " FROM runs WHERE created_at >= ?" + frag,
+            (cutoff, *fparams),
         ).fetchall()
         stage_rows = self._conn.execute(
-            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.model,"
+            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.model,"  # noqa: S608
             " sr.prompt_version, sr.tokens_in, sr.tokens_out, sr.error,"
             " sr.started_at, sr.finished_at"
             " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
-            " WHERE r.created_at >= ?",
-            (cutoff,),
+            " WHERE r.created_at >= ?" + frag_r,
+            (cutoff, *fparams_r),
         ).fetchall()
 
         by_status: dict[str, int] = {}
@@ -425,10 +462,12 @@ class UsageStoreMixin:
 
         # 월 예산 — 윈도우와 무관하게 당월 전체 stage 토큰 합산
         month_start = now_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        frag_r, fparams_r = _org_filter("r")
         mrow = self._conn.execute(
-            "SELECT COALESCE(SUM(sr.tokens_in + sr.tokens_out),0) AS t"
-            " FROM stage_runs sr WHERE sr.started_at >= ?",
-            (_iso(month_start),),
+            "SELECT COALESCE(SUM(sr.tokens_in + sr.tokens_out),0) AS t"  # noqa: S608
+            " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
+            " WHERE sr.started_at >= ?" + frag_r,
+            (_iso(month_start), *fparams_r),
         ).fetchone()
         month_tokens = int(mrow["t"] or 0) if mrow else 0
         budget = None
@@ -557,9 +596,10 @@ class UsageStoreMixin:
 
     # ---- llm_usage 상세 (비용 대시보드용 행 단위 조회) ----
     def llm_usage_rows(self, since_iso: str) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT model,tokens_in,tokens_out,created_at FROM llm_usage"
-            " WHERE created_at >= ? ORDER BY created_at",
-            (since_iso,),
+            "SELECT model,tokens_in,tokens_out,created_at FROM llm_usage"  # noqa: S608
+            " WHERE created_at >= ?" + frag + " ORDER BY created_at",
+            (since_iso, *params),
         ).fetchall()
         return [dict(r) for r in rows]

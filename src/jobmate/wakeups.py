@@ -17,6 +17,7 @@ from typing import Any
 from . import budget_scope
 from .models import AgentCapability, Run, RunStatus, canonical_agent_status
 from .services import permissions as perm_svc
+from .store import orgctx
 from .store.db import Store
 from .store.util import _iso, _now
 
@@ -81,6 +82,9 @@ def _payload_json(
             # deferred promote 시 runs.agent_id/goal_id 태그를 유지하기 위해 payload에 포함.
             "agent_id": agent_id,
             "goal_id": goal_id,
+            # spec 003 FR-019 — deferred wakeup의 조직을 payload에 기록해
+            # on_run_finished의 promote가 같은 조직의 run에만 적용되게 한다.
+            "org_id": orgctx.current_org_id(),
         },
         ensure_ascii=False,
         default=str,
@@ -205,12 +209,28 @@ def _active_run_for_scope(
     agent_id: str = "",
     goal_id: str = "",
 ) -> Run | None:
-    """동일 scope의 queued/running run — 볼륨이 작아 Python 비교."""
+    """동일 scope의 queued/running run — 볼륨이 작아 Python 비교.
+
+    spec 003 FR-019 — list_active_runs는 org 무필터이므로 코얼레싱
+    후보를 현재 조직 컨텍스트와 같은 org_id의 run으로 한정한다
+    (ctx=''는 org_id='' 레거시 run만)."""
     scope_key = scope_key_for(workflow_key, input_data, agent_id, goal_id)
+    cur_oid = orgctx.current_org_id()
     for run in store.list_active_runs():
         if run.workflow_key != workflow_key:
             continue
         if run.status.value not in _ACTIVE_STATUSES:
+            continue
+        # spec 003 FR-019 — 조직 간 코얼레싱 금지: ctx 조직의 run은 동일
+        # 조직 run만, ctx=''(내부 경로)는 org_id='' 레거시 run만 후보로 한다.
+        # 어느 쪽이든 다른 조직 run을 재사용해 입력/실행 컨텍스트가 새지 않게.
+        from .services.management_common import row_org_id
+
+        r_oid = row_org_id(store, "runs", run.id)
+        if cur_oid:
+            if r_oid != cur_oid:
+                continue
+        elif r_oid:
             continue
         if scope_key_for(workflow_key, run.input, run.agent_id, run.goal_id) == scope_key:
             return run
@@ -233,6 +253,9 @@ def admit_run(
 ) -> dict[str, Any]:
     """run 생성 요청 접수 — 코얼레싱/디퍼 판정.
 
+    idempotency_key는 조직 네임스페이스로 한정한다 — 전역 UNIQUE 인덱스가
+    다른 조직의 동일 키와 충돌하거나 타 조직 run을 replay하는 것을 막는다.
+
     반환 dict:
       action: 'created'|'coalesced'|'deferred'|'replayed'|'conflict'
       run_id: 생성/재사용 run id (deferred/conflict는 '')
@@ -246,6 +269,9 @@ def admit_run(
     - 그 외: run 생성 + wakeup 'queued'.
     """
     input_data = dict(input_data or {})
+    # 조직 네임스페이스 멱등키 — 이후 replay 조회·INSERT·conflict 경로가
+    # 모두 이 값을 쓰므로 한 번만 변환한다.
+    idempotency_key = orgctx.scoped_key(idempotency_key)
     # project 태그는 budget policy scope_id와 동일 정규화 — runs.project
     # 컬럼·예산 귀속·코얼레싱 scope_key가 모두 같은 값을 쓰게 한다.
     if isinstance(input_data.get("project"), str):
@@ -460,6 +486,18 @@ def on_run_finished(
         input_data = dict(inp)
         w_agent_id = str(payload.get("agent_id") or "")
         w_goal_id = str(payload.get("goal_id") or "")
+        # spec 003 FR-019 — deferred wakeup의 org가 finishing run의 org와
+        # 다르면 promote하지 않는다(scope_key는 org를 포함하지 않으므로
+        # 동일 input의 타 조직 deferred가 섞여 올라온다). 해당 조직 run이
+        # 종결될 때 같은 검사를 다시 거쳐 promote된다.
+        w_org = str(payload.get("org_id") or "")
+        run_oid = orgctx.current_org_id()
+        if not run_oid:
+            from .services.management_common import row_org_id
+
+            run_oid = row_org_id(store, "runs", run_id)
+        if w_org and w_org != run_oid:
+            continue
         # 아직 같은 scope의 활성 run이 있으면 promote 보류
         if (
             _active_run_for_scope(store, run.workflow_key, input_data, w_agent_id, w_goal_id)

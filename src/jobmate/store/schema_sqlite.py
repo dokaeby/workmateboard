@@ -68,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id);
 
 CREATE TABLE IF NOT EXISTS event_links (
   id TEXT PRIMARY KEY,
-  idempotency_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL,
   gmail_message_id TEXT NOT NULL,
   connection_id TEXT NOT NULL DEFAULT 'default',
   status TEXT NOT NULL,
@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS event_links (
   last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  org_id TEXT NOT NULL DEFAULT ''
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, idempotency_key)
 
 );
 CREATE INDEX IF NOT EXISTS idx_links_msg ON event_links(gmail_message_id);
@@ -117,7 +118,7 @@ CREATE TABLE IF NOT EXISTS message_extractions (
   source_text TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   org_id TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (source_provider, source_id)
+  PRIMARY KEY (source_provider, source_id, org_id)
 );
 
 -- calendar-agent: 등록된 일정 레지스트리
@@ -216,7 +217,7 @@ CREATE TABLE IF NOT EXISTS email_summaries (
   message_at TEXT NOT NULL DEFAULT '',
   checked_at TEXT NOT NULL,
   org_id TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (source_provider, source_id)
+  PRIMARY KEY (source_provider, source_id, org_id)
 );
 
 -- 사용자 계정 (이메일/Google 로그인)
@@ -335,7 +336,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   org_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(tool, session_key)
+  UNIQUE(org_id, tool, session_key)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
 
@@ -396,7 +397,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_items_created ON inbox_items(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_items_dedupe
-  ON inbox_items(dedupe_key) WHERE dedupe_key != '';
+  ON inbox_items(dedupe_key, org_id) WHERE dedupe_key != '';
 
 -- session_activity: 에이전트 세션 활동 스냅샷 (리플레이용, 7일 보관)
 CREATE TABLE IF NOT EXISTS session_activity (
@@ -466,18 +467,19 @@ CREATE TABLE IF NOT EXISTS connectors (
 -- latest_revision/updated_at은 workflow_revisions append-only 이력의
 -- 현재 포인터 — spec 본문은 항상 최신 리비전과 동기화된다.
 CREATE TABLE IF NOT EXISTS custom_workflows (
-  name TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
   spec TEXT NOT NULL,
   created_at TEXT NOT NULL,
   latest_revision INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT,
-  org_id TEXT NOT NULL DEFAULT ''
+  org_id TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (name, org_id)
 
 );
 
 -- workflow_revisions: WorkflowSpec append-only 버전 이력 (Paperclip document
 -- versioning 포팅) — 리비전은 절대 재작성하지 않고, 복원은 새 리비전으로
--- 추가한다. UNIQUE(name, revision)가 CAS 직렬화의 최후 보루.
+-- 추가한다. UNIQUE(org_id, name, revision)가 CAS 직렬화의 최후 보루.
 CREATE TABLE IF NOT EXISTS workflow_revisions (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -487,7 +489,7 @@ CREATE TABLE IF NOT EXISTS workflow_revisions (
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   org_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(name, revision)
+  UNIQUE(org_id, name, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_revisions_name ON workflow_revisions(name);
 
@@ -563,7 +565,7 @@ CREATE TABLE IF NOT EXISTS projects (
   org_id TEXT NOT NULL DEFAULT ''
 
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_lower ON projects(org_id, lower(name));
 
 -- budget_policies: 스코프별 월간 USD 예산 (global/project/workflow)
 CREATE TABLE IF NOT EXISTS budget_policies (
@@ -578,7 +580,7 @@ CREATE TABLE IF NOT EXISTS budget_policies (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   org_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(scope_type, scope_id)
+  UNIQUE(scope_type, scope_id, org_id)
 );
 
 -- budget_incidents: 예산 임계(warn/hard) 초과 사건 — 정책+윈도우+임계당 open 1건
@@ -622,9 +624,12 @@ CREATE INDEX IF NOT EXISTS idx_wakeup_idem ON wakeup_requests(idempotency_key);
 -- agents: 에이전트 레지스트리/조직도 — adapter_type(claude|codex|gemini|
 -- devin|custom) + reports_to 계층 + status(active|paused|archived).
 -- status는 라이프사이클과 분리된 운영 상태(Paperclip agents 포팅).
+-- name 유일성은 컬럼 UNIQUE가 아니라 idx_agents_name_lower
+-- (org_id, lower(name))가 조직별로 강제한다 — 인덱스는 기존 DB의
+-- 중복 이름 정리 후 _migrate_agent_name_index가 생성한다.
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
   adapter_type TEXT NOT NULL,
   role TEXT,
   title TEXT,
@@ -683,7 +688,7 @@ CREATE TABLE IF NOT EXISTS evals (
   org_id TEXT NOT NULL DEFAULT ''
 
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_evals_name_lower ON evals(lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evals_name_lower ON evals(org_id, lower(name));
 CREATE INDEX IF NOT EXISTS idx_evals_status ON evals(status);
 
 -- eval_runs: eval 1회 실행의 채점 결과 — run이 terminal이 되면 lazy 채점.
@@ -696,7 +701,8 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   results TEXT NOT NULL DEFAULT '[]',
   error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  scored_at TEXT
+  scored_at TEXT,
+  org_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_eval_runs_eval ON eval_runs(eval_id);
 CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
@@ -706,7 +712,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_runs_run ON eval_runs(run_id);
 -- identifier는 'WMB-<n>' 사람용 유일 키(Store.create_task가 채번).
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
-  identifier TEXT NOT NULL UNIQUE,
+  identifier TEXT NOT NULL,
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'backlog',
@@ -722,7 +728,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_by TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  org_id TEXT NOT NULL DEFAULT ''
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, identifier)
 
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -730,11 +737,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(checkout_agent_id);
 
--- agent-management 1차: 통합 에이전트 이벤트 — idempotency_key UNIQUE로
--- 재전송/중복 기록을 막는다(동일 키 append는 기존 행 반환).
+-- agent-management 1차: 통합 에이전트 이벤트 — UNIQUE(org_id,idempotency_key)로
+-- 조직별 재전송/중복 기록을 막는다(동일 키 append는 기존 행 반환).
 CREATE TABLE IF NOT EXISTS agent_events (
   id TEXT PRIMARY KEY,
-  idempotency_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL,
   event_type TEXT NOT NULL,
   agent_id TEXT,
   task_id TEXT,
@@ -744,7 +751,8 @@ CREATE TABLE IF NOT EXISTS agent_events (
   detail TEXT NOT NULL DEFAULT '{}',
   occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  org_id TEXT NOT NULL DEFAULT ''
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, idempotency_key)
 
 );
 CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id, created_at);
@@ -770,7 +778,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_run ON task_runs(run_id);
 -- 미태깅은 ''로 저장한다(스펙 대비 의도적 완화 — docs §24 참조).
 CREATE TABLE IF NOT EXISTS cost_events (
   id TEXT PRIMARY KEY,
-  idempotency_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL,
   agent_id TEXT NOT NULL DEFAULT '',
   task_id TEXT,
   run_id TEXT,
@@ -787,7 +795,8 @@ CREATE TABLE IF NOT EXISTS cost_events (
   pricing_version TEXT NOT NULL DEFAULT '',
   occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  org_id TEXT NOT NULL DEFAULT ''
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, idempotency_key)
 
 );
 CREATE INDEX IF NOT EXISTS idx_cost_events_agent ON cost_events(agent_id, occurred_at);
@@ -945,7 +954,7 @@ CREATE TABLE IF NOT EXISTS agent_permissions (
   scope_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   org_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(agent_id, capability, scope_type, scope_id, effect)
+  UNIQUE(agent_id, capability, scope_type, scope_id, effect, org_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_permissions_agent ON agent_permissions(agent_id);
 

@@ -14,6 +14,7 @@ from ..engine.runner import WorkflowRunner, build_checkpointer_for
 from ..llm import LLMClient
 from ..store.db import Store
 from . import WORKFLOWS
+from .resolver import resolve_workflow_spec
 
 logger = logging.getLogger("jobmate.workflows")
 
@@ -122,6 +123,16 @@ def build_runner(
     adapters: dict | None = None,
 ) -> WorkflowRunner:
     reg = build_registry(settings)
+    # 커스텀 워크플로 — 전역 WORKFLOWS가 아닌 custom_workflows 테이블에서
+    # 현재 조직 컨텍스트(호출자가 run/행 org로 재적용한 org_scope)로 spec을
+    # 해석해 이 run 전용 registry에만 등록한다. 조직별 동명 spec이 서로의
+    # 실행을 오염시키지 않는다(spec 003 US3).
+    try:
+        reg.workflow(workflow_key)
+    except KeyError:
+        custom = resolve_workflow_spec(store, workflow_key)
+        if custom is not None:
+            reg.register_workflow(custom)
     spec = reg.workflow(workflow_key)
     cp = build_checkpointer_for(settings)
     executor = tools or _build_tool_executor()

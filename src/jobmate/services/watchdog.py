@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -31,6 +33,7 @@ from ..models import (
 )
 from ..services import agent_management as mgmt
 from ..services import approvals as approvals_svc
+from ..store import orgctx
 from ..store.db import Store
 from ..store.util import _iso
 
@@ -103,6 +106,40 @@ def _iso_dt(s: str) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+@contextmanager
+def _rec_scope(rec: dict[str, Any]) -> Iterator[None]:
+    """recovery_actions 행의 org로 스코프 — spec 003 FR-019.
+
+    watchdog cycle은 ctx=''로 모든 조직의 recovery를 순회하므로
+    행 단위 org_id를 읽어 inbox/event/approval 쓰기가 올바른 조직에
+    귀속되게 한다. org_id='' 행은 ambient ctx를 유지한다."""
+    oid = str(rec.get("org_id") or "")
+    if oid and orgctx.current_org_id() != oid:
+        with orgctx.org_scope(oid):
+            yield
+    else:
+        yield
+
+
+def _source_org_id(store: Store, source_type: str, source_id: str) -> str:
+    """recovery source(agent/task/run)의 org_id — detector가 recovery를
+    source와 같은 조직에 기록하기 위해 사용한다."""
+    try:
+        if source_type == "agent":
+            row = store.get_agent(source_id)
+            return str((row or {}).get("org_id") or "")
+        if source_type == "task":
+            row = store.get_task(source_id)
+            return str((row or {}).get("org_id") or "")
+        if source_type == "run":
+            from .management_common import row_org_id
+
+            return row_org_id(store, "runs", source_id)
+    except Exception:
+        return ""
+    return ""
 
 
 def _retry_delay_minutes(attempt_count: int) -> int:
@@ -396,14 +433,27 @@ def _detect(store: Store, *, now: datetime, budget: int) -> dict[str, int]:
         # 조회는 어차피 매 cycle health 재검사가 담당한다.
         if created >= budget or created_by_kind.get(kind, 0) >= per_kind:
             continue
+        # spec 003 FR-019 — recovery는 source와 같은 조직에 기록한다.
+        # ctx='' cycle에서 source 조회·create 모두 source org로 스코프.
+        src_oid = _source_org_id(store, st, sid)
         try:
-            rec, was_created = store.create_recovery_action(
-                source_type=st,
-                source_id=sid,
-                kind=kind,
-                max_attempts=max_att,
-                owner_type=RecoveryOwnerType.SYSTEM.value,
-            )
+            if src_oid and orgctx.current_org_id() != src_oid:
+                with orgctx.org_scope(src_oid):
+                    rec, was_created = store.create_recovery_action(
+                        source_type=st,
+                        source_id=sid,
+                        kind=kind,
+                        max_attempts=max_att,
+                        owner_type=RecoveryOwnerType.SYSTEM.value,
+                    )
+            else:
+                rec, was_created = store.create_recovery_action(
+                    source_type=st,
+                    source_id=sid,
+                    kind=kind,
+                    max_attempts=max_att,
+                    owner_type=RecoveryOwnerType.SYSTEM.value,
+                )
         except Exception:
             logger.warning("recovery create failed %s:%s", st, sid, exc_info=True)
             continue
@@ -485,7 +535,10 @@ def _run_cycle_locked(
         rid = str(rec.get("id") or "")
         # 건강 재검사 — 회복됐으면 resolved로 닫는다(attempt budget 무관,
         # resolved/cancelled/escalated 포함 모든 open 상태 대상).
-        if _source_recovered(store, rec, now=now):
+        # spec 003 FR-019 — rec의 org로 source 조회를 스코프한다.
+        with _rec_scope(rec):
+            recovered = _source_recovered(store, rec, now=now)
+        if recovered:
             if store.set_recovery_status(
                 rid,
                 RecoveryStatus.RESOLVED.value,
@@ -514,7 +567,10 @@ def _run_cycle_locked(
             break
         rid = str(rec.get("id") or "")
         attempts_left -= 1
-        outcome = _attempt_recovery(store, rec, now=now)
+        # spec 003 FR-019 — 복구 시도가 만드는 approval/event/inbox/cost
+        # 쓰기가 rec의 조직에 귀속되도록 스코프한다.
+        with _rec_scope(rec):
+            outcome = _attempt_recovery(store, rec, now=now)
         counts["retried"] += 1
         attempts = int(rec.get("attempt_count") or 0) + 1
         max_att = int(rec.get("max_attempts") or 3)
@@ -534,11 +590,12 @@ def _run_cycle_locked(
             max_att,
         )
         if attempts >= max_att:
-            _escalate(
-                store,
-                {**rec, "attempt_count": attempts},
-                note=f"max_attempts={max_att} 초과 — 마지막 outcome: {outcome[:120]}",
-            )
+            with _rec_scope({**rec, "attempt_count": attempts}):
+                _escalate(
+                    store,
+                    {**rec, "attempt_count": attempts},
+                    note=f"max_attempts={max_att} 초과 — 마지막 outcome: {outcome[:120]}",
+                )
             counts["escalated"] += 1
 
     logger.info("watchdog cycle done %s", counts)

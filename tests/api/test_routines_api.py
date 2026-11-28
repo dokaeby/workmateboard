@@ -30,6 +30,9 @@ def _member_client(client: TestClient, store: Store, email: str = "m@b.com"):
     """member 세션 쿠키를 단 별도 TestClient."""
     user = store.create_user(email, password_hash="x" * 32, email_verified=True)
     assert user is not None
+    _orgs = store.list_organizations()
+    assert _orgs
+    store.add_org_member(_orgs[0]["id"], user["id"], "member")
     token = f"sess-{email}"
     store.create_session(user["id"], hash_token(token))
     c = TestClient(client.app)
@@ -150,6 +153,11 @@ def test_auth_gating():
     r = _create(client)
     rid = r["id"]
     member = _member_client(client, store)
+    # spec 003 US3 — 로컬 모드(ctx='')로 만든 routine은 org_id=''라
+    # 조직 멤버 세션에서는 보이지 않는다. 기본 조직으로 스탬프한다.
+    _oid = store.list_organizations()[0]["id"]
+    with store.tx() as c:
+        c.execute("UPDATE routines SET org_id=? WHERE id=?", (_oid, rid))
 
     assert member.get("/api/v1/management/routines").status_code == 200
     assert member.get(f"/api/v1/management/routines/{rid}").status_code == 200

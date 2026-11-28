@@ -24,9 +24,10 @@ from ..models import (
     can_transition_task,
     canonical_agent_status,
 )
+from ..store import orgctx
 from ..store.db import Store
 from ..store.util import _iso, _now
-from ..workflows import WORKFLOWS
+from ..workflows.resolver import resolve_workflow_spec
 from . import permissions as perm_svc
 from .agent_lifecycle import _set_agent_status_quiet
 from .management_common import (
@@ -235,6 +236,20 @@ def wake_agent(
     이벤트의 detail에 기록된 결과를 재생한다 — run 중복 생성 없음.
     """
     agent = _require_agent(store, agent_id)
+    # spec 003 FR-019 — agent 행의 org로 wake 전체를 스코프한다. 웹훅·
+    # 스케줄러 등 ctx='' 경로에서도 생성되는 run/task 링크/agent_events가
+    # agent의 조직을 상속하게 한다(재귀 1회로 컨텍스트 정규화).
+    oid = str(agent.get("org_id") or "")
+    if oid and orgctx.current_org_id() != oid:
+        with orgctx.org_scope(oid):
+            return wake_agent(
+                store,
+                agent_id,
+                task_id=task_id,
+                idempotency_key=idempotency_key,
+                actor=actor,
+                schedule=schedule,
+            )
     canon = canonical_agent_status(agent.get("status"))
     if canon == AgentStatus.TERMINATED.value:
         raise ManagementError(409, "conflict", "terminated agent cannot be woken")
@@ -345,7 +360,10 @@ def wake_agent(
         raise ManagementError(422, "validation", "task_id is required for workflow wake")
     cfg = agent.get("adapter_config") or {}
     workflow = str(cfg.get("workflow") or "dev_review").strip()
-    if workflow not in WORKFLOWS:
+    # 이 시점의 org 컨텍스트는 wake_agent 상단에서 agent 행의 org로 재적용된
+    # 상태 — 커스텀 spec은 그 조직 것을 해석한다(spec 003 US3).
+    wf_spec = resolve_workflow_spec(store, workflow)
+    if wf_spec is None:
         raise ManagementError(422, "validation", f"unknown workflow in adapter_config: {workflow}")
     task_text = f"[{task['identifier']}] {task['title']}"
     desc = str(task.get("description") or "").strip()
@@ -368,7 +386,7 @@ def wake_agent(
         source="api",
         idempotency_key=ev_key,
         created_by=actor or "management",
-        version=WORKFLOWS[workflow].version,
+        version=wf_spec.version,
         job_payload={"task": task_text},
         agent_id=agent_id,
     )

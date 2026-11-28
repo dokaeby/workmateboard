@@ -22,6 +22,7 @@ from ..models import (
     RecoveryStatus,
     RunStatus,
 )
+from . import orgctx
 from .util import _clamp_limit, _iso, _now
 
 _APPROVAL_STATUSES = {s.value for s in ApprovalStatus}
@@ -63,7 +64,28 @@ _ACTIVE_RUN_STATUSES = (
 _HEARTBEAT_AGENT_STATUSES = ("active", "idle", "running")
 
 
+def _org_filter() -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND org_id=?` 조건 — 시스템/미인증(ctx='')은 무필터."""
+    oid = orgctx.current_org_id()
+    return (" AND org_id=?", [oid]) if oid else ("", [])
+
+
+# recovery_actions.source_type → org-scoped 부모 테이블 (org 상속용)
+_SOURCE_PARENT_TABLE = {"run": "runs", "task": "tasks", "agent": "agents"}
+
+
 class GovernanceStoreMixin:
+    def _parent_org_id(self, table: str, row_id: str | None) -> str:
+        """부모 행의 org_id 조회 — 행이 없거나 id가 비면 ''."""
+        rid = (row_id or "").strip()[:64]
+        if not rid:
+            return ""
+        row = self._conn.execute(
+            f"SELECT org_id FROM {table} WHERE id=?",  # noqa: S608 - table은 고정 리터럴
+            (rid,),
+        ).fetchone()
+        return str(row["org_id"] or "") if row is not None else ""
+
     # ---- approval_requests (범용 승인함) ----
     @staticmethod
     def _approval_effective_status(d: dict[str, Any], now_iso: str) -> str:
@@ -119,6 +141,7 @@ class GovernanceStoreMixin:
         resource_type: str = "",
         resource_id: str = "",
         expires_at: str | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any] | None:
         """승인 요청 생성 — 항상 status='pending'으로 시작.
 
@@ -135,12 +158,23 @@ class GovernanceStoreMixin:
             payload_json = "{}"
         if len(payload_json) > 8000:
             raise ValueError("safe_payload exceeds 8000 chars")
+        # org 귀속: 명시 > 부모(run/task/agent) > ctx — 승인 요청이
+        # 어느 조직의 것인지 run 컨텍스트 없이도 보존된다.
+        oid = (org_id or "").strip()
+        if not oid:
+            oid = self._parent_org_id("runs", run_id)
+        if not oid:
+            oid = self._parent_org_id("tasks", task_id)
+        if not oid:
+            oid = self._parent_org_id("agents", requested_by_agent_id)
+        if not oid:
+            oid = orgctx.org_for_write()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO approval_requests(id,action_type,risk_level,status,"
                 "requested_by_agent_id,requested_by,task_id,run_id,resource_type,"
-                "resource_id,summary,safe_payload,expires_at,created_at,updated_at)"
-                " VALUES(?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?)",
+                "resource_id,summary,safe_payload,expires_at,created_at,updated_at,"
+                "org_id) VALUES(?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     aid,
                     (action_type or "").strip().lower()[:40],
@@ -156,6 +190,7 @@ class GovernanceStoreMixin:
                     (expires_at or "").strip()[:64] or None,
                     now,
                     now,
+                    oid,
                 ),
             )
         return self.get_approval_request(aid)
@@ -174,8 +209,10 @@ class GovernanceStoreMixin:
         return int(getattr(cur, "rowcount", 0) or 0)
 
     def get_approval_request(self, approval_id: str) -> dict[str, Any] | None:
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM approval_requests WHERE id=?", (approval_id,)
+            "SELECT * FROM approval_requests WHERE id=?" + frag,  # noqa: S608
+            (approval_id, *params),
         ).fetchone()
         return self._approval_json(row) if row else None
 
@@ -194,8 +231,12 @@ class GovernanceStoreMixin:
         expires_at 경과 pending이 'expired'로 보이게 한다."""
         self.expire_stale_approval_requests()
         sql = "SELECT * FROM approval_requests"
+        frag, fparams = _org_filter()
         conds: list[str] = []
         params: list[Any] = []
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+            params.extend(fparams)
         if status:
             conds.append("status=?")
             params.append(status.strip().lower()[:20])
@@ -225,8 +266,12 @@ class GovernanceStoreMixin:
     ) -> dict[str, Any] | None:
         """같은 action/resource의 pending 요청 — 자동 생성 경로의 중복 방지."""
         self.expire_stale_approval_requests()
+        frag, fparams = _org_filter()
         conds = ["status='pending'", "action_type=?"]
         params: list[Any] = [action_type.strip().lower()[:40]]
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+            params.extend(fparams)
         if resource_type:
             conds.append("resource_type=?")
             params.append(resource_type.strip().lower()[:40])
@@ -242,13 +287,15 @@ class GovernanceStoreMixin:
     def has_decided_approval(self, action_type: str, resource_type: str, resource_id: str) -> bool:
         """동일 action/resource의 approved 결정 존재 여부 — agent_terminate
         가드처럼 '승인된 요청이 있는가'만 보는 경로용."""
+        frag, fparams = _org_filter()
         row = self._conn.execute(
-            "SELECT 1 AS x FROM approval_requests WHERE status='approved'"
-            " AND action_type=? AND resource_type=? AND resource_id=? LIMIT 1",
+            "SELECT 1 AS x FROM approval_requests WHERE status='approved'"  # noqa: S608
+            " AND action_type=? AND resource_type=? AND resource_id=?" + frag + " LIMIT 1",
             (
                 action_type.strip().lower()[:40],
                 resource_type.strip().lower()[:40],
                 resource_id.strip()[:64],
+                *fparams,
             ),
         ).fetchone()
         return row is not None
@@ -267,12 +314,13 @@ class GovernanceStoreMixin:
         rowcount 0이면 이미 결정됐거나 만료된 것 — 호출자가 409로 매핑."""
         dec = "approved" if decision == "approve" else "rejected"
         now = _iso(_now())
+        frag, fparams = _org_filter()
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE approval_requests SET status=?, decided_by=?,"
+                "UPDATE approval_requests SET status=?, decided_by=?,"  # noqa: S608
                 " decision_comment=?, decided_at=?, updated_at=?"
                 " WHERE id=? AND status='pending'"
-                " AND (expires_at IS NULL OR expires_at >= ?)",
+                " AND (expires_at IS NULL OR expires_at >= ?)" + frag,
                 (
                     dec,
                     (decided_by or "").strip()[:200],
@@ -281,6 +329,7 @@ class GovernanceStoreMixin:
                     now,
                     approval_id,
                     now,
+                    *fparams,
                 ),
             )
         if int(getattr(cur, "rowcount", 0) or 0) <= 0:
@@ -312,10 +361,11 @@ class GovernanceStoreMixin:
 
     def open_recovery_for(self, source_type: str, source_id: str) -> dict[str, Any] | None:
         """source의 active|escalated recovery — 중복 생성 전 조회."""
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM recovery_actions WHERE source_type=? AND source_id=?"
-            " AND status IN ('active','escalated') ORDER BY created_at DESC LIMIT 1",
-            (source_type.strip().lower()[:20], source_id.strip()[:64]),
+            "SELECT * FROM recovery_actions WHERE source_type=? AND source_id=?"  # noqa: S608
+            " AND status IN ('active','escalated')" + frag + " ORDER BY created_at DESC LIMIT 1",
+            (source_type.strip().lower()[:20], source_id.strip()[:64], *params),
         ).fetchone()
         return self._recovery_json(row) if row else None
 
@@ -329,6 +379,7 @@ class GovernanceStoreMixin:
         owner_type: str = "system",
         timeout_at: str | None = None,
         next_attempt_at: str | None = None,
+        org_id: str | None = None,
     ) -> tuple[dict[str, Any] | None, bool]:
         """복구 액션 생성 — (row, created) 반환. source당 open 1건.
 
@@ -342,6 +393,15 @@ class GovernanceStoreMixin:
         existing = self.open_recovery_for(st, sid)
         if existing is not None:
             return existing, False
+        # org 귀속: 명시 > source 부모(run/task/agent) > ctx — watchdog 등
+        # ctx='' 경로에서도 복구 액션이 올바른 조직에 기록된다.
+        oid = (org_id or "").strip()
+        if not oid:
+            parent_table = _SOURCE_PARENT_TABLE.get(st)
+            if parent_table is not None:
+                oid = self._parent_org_id(parent_table, sid)
+        if not oid:
+            oid = orgctx.org_for_write()
         try:
             max_att = max(1, int(max_attempts))
         except (TypeError, ValueError):
@@ -353,7 +413,7 @@ class GovernanceStoreMixin:
                 c.execute(
                     "INSERT INTO recovery_actions(id,source_type,source_id,kind,status,"
                     "attempt_count,max_attempts,next_attempt_at,timeout_at,owner_type,"
-                    "created_at,updated_at) VALUES(?,?,?,?,'active',0,?,?,?,?,?,?)",
+                    "created_at,updated_at,org_id) VALUES(?,?,?,?,'active',0,?,?,?,?,?,?,?)",
                     (
                         rid,
                         st,
@@ -365,6 +425,7 @@ class GovernanceStoreMixin:
                         (owner_type or "system").strip().lower()[:20],
                         now,
                         now,
+                        oid,
                     ),
                 )
         except self._integrity_errors:
@@ -375,8 +436,10 @@ class GovernanceStoreMixin:
         return self.get_recovery_action(rid), True
 
     def get_recovery_action(self, recovery_id: str) -> dict[str, Any] | None:
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM recovery_actions WHERE id=?", (recovery_id,)
+            "SELECT * FROM recovery_actions WHERE id=?" + frag,  # noqa: S608
+            (recovery_id, *params),
         ).fetchone()
         return self._recovery_json(row) if row else None
 
@@ -390,8 +453,12 @@ class GovernanceStoreMixin:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM recovery_actions"
+        frag, fparams = _org_filter()
         conds: list[str] = []
         params: list[Any] = []
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+            params.extend(fparams)
         if status:
             conds.append("status=?")
             params.append(status.strip().lower()[:20])
@@ -416,11 +483,13 @@ class GovernanceStoreMixin:
         active를 escalated보다 먼저 정렬 — 오랫동안 escalated로 남은
         행이 limit을 채워 최신 active 복구가 스캔에서 밀리는 기아를
         막는다(건강 재검사는 둘 다 대상이지만 재시도 가능 건이 우선)."""
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT * FROM recovery_actions WHERE status IN ('active','escalated')"
-            " ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,"
+            "SELECT * FROM recovery_actions WHERE status IN ('active','escalated')"  # noqa: S608
+            + frag
+            + " ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,"
             " created_at, id LIMIT ?",
-            (_clamp_limit(limit, 200, 500),),
+            (*params, _clamp_limit(limit, 200, 500)),
         ).fetchall()
         return [self._recovery_json(r) for r in rows]
 
@@ -444,11 +513,12 @@ class GovernanceStoreMixin:
         if owner_type:
             sets += ", owner_type=?"
             params.append(owner_type[:20])
-        params.extend([recovery_id])
+        frag, fparams = _org_filter()
+        params.extend([recovery_id, *fparams])
         with self.tx() as c:
             cur = c.execute(
                 f"UPDATE recovery_actions SET {sets}"  # noqa: S608 - sets는 고정 fragment
-                " WHERE id=? AND status IN ('active','escalated')",
+                " WHERE id=? AND status IN ('active','escalated')" + frag,
                 tuple(params),
             )
         return int(getattr(cur, "rowcount", 0) or 0) > 0
@@ -470,14 +540,15 @@ class GovernanceStoreMixin:
             return False
         now = _iso(_now())
         resolved_at = now if st == RecoveryStatus.RESOLVED.value else None
+        frag, fparams = _org_filter()
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE recovery_actions SET status=?,"
+                "UPDATE recovery_actions SET status=?,"  # noqa: S608
                 " outcome=COALESCE(?, outcome),"
                 " resolution_note=CASE WHEN ?<>'' THEN ? ELSE resolution_note END,"
                 " owner_type=COALESCE(?, owner_type),"
                 " resolved_at=COALESCE(?, resolved_at), updated_at=?"
-                " WHERE id=? AND status IN ('active','escalated')",
+                " WHERE id=? AND status IN ('active','escalated')" + frag,
                 (
                     st,
                     (outcome or "")[:200] or None,
@@ -487,6 +558,7 @@ class GovernanceStoreMixin:
                     resolved_at,
                     now,
                     recovery_id,
+                    *fparams,
                 ),
             )
         return int(getattr(cur, "rowcount", 0) or 0) > 0

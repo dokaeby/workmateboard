@@ -8,7 +8,14 @@ import uuid
 from typing import Any
 
 from ..models import WorkflowSpec
+from . import orgctx
 from .util import _iso, _loads, _now
+
+
+def _org_filter() -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND org_id=?` 조건 — 시스템/미인증(ctx='')은 무필터."""
+    oid = orgctx.current_org_id()
+    return (" AND org_id=?", [oid]) if oid else ("", [])
 
 
 class BuilderStoreMixin:
@@ -20,30 +27,54 @@ class BuilderStoreMixin:
         return d
 
     def create_playbook(
-        self, name: str, workflow: str, input_data: dict[str, Any], created_by: str = ""
+        self,
+        name: str,
+        workflow: str,
+        input_data: dict[str, Any],
+        created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         pid = uuid.uuid4().hex[:12]
         now = _iso(_now())
         with self.tx() as c:
             c.execute(
-                "INSERT INTO playbooks(id,name,workflow,input,created_by,created_at)"
-                " VALUES(?,?,?,?,?,?)",
-                (pid, name, workflow, json.dumps(input_data or {}), created_by, now),
+                "INSERT INTO playbooks(id,name,workflow,input,created_by,created_at,org_id)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (
+                    pid,
+                    name,
+                    workflow,
+                    json.dumps(input_data or {}),
+                    created_by,
+                    now,
+                    orgctx.org_for_write(org_id),
+                ),
             )
         pb = self.get_playbook(pid)
         return pb if pb is not None else {"id": pid}
 
     def list_playbooks(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute("SELECT * FROM playbooks ORDER BY created_at DESC").fetchall()
+        frag, params = _org_filter()
+        rows = self._conn.execute(
+            "SELECT * FROM playbooks"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY created_at DESC",
+            tuple(params),
+        ).fetchall()
         return [self._playbook_json(r) for r in rows]
 
     def get_playbook(self, playbook_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM playbooks WHERE id=?", (playbook_id,)).fetchone()
+        frag, params = _org_filter()
+        row = self._conn.execute(
+            "SELECT * FROM playbooks WHERE id=?" + frag,  # noqa: S608
+            (playbook_id, *params),
+        ).fetchone()
         return self._playbook_json(row) if row else None
 
     def delete_playbook(self, playbook_id: str) -> bool:
+        frag, params = _org_filter()
         with self.tx() as c:
-            cur = c.execute("DELETE FROM playbooks WHERE id=?", (playbook_id,))
+            cur = c.execute("DELETE FROM playbooks WHERE id=?" + frag, (playbook_id, *params))  # noqa: S608
         return cur.rowcount > 0
 
     # ---- run_comments (run/diff 토론) ----
@@ -92,13 +123,15 @@ class BuilderStoreMixin:
         config: dict[str, Any],
         enabled: bool = True,
         has_token: bool = False,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         cid = uuid.uuid4().hex[:12]
         now = _iso(_now())
         with self.tx() as c:
             c.execute(
                 "INSERT INTO connectors(id,type,name,config,enabled,has_token,"
-                "last_fetch_at,last_error,created_at) VALUES(?,?,?,?,?,?,NULL,'',?)",
+                "last_fetch_at,last_error,created_at,org_id)"
+                " VALUES(?,?,?,?,?,?,NULL,'',?,?)",
                 (
                     cid,
                     ctype,
@@ -107,6 +140,7 @@ class BuilderStoreMixin:
                     1 if enabled else 0,
                     int(has_token),
                     now,
+                    orgctx.org_for_write(org_id),
                 ),
             )
         conn = self.get_connector(cid)
@@ -115,35 +149,48 @@ class BuilderStoreMixin:
         return conn if conn is not None else {"id": cid}
 
     def list_connectors(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute("SELECT * FROM connectors ORDER BY created_at DESC").fetchall()
+        frag, params = _org_filter()
+        rows = self._conn.execute(
+            "SELECT * FROM connectors"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY created_at DESC",
+            tuple(params),
+        ).fetchall()
         return [self._connector_json(r) for r in rows]
 
     def get_connector(self, connector_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM connectors WHERE id=?", (connector_id,)).fetchone()
+        frag, params = _org_filter()
+        row = self._conn.execute(
+            "SELECT * FROM connectors WHERE id=?" + frag,  # noqa: S608
+            (connector_id, *params),
+        ).fetchone()
         return self._connector_json(row, with_config=True) if row else None
 
     def delete_connector(self, connector_id: str) -> bool:
+        frag, params = _org_filter()
         with self.tx() as c:
-            cur = c.execute("DELETE FROM connectors WHERE id=?", (connector_id,))
+            cur = c.execute("DELETE FROM connectors WHERE id=?" + frag, (connector_id, *params))  # noqa: S608
         return cur.rowcount > 0
 
     def set_connector_enabled(self, connector_id: str, enabled: bool) -> dict[str, Any] | None:
         conn = self.get_connector(connector_id)
         if conn is None:
             return None
+        frag, fparams = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE connectors SET enabled=? WHERE id=?",
-                (1 if enabled else 0, connector_id),
+                "UPDATE connectors SET enabled=? WHERE id=?" + frag,  # noqa: S608
+                (1 if enabled else 0, connector_id, *fparams),
             )
         return self.get_connector(connector_id)
 
     def mark_connector_fetch(self, connector_id: str, error: str = "") -> None:
         """fetch 시도 결과 기록 — last_fetch_at은 성공/실패 무관하게 갱신."""
+        frag, params = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE connectors SET last_fetch_at=?, last_error=? WHERE id=?",
-                (_iso(_now()), error[:300], connector_id),
+                "UPDATE connectors SET last_fetch_at=?, last_error=? WHERE id=?" + frag,  # noqa: S608
+                (_iso(_now()), error[:300], connector_id, *params),
             )
 
     # ---- custom_workflows (비주얼 빌더 WorkflowSpec) + workflow_revisions ----
@@ -157,12 +204,32 @@ class BuilderStoreMixin:
             d["latest_revision"] = 0
         return d
 
-    def upsert_custom_workflow(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+    def upsert_custom_workflow(
+        self, name: str, spec: dict[str, Any], org_id: str | None = None
+    ) -> dict[str, Any]:
         """레거시 호환 저장 — 내부적으로 save_custom_workflow에 위임해
         리비전도 함께 남긴다(리비전 없는 spec 갱신 경로를 없애기 위함)."""
-        self.save_custom_workflow(name, spec, note="upsert")
-        row = self.get_custom_workflow(name)
+        self.save_custom_workflow(name, spec, note="upsert", org_id=org_id)
+        # 읽기-다시 도 저장된 org 기준으로 — 명시 org_id가 ctx와 다르거나
+        # ctx=''(기본 조직 귀속)일 때 다른 조직의 동명 행을 반환하는 것을 막는다.
+        with orgctx.org_scope(self._custom_wf_write_org(org_id)):
+            row = self.get_custom_workflow(name)
         return row if row is not None else {"name": name, "spec": spec}
+
+    def _custom_wf_write_org(self, explicit: str | None = None) -> str:
+        """custom_workflows 쓰기 org — 명시 > 요청 ctx > 첫 활성 조직.
+
+        ctx='' 쓰기를 org_id=''에 두면 resolver의 ctx='' 폴백(첫 활성 조직)과
+        어긋나 저장한 spec을 다시 해석하지 못한다. 읽기 경로의 무필터와 달리
+        쓰기는 항상 단일 org에 귀속시킨다(spec 003 US3)."""
+        oid = orgctx.org_for_write(explicit)
+        if oid:
+            return oid
+        try:
+            orgs = self.list_organizations()
+        except Exception:
+            return ""
+        return str(orgs[0]["id"]) if orgs else ""
 
     def save_custom_workflow(
         self,
@@ -172,6 +239,7 @@ class BuilderStoreMixin:
         base_revision: int | None = None,
         note: str = "",
         created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """WorkflowSpec 저장 + append-only 리비전 기록 (Paperclip document
         versioning 포팅).
@@ -185,10 +253,18 @@ class BuilderStoreMixin:
           리비전 행은 절대 재작성하지 않는다."""
         now = _iso(_now())
         spec_json = json.dumps(spec, ensure_ascii=False)
+        oid = self._custom_wf_write_org(org_id)
+        # SELECT/UPDATE도 "기록될 org"(oid) 기준으로 스코프한다 — 필터 없이
+        # name만으로 UPDATE하면 ctx='' 쓰기가 모든 조직의 동명 행을 한꺼번에
+        # 덮어쓰고, 명시 org_id와 ctx가 엇갈리면 엉뚱한 조직 행을 수정한다
+        # (cross-org 덮어쓰기 — spec 003 US3).
+        frag = " AND org_id=?"
+        fparams: list[Any] = [oid]
         try:
             with self.tx() as c:
                 row = c.execute(
-                    "SELECT latest_revision FROM custom_workflows WHERE name=?", (name,)
+                    "SELECT latest_revision FROM custom_workflows WHERE name=?" + frag,  # noqa: S608
+                    (name, *fparams),
                 ).fetchone()
                 latest = int(row["latest_revision"] or 0) if row is not None else 0
                 if row is not None and base_revision is not None:
@@ -206,15 +282,15 @@ class BuilderStoreMixin:
                 if row is None:
                     c.execute(
                         "INSERT INTO custom_workflows"
-                        "(name,spec,created_at,latest_revision,updated_at)"
-                        " VALUES(?,?,?,?,?)",
-                        (name, spec_json, now, new_rev, now),
+                        "(name,spec,created_at,latest_revision,updated_at,org_id)"
+                        " VALUES(?,?,?,?,?,?)",
+                        (name, spec_json, now, new_rev, now, oid),
                     )
                 else:
                     cur = c.execute(
-                        "UPDATE custom_workflows SET spec=?, latest_revision=?,"
-                        " updated_at=? WHERE name=?",
-                        (spec_json, new_rev, now, name),
+                        "UPDATE custom_workflows SET spec=?, latest_revision=?,"  # noqa: S608
+                        " updated_at=? WHERE name=?" + frag,
+                        (spec_json, new_rev, now, name, *fparams),
                     )
                     if int(getattr(cur, "rowcount", 0) or 0) <= 0:
                         # SELECT~UPDATE 사이 동시 삭제 — 리비전만 남는
@@ -226,8 +302,8 @@ class BuilderStoreMixin:
                         }
                 c.execute(
                     "INSERT INTO workflow_revisions"
-                    "(id,name,revision,spec,note,created_by,created_at)"
-                    " VALUES(?,?,?,?,?,?,?)",
+                    "(id,name,revision,spec,note,created_by,created_at,org_id)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
                     (
                         uuid.uuid4().hex[:12],
                         name,
@@ -236,6 +312,7 @@ class BuilderStoreMixin:
                         str(note or "")[:500],
                         str(created_by or "")[:200],
                         now,
+                        oid,
                     ),
                 )
         except self._integrity_errors:
@@ -243,18 +320,29 @@ class BuilderStoreMixin:
             # 다시 읽어 conflict로 보고한다(리비전은 이미 append됐을 수 있으나
             # latest+1 재시도는 호출자 몫 — 여기서는 안전하게 conflict 반환).
             cur = self._conn.execute(
-                "SELECT latest_revision FROM custom_workflows WHERE name=?", (name,)
+                "SELECT latest_revision FROM custom_workflows WHERE name=?" + frag,  # noqa: S608
+                (name, *fparams),
             ).fetchone()
             latest = int(cur["latest_revision"] or 0) if cur is not None else 0
             return {"ok": False, "conflict": True, "current_revision": latest}
         return {"ok": True, "revision": new_rev, "current_revision": new_rev}
 
     def list_custom_workflows(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute("SELECT * FROM custom_workflows ORDER BY name").fetchall()
+        frag, params = _org_filter()
+        rows = self._conn.execute(
+            "SELECT * FROM custom_workflows"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY name",
+            tuple(params),
+        ).fetchall()
         return [self._custom_workflow_json(r) for r in rows]
 
     def get_custom_workflow(self, name: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM custom_workflows WHERE name=?", (name,)).fetchone()
+        frag, params = _org_filter()
+        row = self._conn.execute(
+            "SELECT * FROM custom_workflows WHERE name=?" + frag,  # noqa: S608
+            (name, *params),
+        ).fetchone()
         return self._custom_workflow_json(row) if row else None
 
     # ---- workflow_revisions (append-only spec 이력) ----
@@ -275,19 +363,21 @@ class BuilderStoreMixin:
 
     def list_custom_workflow_revisions(self, name: str) -> list[dict[str, Any]]:
         """리비전 목록 — 최신순. spec은 spec_preview(200자)로 대체."""
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT id,name,revision,spec,note,created_by,created_at"
-            " FROM workflow_revisions WHERE name=? ORDER BY revision DESC",
-            (name,),
+            "SELECT id,name,revision,spec,note,created_by,created_at"  # noqa: S608
+            " FROM workflow_revisions WHERE name=?" + frag + " ORDER BY revision DESC",
+            (name, *params),
         ).fetchall()
         return [self._workflow_revision_json(r) for r in rows]
 
     def get_custom_workflow_revision(self, name: str, revision: int) -> dict[str, Any] | None:
         """특정 리비전의 전체 spec 조회."""
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT id,name,revision,spec,note,created_by,created_at"
-            " FROM workflow_revisions WHERE name=? AND revision=?",
-            (name, int(revision)),
+            "SELECT id,name,revision,spec,note,created_by,created_at"  # noqa: S608
+            " FROM workflow_revisions WHERE name=? AND revision=?" + frag,
+            (name, int(revision), *params),
         ).fetchone()
         return self._workflow_revision_json(row, with_spec=True) if row else None
 
@@ -338,9 +428,13 @@ class BuilderStoreMixin:
 
         리비전은 spec의 파생 이력이라 워크플로 없이 보존할 의미가 없고,
         고아 리비전이 최신 복원 경로를 오염시키는 것을 막는다."""
+        frag, params = _org_filter()
         with self.tx() as c:
-            cur = c.execute("DELETE FROM custom_workflows WHERE name=?", (name,))
-            c.execute("DELETE FROM workflow_revisions WHERE name=?", (name,))
+            cur = c.execute(
+                "DELETE FROM custom_workflows WHERE name=?" + frag,  # noqa: S608
+                (name, *params),
+            )
+            c.execute("DELETE FROM workflow_revisions WHERE name=?" + frag, (name, *params))  # noqa: S608
         return cur.rowcount > 0
 
     # ---- triggers (세션 상태 전이 자동화) ----
@@ -353,40 +447,56 @@ class BuilderStoreMixin:
         return d
 
     def create_trigger(
-        self, match: dict[str, Any], action: dict[str, Any], enabled: bool = True
+        self,
+        match: dict[str, Any],
+        action: dict[str, Any],
+        enabled: bool = True,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         tid = uuid.uuid4().hex[:12]
         now = _iso(_now())
         with self.tx() as c:
             c.execute(
                 "INSERT INTO triggers(id,enabled,match,action,created_at,"
-                "last_fired_at,last_error) VALUES(?,?,?,?,?,NULL,'')",
+                "last_fired_at,last_error,org_id) VALUES(?,?,?,?,?,NULL,'',?)",
                 (
                     tid,
                     1 if enabled else 0,
                     json.dumps(match or {}, ensure_ascii=False),
                     json.dumps(action or {}, ensure_ascii=False),
                     now,
+                    orgctx.org_for_write(org_id),
                 ),
             )
         trig = self.get_trigger(tid)
         return trig if trig is not None else {"id": tid}
 
     def list_triggers(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         sql = "SELECT * FROM triggers"
+        conds: list[str] = []
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
         if enabled_only:
-            sql += " WHERE enabled=1"
+            conds.append("enabled=1")
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY created_at DESC"
-        rows = self._conn.execute(sql).fetchall()
+        rows = self._conn.execute(sql, params).fetchall()
         return [self._trigger_json(r) for r in rows]
 
     def get_trigger(self, trigger_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM triggers WHERE id=?", (trigger_id,)).fetchone()
+        frag, params = _org_filter()
+        row = self._conn.execute(
+            "SELECT * FROM triggers WHERE id=?" + frag,  # noqa: S608
+            (trigger_id, *params),
+        ).fetchone()
         return self._trigger_json(row) if row else None
 
     def delete_trigger(self, trigger_id: str) -> bool:
+        frag, params = _org_filter()
         with self.tx() as c:
-            cur = c.execute("DELETE FROM triggers WHERE id=?", (trigger_id,))
+            cur = c.execute("DELETE FROM triggers WHERE id=?" + frag, (trigger_id, *params))  # noqa: S608
             c.execute("DELETE FROM trigger_fires WHERE trigger_id=?", (trigger_id,))
         return cur.rowcount > 0
 
@@ -394,10 +504,11 @@ class BuilderStoreMixin:
         trig = self.get_trigger(trigger_id)
         if trig is None:
             return None
+        frag, fparams = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE triggers SET enabled=? WHERE id=?",
-                (1 if enabled else 0, trigger_id),
+                "UPDATE triggers SET enabled=? WHERE id=?" + frag,  # noqa: S608
+                (1 if enabled else 0, trigger_id, *fparams),
             )
         return self.get_trigger(trigger_id)
 
@@ -425,18 +536,20 @@ class BuilderStoreMixin:
 
     def mark_trigger_error(self, trigger_id: str, error: str) -> None:
         """발사 실패 기록 — last_error만 갱신(last_fired_at은 유지)."""
+        frag, params = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE triggers SET last_error=? WHERE id=?",
-                (error[:300], trigger_id),
+                "UPDATE triggers SET last_error=? WHERE id=?" + frag,  # noqa: S608
+                (error[:300], trigger_id, *params),
             )
 
     def mark_trigger_fired(self, trigger_id: str) -> None:
         """발사 성공 기록 — last_fired_at 갱신 + last_error 클리어."""
+        frag, params = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE triggers SET last_fired_at=?, last_error='' WHERE id=?",
-                (_iso(_now()), trigger_id),
+                "UPDATE triggers SET last_fired_at=?, last_error='' WHERE id=?" + frag,  # noqa: S608
+                (_iso(_now()), trigger_id, *params),
             )
 
     # ---- share_links (공개 스냅샷 공유) ----
@@ -448,12 +561,13 @@ class BuilderStoreMixin:
         payload: dict[str, Any],
         created_by: str,
         expires_at: str,
+        org_id: str | None = None,
     ) -> None:
         now = _iso(_now())
         with self.tx() as c:
             c.execute(
                 "INSERT INTO share_links(token,kind,ref_id,payload,created_by,"
-                "expires_at,created_at) VALUES(?,?,?,?,?,?,?)",
+                "expires_at,created_at,org_id) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     token,
                     kind,
@@ -462,10 +576,13 @@ class BuilderStoreMixin:
                     created_by,
                     expires_at,
                     now,
+                    orgctx.org_for_write(org_id),
                 ),
             )
 
     def get_share_link(self, token: str) -> dict[str, Any] | None:
+        # 공개 공유 조회 — 토큰 자체가 capability라 org 필터를 걸지 않는다
+        # (공개 경로는 ctx=''이며, 관리용 목록/삭제 경로만 org 스코프 대상).
         row = self._conn.execute(
             "SELECT token,kind,ref_id,payload,created_by,expires_at,created_at"
             " FROM share_links WHERE token=?",
@@ -485,21 +602,35 @@ class BuilderStoreMixin:
         json_path: str = "",
         enabled: bool = True,
         created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         cid = uuid.uuid4().hex[:12]
         now = _iso(_now())
         with self.tx() as c:
             c.execute(
                 "INSERT INTO dashboard_cards(id,title,url,json_path,enabled,"
-                "created_by,created_at) VALUES(?,?,?,?,?,?,?)",
-                (cid, title, url, json_path, 1 if enabled else 0, created_by, now),
+                "created_by,created_at,org_id) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    cid,
+                    title,
+                    url,
+                    json_path,
+                    1 if enabled else 0,
+                    created_by,
+                    now,
+                    orgctx.org_for_write(org_id),
+                ),
             )
         card = self.get_card(cid)
         return card if card is not None else {"id": cid}
 
     def list_cards(self) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT * FROM dashboard_cards ORDER BY created_at DESC"
+            "SELECT * FROM dashboard_cards"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY created_at DESC",
+            tuple(params),
         ).fetchall()
         return [self._card_json(r) for r in rows]
 
@@ -510,21 +641,27 @@ class BuilderStoreMixin:
         return d
 
     def get_card(self, card_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM dashboard_cards WHERE id=?", (card_id,)).fetchone()
+        frag, params = _org_filter()
+        row = self._conn.execute(
+            "SELECT * FROM dashboard_cards WHERE id=?" + frag,  # noqa: S608
+            (card_id, *params),
+        ).fetchone()
         return self._card_json(row) if row else None
 
     def delete_card(self, card_id: str) -> bool:
+        frag, params = _org_filter()
         with self.tx() as c:
-            cur = c.execute("DELETE FROM dashboard_cards WHERE id=?", (card_id,))
+            cur = c.execute("DELETE FROM dashboard_cards WHERE id=?" + frag, (card_id, *params))  # noqa: S608
         return cur.rowcount > 0
 
     def set_card_enabled(self, card_id: str, enabled: bool) -> dict[str, Any] | None:
         card = self.get_card(card_id)
         if card is None:
             return None
+        frag, fparams = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE dashboard_cards SET enabled=? WHERE id=?",
-                (1 if enabled else 0, card_id),
+                "UPDATE dashboard_cards SET enabled=? WHERE id=?" + frag,  # noqa: S608
+                (1 if enabled else 0, card_id, *fparams),
             )
         return self.get_card(card_id)

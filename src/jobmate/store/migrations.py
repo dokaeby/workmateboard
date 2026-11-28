@@ -101,6 +101,9 @@ class MigrationStoreMixin:
             "agents",
             "goals",
             "evals",
+            # eval_runs는 파생 테이블이지만 org_id를 비정규화해 직접 필터한다
+            # (spec 003 US3 리뷰 — 조직 간 eval 활동 유출 차단).
+            "eval_runs",
             "custom_workflows",
             "workflow_revisions",
             "connectors",
@@ -217,6 +220,791 @@ class MigrationStoreMixin:
                     logger.warning("org index failed on %s: %s", _t, e)
         except Exception as e:
             logger.warning("org backfill failed: %s", e)
+        # spec 003 US3/FR-018 — org_id 컬럼 보강·백필 이후에 실행해야
+        # 새 UNIQUE/PK에 org_id 값이 채워진 상태에서 제약이 잡힌다.
+        try:
+            self._migrate_org_unique_rescope()
+        except Exception as e:
+            logger.warning("org unique rescope failed: %s", e)
+
+    # spec 003 US3/FR-018 — org-scoped 테이블의 전역 UNIQUE/PK를 org_id
+    # 포함으로 재스코프. 새 제약은 기존 제약의 상위집합이라 데이터
+    # 중복 제거 없이 제약만 교체하면 된다.
+    #
+    # SQLite 재작성 스펙 — old_unique는 "이 컬럼 집합의 UNIQUE가 남아
+    # 있으면 재작성" 트리거(PRAGMA index_list의 unique 인덱스 컬럼 집합,
+    # PK 자동 인덱스 포함). cols는 신규 테이블 컬럼 순서 — 구 테이블에
+    # 아직 없는 컬럼(이후 _ensure_columns가 보강하는 것들)은 INSERT에서
+    # 제외하고 DEFAULT로 둔다. indexes는 재작성으로 소실되는 보조 인덱스
+    # 복원문(SCHEMA 정의와 동일).
+    _ORG_UNIQUE_SQLITE_REBUILDS: dict[str, dict[str, Any]] = {
+        "message_extractions": {
+            "old_unique": [frozenset({"source_provider", "source_id"})],
+            "cols": [
+                "source_provider",
+                "source_id",
+                "thread_id",
+                "extraction_json",
+                "processing_status",
+                "error_message",
+                "attempts",
+                "retry_at",
+                "source_text",
+                "created_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  source_provider TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL DEFAULT '',
+  extraction_json TEXT NOT NULL DEFAULT '{}',
+  processing_status TEXT NOT NULL DEFAULT 'pending',
+  error_message TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  retry_at TEXT NOT NULL DEFAULT '',
+  source_text TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (source_provider, source_id, org_id)
+)""",
+            "indexes": [],
+        },
+        "email_summaries": {
+            "old_unique": [frozenset({"source_provider", "source_id"})],
+            "cols": [
+                "source_provider",
+                "source_id",
+                "subject",
+                "sender",
+                "summary",
+                "message_at",
+                "checked_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  source_provider TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  sender TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  message_at TEXT NOT NULL DEFAULT '',
+  checked_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (source_provider, source_id, org_id)
+)""",
+            "indexes": [],
+        },
+        "custom_workflows": {
+            "old_unique": [frozenset({"name"})],
+            "cols": [
+                "name",
+                "spec",
+                "created_at",
+                "latest_revision",
+                "updated_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  name TEXT NOT NULL,
+  spec TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  latest_revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT,
+  org_id TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (name, org_id)
+)""",
+            "indexes": [],
+        },
+        "workflow_revisions": {
+            "old_unique": [frozenset({"name", "revision"})],
+            "cols": [
+                "id",
+                "name",
+                "revision",
+                "spec",
+                "note",
+                "created_by",
+                "created_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  spec TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, name, revision)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_workflow_revisions_name ON workflow_revisions(name)"
+            ],
+        },
+        "budget_policies": {
+            "old_unique": [frozenset({"scope_type", "scope_id"})],
+            "cols": [
+                "id",
+                "scope_type",
+                "scope_id",
+                "window_kind",
+                "amount_usd",
+                "warn_percent",
+                "hard_stop_enabled",
+                "is_active",
+                "created_at",
+                "updated_at",
+                "org_id",
+                "amount_microusd",
+                "reservation_microusd",
+                "unpriced_usage_policy",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  window_kind TEXT NOT NULL DEFAULT 'calendar_month_utc',
+  amount_usd REAL NOT NULL,
+  warn_percent INTEGER NOT NULL DEFAULT 80,
+  hard_stop_enabled INTEGER NOT NULL DEFAULT 1,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  amount_microusd INTEGER NOT NULL DEFAULT 0,
+  reservation_microusd INTEGER NOT NULL DEFAULT 0,
+  unpriced_usage_policy TEXT NOT NULL DEFAULT 'allow',
+  UNIQUE(scope_type, scope_id, org_id)
+)""",
+            "indexes": [],
+        },
+        "agent_permissions": {
+            "old_unique": [
+                frozenset(
+                    {
+                        "agent_id",
+                        "capability",
+                        "scope_type",
+                        "scope_id",
+                        "effect",
+                    }
+                )
+            ],
+            "cols": [
+                "id",
+                "agent_id",
+                "capability",
+                "effect",
+                "scope_type",
+                "scope_id",
+                "created_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  effect TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'global',
+  scope_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(agent_id, capability, scope_type, scope_id, effect, org_id)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_agent_permissions_agent"
+                " ON agent_permissions(agent_id)"
+            ],
+        },
+        "cost_events": {
+            "old_unique": [frozenset({"idempotency_key"})],
+            "cols": [
+                "id",
+                "idempotency_key",
+                "agent_id",
+                "task_id",
+                "run_id",
+                "stage_run_id",
+                "provider",
+                "model",
+                "billing_type",
+                "cost_status",
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+                "cost_microusd",
+                "pricing_source",
+                "pricing_version",
+                "occurred_at",
+                "created_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  agent_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT,
+  run_id TEXT,
+  stage_run_id TEXT,
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  billing_type TEXT NOT NULL DEFAULT 'unknown',
+  cost_status TEXT NOT NULL DEFAULT 'unpriced',
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_microusd INTEGER,
+  pricing_source TEXT NOT NULL DEFAULT '',
+  pricing_version TEXT NOT NULL DEFAULT '',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, idempotency_key)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_cost_events_agent"
+                " ON cost_events(agent_id, occurred_at)",
+                "CREATE INDEX IF NOT EXISTS idx_cost_events_task"
+                " ON cost_events(task_id, occurred_at)",
+                "CREATE INDEX IF NOT EXISTS idx_cost_events_run ON cost_events(run_id)",
+                "CREATE INDEX IF NOT EXISTS idx_cost_events_stage ON cost_events(stage_run_id)",
+                "CREATE INDEX IF NOT EXISTS idx_cost_events_occurred ON cost_events(occurred_at)",
+            ],
+        },
+        "agents": {
+            "old_unique": [frozenset({"name"})],
+            "cols": [
+                "id",
+                "name",
+                "adapter_type",
+                "role",
+                "title",
+                "description",
+                "capabilities",
+                "kind",
+                "adapter_config",
+                "reports_to",
+                "status",
+                "monthly_budget_usd",
+                "monthly_budget_microusd",
+                "last_seen_at",
+                "created_by",
+                "created_at",
+                "updated_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  adapter_type TEXT NOT NULL,
+  role TEXT,
+  title TEXT,
+  description TEXT,
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  kind TEXT NOT NULL DEFAULT 'workflow',
+  adapter_config TEXT NOT NULL DEFAULT '{}',
+  reports_to TEXT REFERENCES agents(id),
+  status TEXT NOT NULL DEFAULT 'active',
+  monthly_budget_usd REAL,
+  monthly_budget_microusd INTEGER NOT NULL DEFAULT 0,
+  last_seen_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT ''
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_agents_reports_to ON agents(reports_to)",
+                "CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status)",
+            ],
+        },
+        "event_links": {
+            "old_unique": [frozenset({"idempotency_key"})],
+            "cols": [
+                "id",
+                "idempotency_key",
+                "gmail_message_id",
+                "connection_id",
+                "status",
+                "calendar_event_id",
+                "notification_id",
+                "source_url",
+                "attempts",
+                "last_error",
+                "created_at",
+                "updated_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  gmail_message_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL DEFAULT 'default',
+  status TEXT NOT NULL,
+  calendar_event_id TEXT NOT NULL DEFAULT '',
+  notification_id TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, idempotency_key)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_links_msg ON event_links(gmail_message_id)"
+            ],
+        },
+        "agent_sessions": {
+            "old_unique": [frozenset({"tool", "session_key"})],
+            "cols": [
+                "id",
+                "tool",
+                "session_key",
+                "project",
+                "title",
+                "status",
+                "doing",
+                "ask",
+                "ended_summary",
+                "artifacts",
+                "machine",
+                "tokens_in",
+                "tokens_out",
+                "last_event_at",
+                "created_at",
+                "updated_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  project TEXT,
+  title TEXT,
+  status TEXT NOT NULL,
+  doing TEXT,
+  ask TEXT,
+  ended_summary TEXT,
+  artifacts TEXT,
+  machine TEXT,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
+  last_event_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, tool, session_key)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status)"
+            ],
+        },
+        "tasks": {
+            "old_unique": [frozenset({"identifier"})],
+            "cols": [
+                "id",
+                "identifier",
+                "title",
+                "description",
+                "status",
+                "priority",
+                "assignee_agent_id",
+                "reviewer_agent_id",
+                "parent_id",
+                "project_id",
+                "goal_id",
+                "current_run_id",
+                "checkout_agent_id",
+                "checkout_at",
+                "created_by",
+                "created_at",
+                "updated_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'backlog',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  assignee_agent_id TEXT,
+  reviewer_agent_id TEXT,
+  parent_id TEXT,
+  project_id TEXT,
+  goal_id TEXT,
+  current_run_id TEXT,
+  checkout_agent_id TEXT,
+  checkout_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, identifier)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+                "CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_agent_id)",
+                "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)",
+                "CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(checkout_agent_id)",
+            ],
+        },
+        "agent_events": {
+            "old_unique": [frozenset({"idempotency_key"})],
+            "cols": [
+                "id",
+                "idempotency_key",
+                "event_type",
+                "agent_id",
+                "task_id",
+                "run_id",
+                "actor",
+                "summary",
+                "detail",
+                "occurred_at",
+                "created_at",
+                "org_id",
+            ],
+            "ddl": """CREATE TABLE {t} (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  agent_id TEXT,
+  task_id TEXT,
+  run_id TEXT,
+  actor TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '{}',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  org_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(org_id, idempotency_key)
+)""",
+            "indexes": [
+                "CREATE INDEX IF NOT EXISTS idx_agent_events_agent"
+                " ON agent_events(agent_id, created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_agent_events_task"
+                " ON agent_events(task_id, created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_agent_events_run"
+                " ON agent_events(run_id, created_at)",
+            ],
+        },
+    }
+
+    # PG 재스코프 스펙 — (table, constraint_type, old_cols, new_cols|None,
+    # add_ddl|None, constraint_name|None). new_cols가 None이면 제약 삭제만
+    # (agents.name — per-org 유일성은 idx_agents_name_lower 인덱스가 담당).
+    _PG_ORG_UNIQUE_RESPECS: tuple[
+        tuple[str, str, tuple[str, ...], tuple[str, ...] | None, str | None, str | None],
+        ...,
+    ] = (
+        (
+            "custom_workflows",
+            "PRIMARY KEY",
+            ("name",),
+            ("name", "org_id"),
+            "PRIMARY KEY(name, org_id)",
+            "custom_workflows_org_pk",
+        ),
+        (
+            "message_extractions",
+            "PRIMARY KEY",
+            ("source_provider", "source_id"),
+            ("source_provider", "source_id", "org_id"),
+            "PRIMARY KEY(source_provider, source_id, org_id)",
+            "message_extractions_org_pk",
+        ),
+        (
+            "email_summaries",
+            "PRIMARY KEY",
+            ("source_provider", "source_id"),
+            ("source_provider", "source_id", "org_id"),
+            "PRIMARY KEY(source_provider, source_id, org_id)",
+            "email_summaries_org_pk",
+        ),
+        (
+            "workflow_revisions",
+            "UNIQUE",
+            ("name", "revision"),
+            ("org_id", "name", "revision"),
+            "UNIQUE(org_id, name, revision)",
+            "workflow_revisions_org_name_rev_key",
+        ),
+        (
+            "budget_policies",
+            "UNIQUE",
+            ("scope_type", "scope_id"),
+            ("scope_type", "scope_id", "org_id"),
+            "UNIQUE(scope_type, scope_id, org_id)",
+            "budget_policies_scope_org_key",
+        ),
+        (
+            "agent_permissions",
+            "UNIQUE",
+            ("agent_id", "capability", "scope_type", "scope_id", "effect"),
+            ("agent_id", "capability", "scope_type", "scope_id", "effect", "org_id"),
+            "UNIQUE(agent_id, capability, scope_type, scope_id, effect, org_id)",
+            "agent_permissions_scope_org_key",
+        ),
+        (
+            "cost_events",
+            "UNIQUE",
+            ("idempotency_key",),
+            ("org_id", "idempotency_key"),
+            "UNIQUE(org_id, idempotency_key)",
+            "cost_events_org_idem_key",
+        ),
+        (
+            "event_links",
+            "UNIQUE",
+            ("idempotency_key",),
+            ("org_id", "idempotency_key"),
+            "UNIQUE(org_id, idempotency_key)",
+            "event_links_org_idem_key",
+        ),
+        (
+            "agent_sessions",
+            "UNIQUE",
+            ("tool", "session_key"),
+            ("org_id", "tool", "session_key"),
+            "UNIQUE(org_id, tool, session_key)",
+            "agent_sessions_org_tool_key",
+        ),
+        (
+            "tasks",
+            "UNIQUE",
+            ("identifier",),
+            ("org_id", "identifier"),
+            "UNIQUE(org_id, identifier)",
+            "tasks_org_ident_key",
+        ),
+        (
+            "agent_events",
+            "UNIQUE",
+            ("idempotency_key",),
+            ("org_id", "idempotency_key"),
+            "UNIQUE(org_id, idempotency_key)",
+            "agent_events_org_idem_key",
+        ),
+        ("agents", "UNIQUE", ("name",), None, None, None),
+    )
+
+    def _migrate_org_unique_rescope(self) -> None:
+        """spec 003 US3/FR-018 — org-scoped 테이블의 UNIQUE/PK 재스코프.
+
+        테이블 재작성(SQLite)·제약 교체(PG)·name_lower 인덱스 교체를
+        수행한다. 행 단위/테이블 단위 best-effort — 실패는 경고만 남기고
+        다음 기동에 재시도한다(_migrate_* 패턴과 동일)."""
+        if self._pg:
+            self._migrate_org_unique_rescope_pg()
+        else:
+            self._migrate_org_unique_rescope_sqlite()
+
+    # ---- org unique rescope: 공통 헬퍼 ----
+
+    def _org_name_index_current(self, index_name: str) -> bool:
+        """idx_*_name_lower 인덱스가 이미 (org_id, lower(name)) 형태인지."""
+        try:
+            if self._pg:
+                row = self._conn.execute(
+                    "SELECT indexdef FROM pg_indexes WHERE indexname=?"
+                    " AND schemaname=current_schema()",
+                    (index_name,),
+                ).fetchone()
+                return row is not None and "org_id" in str(row["indexdef"])
+            row = self._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                (index_name,),
+            ).fetchone()
+            return row is not None and bool(row["sql"]) and "org_id" in str(row["sql"])
+        except Exception as e:
+            logger.warning("%s index def check failed: %s", index_name, e)
+            return False
+
+    def _ensure_org_name_index(self, table: str) -> None:
+        """UNIQUE (org_id, lower(name)) 인덱스 — 구 (lower(name)) 인덱스가
+        남아 있으면 DROP 후 재생성한다(매 기동 멱등)."""
+        index_name = f"idx_{table}_name_lower"
+        if self._org_name_index_current(index_name):
+            return
+        with self.tx() as c:
+            c.execute(f"DROP INDEX IF EXISTS {index_name}")
+            c.execute(f"CREATE UNIQUE INDEX {index_name} ON {table}(org_id, lower(name))")
+        logger.info("%s rescope: %s recreated with org_id", table, index_name)
+
+    def _ensure_org_scoped_index(self, index_name: str, create_sql: str) -> None:
+        """UNIQUE 인덱스를 org_id 포함 형태로 교체 — 정의에 org_id가 없으면
+        DROP 후 재생성한다(매 기동 멱등). create_sql은 완성된 CREATE 문.
+
+        _ensure_org_name_index와 달리 컬럼 구성이 고정이 아닌 부분
+        UNIQUE 인덱스(dedupe/budget/recovery)용 — org_id 판정은
+        _org_name_index_current와 동일하게 정의 문자열의 'org_id' 포함
+        여부로 한다."""
+        if self._org_name_index_current(index_name):
+            return
+        with self.tx() as c:
+            c.execute(f"DROP INDEX IF EXISTS {index_name}")
+            c.execute(create_sql)
+        logger.info("org rescope: %s recreated with org_id", index_name)
+
+    # ---- org unique rescope: SQLite ----
+
+    def _sqlite_needs_org_rescope(self, table: str, spec: dict[str, Any]) -> bool:
+        """구 UNIQUE 컬럼 집합이 아직 남아 있으면 True — 재실행 시 False."""
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if exists is None:
+            return False
+        uniques = {frozenset(c) for c in self._sqlite_table_unique_cols(table)}
+        return any(frozenset(o) in uniques for o in spec["old_unique"])
+
+    def _sqlite_rebuild_org_table(self, table: str, spec: dict[str, Any]) -> None:
+        """CREATE new → INSERT SELECT(공통 컬럼) → DROP old → RENAME.
+
+        구 테이블에 없는 컬럼은 신규 DDL의 DEFAULT가 적용되고, 스펙에
+        없는 구 컬럼은 경고 후 버린다(발생 시 스펙 갱신 필요).
+        agents.reports_to 자기참조 FK 때문에 재작성 동안만
+        foreign_keys를 끈다 — 삽입 순서와 무관하게 복사가 가능하다."""
+        new_table = f"{table}__new"
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        old_cols = [str(r["name"]) for r in rows]
+        old_set = set(old_cols)
+        spec_cols = [str(c) for c in spec["cols"]]
+        spec_set = set(spec_cols)
+        copy_cols = [c for c in spec_cols if c in old_set]
+        dropped = [c for c in old_cols if c not in spec_set]
+        if dropped:
+            logger.warning("%s org rescope: dropping unknown columns %s", table, dropped)
+        if not copy_cols:
+            raise RuntimeError(f"{table}: no overlapping columns to copy")
+        collist = ",".join(copy_cols)
+        fk_row = self._conn.execute("PRAGMA foreign_keys").fetchone()
+        fk_on = bool(fk_row and fk_row[0])
+        if fk_on:
+            self._conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with self.tx() as c:
+                c.execute(f"DROP TABLE IF EXISTS {new_table}")
+                c.execute(spec["ddl"].replace("{t}", new_table))
+                c.execute(
+                    f"INSERT INTO {new_table}({collist})"  # noqa: S608 - 내부 상수
+                    f" SELECT {collist} FROM {table}"
+                )
+                c.execute(f"DROP TABLE {table}")
+                c.execute(f"ALTER TABLE {new_table} RENAME TO {table}")
+                for idx_sql in spec.get("indexes", []):
+                    c.execute(idx_sql)
+        finally:
+            if fk_on:
+                self._conn.execute("PRAGMA foreign_keys=ON")
+        logger.info("%s org rescope: table rebuilt (%d cols copied)", table, len(copy_cols))
+
+    def _migrate_org_unique_rescope_sqlite(self) -> None:
+        for table, spec in self._ORG_UNIQUE_SQLITE_REBUILDS.items():
+            try:
+                if not self._sqlite_needs_org_rescope(table, spec):
+                    continue
+                self._sqlite_rebuild_org_table(table, spec)
+            except Exception as e:
+                logger.warning("org unique rescope %s failed: %s", table, e)
+        for t in ("projects", "evals"):
+            try:
+                self._ensure_org_name_index(t)
+            except Exception as e:
+                logger.warning("org name index %s failed: %s", t, e)
+        # inbox_items dedupe 부분 UNIQUE 인덱스 — 구 (dedupe_key) 전역
+        # 인덱스가 남아 있으면 (dedupe_key, org_id)로 교체한다.
+        # dedupe_key 자체가 org 네임스페이스를 포함하므로(orgctx 경유
+        # 저장) 실질 중복 판정은 동일하고, org_id 컬럼은 명시적 조직
+        # 범위 제약을 위한 것이다.
+        try:
+            self._ensure_org_scoped_index(
+                "idx_inbox_items_dedupe",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_items_dedupe"
+                " ON inbox_items(dedupe_key, org_id) WHERE dedupe_key != ''",
+            )
+        except Exception as e:
+            logger.warning("org dedupe index inbox_items failed: %s", e)
+
+    # ---- org unique rescope: PostgreSQL ----
+
+    def _pg_table_constraints(self, table: str) -> list[tuple[str, str, tuple[str, ...]]]:
+        """(constraint_name, constraint_type, cols) — UNIQUE/PK 제약 목록."""
+        rows = self._conn.execute(
+            "SELECT tc.constraint_name, tc.constraint_type,"
+            " array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS cols"
+            " FROM information_schema.table_constraints tc"
+            " JOIN information_schema.key_column_usage kcu"
+            " ON kcu.constraint_name = tc.constraint_name"
+            " AND kcu.table_schema = tc.table_schema"
+            " AND kcu.table_name = tc.table_name"
+            " WHERE tc.table_name=? AND tc.table_schema = current_schema()"
+            " AND tc.constraint_type IN ('UNIQUE','PRIMARY KEY')"
+            " GROUP BY tc.constraint_name, tc.constraint_type",
+            (table,),
+        ).fetchall()
+        return [
+            (
+                str(r["constraint_name"]),
+                str(r["constraint_type"]),
+                tuple(str(c) for c in (r["cols"] or [])),
+            )
+            for r in rows
+        ]
+
+    def _pg_rescope_one(
+        self,
+        table: str,
+        ctype: str,
+        old_cols: tuple[str, ...],
+        new_cols: tuple[str, ...] | None,
+        add_sql: str | None,
+        cname: str | None,
+    ) -> None:
+        """구 컬럼 집합의 제약을 drop하고 새 집합 제약을 add한다.
+
+        신구 제약은 상호 배타적이지 않을 수 있어(드문 부분 마이그레이션)
+        drop/add를 독립적으로 판정한다 — 재실행 시 이미 새 집합이 있으면
+        add를 건너뛰고, 구 집합이 없으면 drop을 건너뛴다."""
+        old_set = set(old_cols)
+        new_set = set(new_cols) if new_cols else set()
+        with self.tx() as c:
+            for con_name, con_type, cols in self._pg_table_constraints(table):
+                if con_type == ctype and set(cols) == old_set:
+                    c.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{con_name}"')
+            if new_cols is None or add_sql is None or cname is None:
+                return
+            have_new = any(
+                ct == ctype and set(cl) == new_set
+                for _, ct, cl in self._pg_table_constraints(table)
+            )
+            if not have_new:
+                c.execute(f"ALTER TABLE {table} ADD CONSTRAINT {cname} {add_sql}")
+        logger.info("%s org rescope: %s %s -> %s", table, ctype, old_cols, new_cols)
+
+    def _migrate_org_unique_rescope_pg(self) -> None:
+        for spec in self._PG_ORG_UNIQUE_RESPECS:
+            table, ctype, old_cols, new_cols, add_sql, cname = spec
+            try:
+                self._pg_rescope_one(table, ctype, old_cols, new_cols, add_sql, cname)
+            except Exception as e:
+                logger.warning("org unique rescope %s failed: %s", table, e)
+        for t in ("projects", "evals"):
+            try:
+                self._ensure_org_name_index(t)
+            except Exception as e:
+                logger.warning("org name index %s failed: %s", t, e)
+        try:
+            self._ensure_org_scoped_index(
+                "idx_inbox_items_dedupe",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_items_dedupe"
+                " ON inbox_items(dedupe_key, org_id) WHERE dedupe_key != ''",
+            )
+        except Exception as e:
+            logger.warning("org dedupe index inbox_items failed: %s", e)
 
     def _migrate_run_columns(self) -> None:
         """기존 DB의 runs에 created_by/project/agent_id 컬럼 보강."""
@@ -235,28 +1023,39 @@ class MigrationStoreMixin:
         SCHEMA에 넣지 않고 여기서 생성하는 이유: 기존 DB에 중복 open
         인시던트가 있으면 executescript 전체가 실패해 기동이 멈춘다.
         여기서는 중복을 먼저 정리하고, 그래도 실패하면 경고만 남긴다 —
-        has_open_budget_incident 사전 검사가 논리적 중복을 계속 막는다."""
+        has_open_budget_incident 사전 검사가 논리적 중복을 계속 막는다.
+        spec 003 US3/FR-018 — 인덱스는 (policy_id, window_start,
+        threshold_type, org_id) 부분 UNIQUE: 같은 정책/윈도우/임계라도
+        조직이 다르면 open 인시던트가 공존할 수 있다. 중복 정리 키에도
+        org_id를 포함한다."""
         try:
             rows = self._conn.execute(
-                "SELECT id, policy_id, window_start, threshold_type"
+                "SELECT id, policy_id, window_start, threshold_type, org_id"
                 " FROM budget_incidents WHERE status='open'"
                 " ORDER BY created_at, id"
             ).fetchall()
-            seen: set[tuple[Any, Any, Any]] = set()
+            seen: set[tuple[Any, Any, Any, Any]] = set()
             for r in rows:
-                key = (r["policy_id"], r["window_start"], r["threshold_type"])
+                key = (
+                    str(r["org_id"] or ""),
+                    r["policy_id"],
+                    r["window_start"],
+                    r["threshold_type"],
+                )
                 if key in seen:
                     self.resolve_budget_incident(
                         str(r["id"]), "resolved", note="dedupe before unique index"
                     )
                 else:
                     seen.add(key)
-            with self.tx() as c:
-                c.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_incidents_open"
-                    " ON budget_incidents(policy_id, window_start, threshold_type)"
-                    " WHERE status='open'"
-                )
+            # 구 (policy_id, window_start, threshold_type) 인덱스가 남아
+            # 있으면 org_id 포함 형태로 교체한다(멱등).
+            self._ensure_org_scoped_index(
+                "idx_budget_incidents_open",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_incidents_open"
+                " ON budget_incidents(policy_id, window_start, threshold_type, org_id)"
+                " WHERE status='open'",
+            )
         except Exception as e:
             logger.warning("budget_incidents open-unique index skipped: %s", e)
 
@@ -268,17 +1067,20 @@ class MigrationStoreMixin:
         기동이 멈춘다. 여기서는 최신 행만 active|escalated로 남기고
         나머지는 cancelled로 정리한 뒤 인덱스를 만든다. 인덱스 생성마저
         실패하면 경고만 남기고 진행한다 — create_recovery_action의
-        사전 조회+integrity 재조회가 논리적 중복을 계속 막는다."""
+        사전 조회+integrity 재조회가 논리적 중복을 계속 막는다.
+        spec 003 US3/FR-018 — 인덱스는 (source_type, source_id, org_id)
+        부분 UNIQUE: 같은 source라도 조직이 다르면 open 복구 액션이
+        공존할 수 있다. 중복 정리 키에도 org_id를 포함한다."""
         try:
             rows = self._conn.execute(
-                "SELECT id, source_type, source_id FROM recovery_actions"
+                "SELECT id, source_type, source_id, org_id FROM recovery_actions"
                 " WHERE status IN ('active','escalated')"
                 " ORDER BY created_at DESC, id DESC"
             ).fetchall()
-            seen: set[tuple[Any, Any]] = set()
+            seen: set[tuple[Any, Any, Any]] = set()
             dup_ids: list[str] = []
             for r in rows:
-                key = (r["source_type"], r["source_id"])
+                key = (str(r["org_id"] or ""), r["source_type"], r["source_id"])
                 if key in seen:
                     dup_ids.append(str(r["id"]))
                 else:
@@ -296,12 +1098,12 @@ class MigrationStoreMixin:
                 logger.info(
                     "recovery_actions dedupe: cancelled %d duplicate open rows", len(dup_ids)
                 )
-            with self.tx() as c:
-                c.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_actions_open"
-                    " ON recovery_actions(source_type, source_id)"
-                    " WHERE status IN ('active','escalated')"
-                )
+            self._ensure_org_scoped_index(
+                "idx_recovery_actions_open",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_actions_open"
+                " ON recovery_actions(source_type, source_id, org_id)"
+                " WHERE status IN ('active','escalated')",
+            )
         except Exception as e:
             logger.warning("recovery_actions open-unique index skipped: %s", e)
 
@@ -355,14 +1157,19 @@ class MigrationStoreMixin:
         find_agent_by_name 사전 검사와 IntegrityError→409 매핑이 계속 동작."""
         try:
             rows = self._conn.execute(
-                "SELECT id, name, updated_at, created_at FROM agents"
+                "SELECT id, name, org_id, updated_at, created_at FROM agents"
                 " ORDER BY updated_at DESC, created_at DESC, id DESC"
             ).fetchall()
-            seen: set[str] = set()
+            # spec 003 US3/FR-018 — 중복 판정도 조직 범위로 좁힌다.
+            # 같은 이름이 조직이 다르면 허용된다.
+            seen: set[tuple[str, str]] = set()
             renames: list[tuple[str, str]] = []
             for r in rows:
-                key = str(r["name"] or "").strip().lower()
-                if not key:
+                key = (
+                    str(r["org_id"] or ""),
+                    str(r["name"] or "").strip().lower(),
+                )
+                if not key[1]:
                     continue
                 if key in seen:
                     # 최신이 아닌 중복 — 이름에 id 접미를 붙여 유일성 확보
@@ -378,10 +1185,9 @@ class MigrationStoreMixin:
                             (new_name, _iso(_now()), aid),
                         )
                 logger.info("agents name dedupe: renamed %d duplicate rows", len(renames))
-            with self.tx() as c:
-                c.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(lower(name))"
-                )
+            # 인덱스는 (org_id, lower(name)) — 구 (lower(name)) 전역
+            # 인덱스가 남아 있으면 여기서 교체한다.
+            self._ensure_org_name_index("agents")
         except Exception as e:
             logger.warning("agents name unique index skipped: %s", e)
 
@@ -862,7 +1668,7 @@ class MigrationStoreMixin:
         (_migrate_* 패턴과 동일). latest_revision도 함께 동기화한다."""
         try:
             rows = self._conn.execute(
-                "SELECT name, spec, created_at FROM custom_workflows"
+                "SELECT name, spec, created_at, org_id FROM custom_workflows"
             ).fetchall()
         except Exception as e:
             logger.warning("workflow_revisions backfill scan failed: %s", e)
@@ -881,9 +1687,13 @@ class MigrationStoreMixin:
 
     def _backfill_workflow_revision_row(self, r: Any) -> None:
         name = str(r["name"])
+        # spec 003 US3/FR-018 — workflow_revisions UNIQUE가 (org_id,name,
+        # revision)로 재스코프됐으므로 조회·갱신도 조직 범위로 제한한다.
+        oid = str(r["org_id"] or "")
         rev_row = self._conn.execute(
-            "SELECT COALESCE(MAX(revision),0) AS m FROM workflow_revisions WHERE name=?",
-            (name,),
+            "SELECT COALESCE(MAX(revision),0) AS m FROM workflow_revisions"
+            " WHERE org_id=? AND name=?",
+            (oid, name),
         ).fetchone()
         max_rev = int(rev_row["m"] or 0) if rev_row is not None else 0
         if max_rev == 0:
@@ -891,8 +1701,8 @@ class MigrationStoreMixin:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO workflow_revisions"
-                    "(id,name,revision,spec,note,created_by,created_at)"
-                    " VALUES(?,?,?,?,?,?,?)",
+                    "(id,name,revision,spec,note,created_by,created_at,org_id)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
                     (
                         uuid.uuid4().hex[:12],
                         name,
@@ -901,12 +1711,14 @@ class MigrationStoreMixin:
                         "backfill",
                         "",
                         now,
+                        oid,
                     ),
                 )
                 c.execute(
                     "UPDATE custom_workflows SET latest_revision=1,"
-                    " updated_at=COALESCE(updated_at, created_at) WHERE name=?",
-                    (name,),
+                    " updated_at=COALESCE(updated_at, created_at)"
+                    " WHERE org_id=? AND name=?",
+                    (oid, name),
                 )
             logger.info("workflow_revisions backfill: %s -> revision 1", name)
         else:
@@ -914,7 +1726,7 @@ class MigrationStoreMixin:
             with self.tx() as c:
                 c.execute(
                     "UPDATE custom_workflows SET latest_revision=?"
-                    " WHERE name=? AND (latest_revision IS NULL"
+                    " WHERE org_id=? AND name=? AND (latest_revision IS NULL"
                     " OR latest_revision < ?)",
-                    (max_rev, name, max_rev),
+                    (max_rev, oid, name, max_rev),
                 )

@@ -14,9 +14,11 @@ from ..config import Settings
 from ..engine.trace import job_traceable
 from ..models import RunStatus
 from ..sensors import build_gmail_url, is_safe_source_url
+from ..store import orgctx
 from ..store.db import Store
 from ..workflows import WORKFLOWS
 from ..workflows.registry_builder import build_runner
+from ..workflows.resolver import resolve_workflow_spec
 from .support import (
     _acquire_run_slot,
     _mark_cron_tick,
@@ -50,6 +52,33 @@ class BudgetExceededError(RuntimeError):
     월간 지출 윈도우가 리셋되기 전까지 재시도해도 같은 결과이므로
     일시적 오류와 구분한다 — 메시지 intake 재시도 소진/ radar 사이클
     중단을 막기 위해 호출자가 이 타입을 잡아 terminal 처리한다."""
+
+
+def _default_org_id(store: Store) -> str:
+    """조직 컨텍스트가 없는 경로의 기본 조직 — 첫 활성 조직(spec 003 FR-015 백필 조직).
+
+    gmail 폴링·radar·자동 리포트처럼 행 단위 org_id가 없는 전역 자동화가
+    inbox/report/run을 만들 때 사용한다. 멀티 조직 배포에서는 이들 기능이
+    기본 조직에 귀속된다는 점을 전제로 한다."""
+    try:
+        orgs = store.list_organizations()
+    except Exception:
+        return ""
+    return str(orgs[0]["id"]) if orgs else ""
+
+
+def _run_org_id(store: Store, run_id: str) -> str:
+    """run 행의 org_id — org 필터와 무관하게 직접 조회한다.
+
+    _execute_run_job/_promote_deferred_runs는 daemon thread·BackgroundTasks·
+    cron tick 등 요청 컨텍스트가 없거나 다른 컨텍스트에서 호출되므로
+    contextvar에 의존하지 않고 행에서 org를 읽어 org_scope로 재적용한다."""
+    try:
+        from ..services.management_common import row_org_id
+
+        return row_org_id(store, "runs", run_id)
+    except Exception:
+        return ""
 
 
 # ---------- automation worker ----------
@@ -101,16 +130,22 @@ def run_automation_cycle(
         _watchdog.run_cycle(store)
     except Exception:
         watchdog_log.warning(watchdog_message, exc_info=True)
-    _maybe_poll_gmail(store, settings, adapters)
+    # 전역 자동화(gmail 폴링·radar·자동 리포트)는 행 단위 org_id가 없으므로
+    # 기본 조직으로 스코프한다 — 생성되는 message/run/report/inbox가
+    # default 조직에 귀속된다(spec 003 FR-019, FR-015 백필 조직).
+    sys_org = orgctx.current_org_id() or _default_org_id(store)
+    with orgctx.org_scope(sys_org):
+        _maybe_poll_gmail(store, settings, adapters)
     radar_jobs: list = []
-    _maybe_daily_radar(
-        store,
-        settings,
-        llm,
-        adapters,
-        defer=radar_jobs if flush_jobs is not None else None,
-        schedule=promote_schedule,
-    )
+    with orgctx.org_scope(sys_org):
+        _maybe_daily_radar(
+            store,
+            settings,
+            llm,
+            adapters,
+            defer=radar_jobs if flush_jobs is not None else None,
+            schedule=promote_schedule,
+        )
     if flush_jobs is not None:
         flush_jobs(radar_jobs)
     trigger_jobs: list = []
@@ -123,7 +158,8 @@ def run_automation_cycle(
     )
     if flush_jobs is not None:
         flush_jobs(trigger_jobs)
-    _maybe_generate_reports(store, settings, adapters)
+    with orgctx.org_scope(sys_org):
+        _maybe_generate_reports(store, settings, adapters)
 
 
 def _promote_deferred_runs(
@@ -142,6 +178,13 @@ def _promote_deferred_runs(
     요청 처리 중 동기 실행되지 않게 한다. 미지정 시 VERCEL에서는
     post-response 컨텍스트(background task/worker thread) 안에서만
     호출된다는 전제로 동기 실행하고, 그 외는 daemon thread로 실행한다."""
+    # 조직 컨텍스트 재적용 — reaper/radar cleanup/cron tick 등 ctx=''
+    # 경로에서 호출돼도 finishing run의 org로 wakeup 마감·deferred
+    # promote(→ create_run)를 수행해 새 run이 같은 org를 물려받게 한다.
+    oid = _run_org_id(store, run_id)
+    if oid and orgctx.current_org_id() != oid:
+        with orgctx.org_scope(oid):
+            return _promote_deferred_runs(store, settings, llm, adapters, run_id, schedule=schedule)
 
     def _sched(new_run: Any, job_payload: dict[str, Any]) -> None:
         if schedule is not None:
@@ -201,6 +244,16 @@ def _execute_run_job(
 
     schedule은 _promote_deferred_runs로 전달 — HTTP 핸들러가 이 run을
     동기 실행할 때(현재는 없음) chained promote도 요청 밖으로 빼야 한다."""
+    # 조직 컨텍스트 재적용 — daemon thread/BackgroundTasks/cron tick 등
+    # contextvar이 전파되지 않는 경로에서 run 행의 org_id를 읽어 scope한다
+    # (spec 003 FR-019). 이미 같은 org로 호출된 경우(동기 실행·request ctx)
+    # 재진입하지 않는다. org_id='' 행은 ambient ctx를 유지한다.
+    oid = _run_org_id(store, run_id)
+    if oid and orgctx.current_org_id() != oid:
+        with orgctx.org_scope(oid):
+            return _execute_run_job(
+                store, settings, llm, adapters, run_id, workflow, payload, ctx, schedule
+            )
     # 동시 run 세마포어 — 슬롯 대기 후 실행. 타임아웃 시 run을 failed로 마감.
     if not _acquire_run_slot(run_id):
         store.update_run(run_id, status=RunStatus.FAILED, error="concurrency_timeout")
@@ -245,6 +298,10 @@ def _process_due_schedules(
     for sched in store.due_schedules():
         sid = str(sched.get("id") or "")
         workflow = str(sched.get("workflow") or "")
+        # spec 003 FR-019 — 스케줄 행의 org로 발사 전체를 스코프한다.
+        # run 생성(admit_run→create_run)·inbox·audit·예산 평가가 모두
+        # 이 조직 컨텍스트를 상속해 run.org_id = schedule.org_id가 된다.
+        org_tok = orgctx.set_org_context(str(sched.get("org_id") or ""))
         try:
             interval = max(int(sched.get("interval_minutes") or 0), 1)
             fired = datetime.now(UTC)
@@ -256,7 +313,10 @@ def _process_due_schedules(
                 sid, expected_next, fired.isoformat(), nxt.isoformat()
             ):
                 continue
-            if workflow not in WORKFLOWS:
+            # 스케줄 행의 org 컨텍스트(위 set_org_context)로 spec 해석 —
+            # 조직별 동명 커스텀 spec이 섞이지 않는다(spec 003 US3).
+            wf_spec = resolve_workflow_spec(store, workflow)
+            if wf_spec is None:
                 worker_logger.warning("schedule %s skipped: unknown workflow %s", sid, workflow)
                 continue
             payload = dict(sched.get("input") or {})
@@ -296,7 +356,7 @@ def _process_due_schedules(
                 input_data=payload,
                 source="schedule",
                 created_by=f"schedule:{sid}",
-                version=WORKFLOWS[workflow].version,
+                version=wf_spec.version,
                 job_payload=payload,
             )
             action = str(res.get("action") or "")
@@ -350,6 +410,8 @@ def _process_due_schedules(
                 )
             except Exception as inbox_err:
                 worker_logger.debug("inbox schedule-fail item failed: %s", str(inbox_err)[:200])
+        finally:
+            orgctx.reset_org_context(org_tok)
 
 
 @job_traceable("jobmate.process_due_routines")
@@ -399,6 +461,9 @@ def _process_due_routines(
         worker_logger.warning("stale routine_run sweep failed: %s", str(e)[:200])
     for routine in store.due_routines(limit=batch):
         rid = str(routine.get("id") or "")
+        # spec 003 FR-019 — routine 행의 org로 발사를 스코프한다. 생성되는
+        # task/routine_run/run·audit·inbox가 모두 이 조직을 상속한다.
+        org_tok = orgctx.set_org_context(str(routine.get("org_id") or ""))
         try:
             res = routines_svc.fire_due_routine(
                 store, routine, schedule_run=_schedule_run, actor="routine"
@@ -430,6 +495,8 @@ def _process_due_routines(
                 )
             except Exception as inbox_err:
                 worker_logger.debug("inbox routine-fail item failed: %s", str(inbox_err)[:200])
+        finally:
+            orgctx.reset_org_context(org_tok)
     if fired or skipped or failed:
         # routine cycle counts — spec 3차 G 로깅 요구.
         worker_logger.info(
@@ -516,29 +583,34 @@ def _check_waiting_approvals(store: Store, adapters: dict[str, Any]) -> None:
         fp = run.updated_at.isoformat() if run.updated_at else run.id
         if fp_map.get(run.id) == fp:
             continue
-        fp_map[run.id] = fp
-        changed = True
-        task = ""
-        if isinstance(run.input, dict):
-            task = str(run.input.get("task", ""))[:200]
-        send_web_push_text(adapters, f"승인 대기: {run.workflow_key}", task, "/?view=office")
-        # 통합 인박스 — run별 dedupe, 재대기 시 미읽음으로 리셋
+        # spec 003 FR-019 — run별 org로 inbox 쓰기를 스코프한다.
+        org_tok = orgctx.set_org_context(_run_org_id(store, run.id))
         try:
-            store.upsert_inbox_item(
-                "approval",
-                f"승인 대기: {run.workflow_key}",
-                body=task,
-                link="/?view=office",
-                dedupe_key=f"approval:{run.id}",
-                reset_read=True,
-            )
-        except Exception as e:
-            logger.warning("inbox approval item failed run=%s: %s", run.id, str(e)[:200])
-        try:
-            messenger.notify(f"승인 대기: {run.workflow_key} ({task or run.id})")
-        except Exception:
-            logger.debug("messenger notify failed", exc_info=True)
-        logger.info("waiting_approval push sent run=%s", run.id)
+            fp_map[run.id] = fp
+            changed = True
+            task = ""
+            if isinstance(run.input, dict):
+                task = str(run.input.get("task", ""))[:200]
+            send_web_push_text(adapters, f"승인 대기: {run.workflow_key}", task, "/?view=office")
+            # 통합 인박스 — run별 dedupe, 재대기 시 미읽음으로 리셋
+            try:
+                store.upsert_inbox_item(
+                    "approval",
+                    f"승인 대기: {run.workflow_key}",
+                    body=task,
+                    link="/?view=office",
+                    dedupe_key=f"approval:{run.id}",
+                    reset_read=True,
+                )
+            except Exception as e:
+                logger.warning("inbox approval item failed run=%s: %s", run.id, str(e)[:200])
+            try:
+                messenger.notify(f"승인 대기: {run.workflow_key} ({task or run.id})")
+            except Exception:
+                logger.debug("messenger notify failed", exc_info=True)
+            logger.info("waiting_approval push sent run=%s", run.id)
+        finally:
+            orgctx.reset_org_context(org_tok)
     if changed:
         store.set_state("approval_wait_fp", fp_map)
 
@@ -706,7 +778,12 @@ def _process_pending_messages(
         source_id = row["source_id"]
         # 원자 claim — automation loop과 cron tick이 같은 메시지를 동시에
         # 처리해 run을 중복 생성하는 것을 막는다 (리스 만료 시 재claim 가능)
-        if not store.claim_message(provider, source_id):
+        # spec 003 US3 — 복합 PK라 같은 (provider,source_id)가 조직별로
+        # 존재하므로 행의 org_id를 명시한다. ctx='' 배치 루프에서 무필터
+        # claim하면 타 조직 행까지 processing으로 뒤집힌다('' org 행도
+        # org_id='' 조건으로 정확히 스코프된다).
+        row_org = str(row.get("org_id") or "")
+        if not store.claim_message(provider, source_id, org_id=row_org):
             continue
         threading.Thread(
             target=_process_message_job,
@@ -724,12 +801,21 @@ def _process_message_job(
     row: dict[str, Any],
 ) -> None:
     """claim된 메시지 1건의 intake run 실행 — worker thread에서 호출."""
+    # 조직 컨텍스트 재적용 — daemon thread는 contextvar을 물려받지 못하므로
+    # 메시지 행의 org_id로 scope한다(spec 003 FR-019). intake run의
+    # org_id는 이 메시지의 org를 따른다.
+    oid = str(row.get("org_id") or "")
+    if oid and orgctx.current_org_id() != oid:
+        with orgctx.org_scope(oid):
+            return _process_message_job(store, settings, llm, adapters, row)
     provider = row["source_provider"]
     source_id = row["source_id"]
     attempts = int(row.get("attempts", 0)) + 1
     try:
         if attempts > 5:
-            store.finish_message(provider, source_id, "failed", "max attempts", attempts=attempts)
+            store.finish_message(
+                provider, source_id, "failed", "max attempts", attempts=attempts, org_id=oid
+            )
             worker_logger.warning(
                 "message %s:%s failed permanently after %s attempts",
                 provider,
@@ -748,7 +834,9 @@ def _process_message_job(
         run_id = _create_and_run(
             store, settings, llm, adapters, "gmail_calendar", "message intake", ctx
         )
-        store.finish_message(provider, source_id, "processed", f"run:{run_id}", attempts=attempts)
+        store.finish_message(
+            provider, source_id, "processed", f"run:{run_id}", attempts=attempts, org_id=oid
+        )
     except BudgetExceededError as e:
         # 스코프드 예산 hard_stop — 월간 윈도우 리셋 전 재시도는 무의미한
         # 비일시 오류. attempts를 소진해 'max attempts'로 끝나는 대신
@@ -756,7 +844,9 @@ def _process_message_job(
         worker_logger.warning(
             "message %s:%s blocked by budget: %s", provider, source_id, str(e)[:200]
         )
-        store.finish_message(provider, source_id, "failed", str(e)[:200], attempts=attempts)
+        store.finish_message(
+            provider, source_id, "failed", str(e)[:200], attempts=attempts, org_id=oid
+        )
     except Exception as e:
         worker_logger.warning(
             "message %s:%s processing failed (attempt %s): %s",
@@ -773,6 +863,7 @@ def _process_message_job(
             str(e)[:200],
             retry_at=retry_at.isoformat(),
             attempts=attempts,
+            org_id=oid,
         )
 
 
@@ -798,13 +889,14 @@ def _create_and_run(
     blocks = budget_scope.evaluate_admission(store, workflow, str(input_data.get("project") or ""))
     if blocks:
         raise BudgetExceededError(f"budget_exceeded: {blocks[0]['scope']}")
+    wf_spec = resolve_workflow_spec(store, workflow)
     res = wakeups.admit_run(
         store,
         workflow_key=workflow,
         input_data=input_data,
         source="automation",
         created_by="system:intake",
-        version=WORKFLOWS[workflow].version,
+        version=wf_spec.version if wf_spec is not None else "",
         job_payload={"task": task},
     )
     if res["action"] == "invalid_goal":
@@ -865,6 +957,9 @@ def _process_due_notification_jobs(store: Store, adapters: dict[str, Any]) -> No
         # 알림이 중복 발송되는 레이스를 막는다.
         if not store.claim_job(job["id"]):
             continue
+        # spec 003 FR-019 — notification job 행의 org로 발송 블록을 스코프.
+        # scheduled_events 조회·mark_job이 이 조직 컨텍스트를 따른다.
+        org_tok = orgctx.set_org_context(str(job.get("org_id") or ""))
         try:
             # MVP: 본문은 스케줄 이벤트 제목으로 구성
             ev_rows = store.list_scheduled_events(limit=200)
@@ -893,6 +988,8 @@ def _process_due_notification_jobs(store: Store, adapters: dict[str, Any]) -> No
             worker_logger.warning(
                 "notification job %s delivery failed: %s", job["id"], str(e)[:200]
             )
+        finally:
+            orgctx.reset_org_context(org_tok)
 
 
 @job_traceable("jobmate.poll_gmail")

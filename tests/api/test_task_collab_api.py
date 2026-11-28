@@ -53,6 +53,9 @@ def _member_session(client: TestClient, store: Store) -> None:
     u = store.create_user("m@b.com", hash_password("Str0ng#Passw0rd!"), "m@b.com")
     assert u is not None
     store.set_user_role(u["id"], "member")
+    _orgs = store.list_organizations()
+    assert _orgs
+    store.add_org_member(_orgs[0]["id"], u["id"], "member")
     token = new_session_token()
     store.create_session(u["id"], hash_token(token))
     client.cookies.set(SESSION_COOKIE, token)

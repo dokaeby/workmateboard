@@ -15,6 +15,7 @@ import uuid
 from typing import Any
 
 from ..models import TaskPriority, TaskStatus
+from . import orgctx
 from .util import _clamp_limit, _iso, _now
 
 _TASK_ID_RE = re.compile(r"^WMB-(\d+)$")
@@ -22,7 +23,29 @@ _TASK_STATUSES = {s.value for s in TaskStatus}
 _TASK_PRIORITIES = {s.value for s in TaskPriority}
 
 
+def _org_bind() -> list[str]:
+    """org_id 필터 바인딩 — `AND (org_id=? OR ?='')` 조건에 넘길 [oid, oid].
+
+    ctx=''이면 OR 우항이 항상 참이라 전 조직 조회(시스템/스케줄러),
+    ctx가 있으면 해당 조직 행만 조회·갱신한다(spec 003 US3/FR-013)."""
+    oid = orgctx.current_org_id()
+    return [oid, oid]
+
+
 class ManagementStoreMixin:
+    def _org_id_of_parent(self, table: str, row_id: str | None) -> str:
+        """부모 scoped 행의 org_id — 행이 없거나 id가 비면 ''.
+
+        table은 이 파일의 리터럴 호출만 허용(내부 상수)."""
+        rid = (row_id or "").strip()[:64]
+        if not rid:
+            return ""
+        row = self._conn.execute(
+            f"SELECT org_id FROM {table} WHERE id=?",  # noqa: S608
+            (rid,),
+        ).fetchone()
+        return str(row["org_id"] or "") if row is not None else ""
+
     # ---- tasks ----
     _TASK_JSON_NULLABLE = (
         "assignee_agent_id",
@@ -77,6 +100,7 @@ class ManagementStoreMixin:
         project_id: str | None = None,
         goal_id: str | None = None,
         created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any] | None:
         """task 생성 — title 필수(≤200자). 실패 시 None.
 
@@ -89,6 +113,21 @@ class ManagementStoreMixin:
         pr = (priority or "").strip().lower()[:20] or TaskPriority.MEDIUM.value
         now = _iso(_now())
         tid = uuid.uuid4().hex[:12]
+        # org_id 해석(FR-013) — 부모(project/goal/parent task/assignee)의 org를
+        # 우선 전파한다. 스케줄러·내부 경로는 ctx=''라 부모 org가 유일한 정확한
+        # 경로다. 부모가 없으면 명시 인자 → 요청 컨텍스트 순.
+        oid = ""
+        for table, pid in (
+            ("projects", project_id),
+            ("goals", goal_id),
+            ("tasks", parent_id),
+            ("agents", assignee_agent_id),
+            ("agents", reviewer_agent_id),
+        ):
+            oid = self._org_id_of_parent(table, pid)
+            if oid:
+                break
+        oid = oid or orgctx.org_for_write(org_id)
         for _attempt in range(2):
             try:
                 with self.tx() as c:
@@ -96,9 +135,9 @@ class ManagementStoreMixin:
                     c.execute(
                         "INSERT INTO tasks(id,identifier,title,description,status,"
                         "priority,assignee_agent_id,reviewer_agent_id,parent_id,"
-                        "project_id,goal_id,"
+                        "project_id,goal_id,org_id,"
                         "created_by,created_at,updated_at)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             tid,
                             ident,
@@ -111,6 +150,7 @@ class ManagementStoreMixin:
                             (parent_id or "").strip()[:64] or None,
                             (project_id or "").strip()[:64] or None,
                             (goal_id or "").strip()[:64] or None,
+                            oid,
                             created_by[:200],
                             now,
                             now,
@@ -125,10 +165,15 @@ class ManagementStoreMixin:
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         """id 또는 identifier('WMB-1')로 task 조회."""
-        row = self._conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        org_params = _org_bind()
+        row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=? AND (org_id=? OR ?='')",
+            (task_id, *org_params),
+        ).fetchone()
         if row is None and _TASK_ID_RE.match(str(task_id or "")):
             row = self._conn.execute(
-                "SELECT * FROM tasks WHERE identifier=?", (task_id.strip(),)
+                "SELECT * FROM tasks WHERE identifier=? AND (org_id=? OR ?='')",
+                (task_id.strip(), *org_params),
             ).fetchone()
         return self._task_json(row) if row else None
 
@@ -142,8 +187,8 @@ class ManagementStoreMixin:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM tasks"
-        conds: list[str] = []
-        params: list[Any] = []
+        conds: list[str] = ["(org_id=? OR ?='')"]
+        params: list[Any] = [*_org_bind()]
         if status:
             conds.append("status=?")
             params.append(status.strip().lower()[:20])
@@ -211,8 +256,9 @@ class ManagementStoreMixin:
         sets = ", ".join(f"{k}=?" for k in updates)
         with self.tx() as c:
             c.execute(
-                f"UPDATE tasks SET {sets}, updated_at=? WHERE id=?",  # noqa: S608
-                (*updates.values(), _iso(_now()), task["id"]),
+                f"UPDATE tasks SET {sets}, updated_at=? WHERE id=?"  # noqa: S608
+                " AND (org_id=? OR ?='')",
+                (*updates.values(), _iso(_now()), task["id"], *_org_bind()),
             )
         return self.get_task(task["id"])
 
@@ -226,8 +272,9 @@ class ManagementStoreMixin:
             cur = c.execute(
                 "UPDATE tasks SET checkout_agent_id=?, checkout_at=?, updated_at=?"
                 " WHERE id=? AND status NOT IN ('done','cancelled')"
-                " AND (checkout_agent_id IS NULL OR checkout_agent_id=?)",
-                (agent_id, now, now, task_id, agent_id),
+                " AND (checkout_agent_id IS NULL OR checkout_agent_id=?)"
+                " AND (org_id=? OR ?='')",
+                (agent_id, now, now, task_id, agent_id, *_org_bind()),
             )
         return int(getattr(cur, "rowcount", 0) or 0) > 0
 
@@ -236,8 +283,8 @@ class ManagementStoreMixin:
         with self.tx() as c:
             cur = c.execute(
                 "UPDATE tasks SET checkout_agent_id=NULL, checkout_at=NULL,"
-                " updated_at=? WHERE id=?",
-                (_iso(_now()), task_id),
+                " updated_at=? WHERE id=? AND (org_id=? OR ?='')",
+                (_iso(_now()), task_id, *_org_bind()),
             )
         return int(getattr(cur, "rowcount", 0) or 0) > 0
 
@@ -250,6 +297,7 @@ class ManagementStoreMixin:
         설정하므로 assignee+활성 run 경로도 함께 조회한다(H3). current_run_id가
         가리키는 run이 이미 종결이면(투영 누락 잔여) 현재 작업으로 보지 않는다."""
         aid = agent_id.strip()[:64]
+        org_params = _org_bind()
         row = self._conn.execute(
             "SELECT t.* FROM tasks t"
             " WHERE t.status NOT IN ('done','cancelled')"
@@ -259,9 +307,9 @@ class ManagementStoreMixin:
             "   SELECT 1 FROM runs r WHERE r.id = t.current_run_id"
             "   AND r.status IN ('queued','running','waiting_approval','waiting_review')"
             "  ))"
-            " )"
+            " ) AND (t.org_id=? OR ?='')"
             " ORDER BY t.updated_at DESC LIMIT 1",
-            (aid, aid),
+            (aid, aid, *org_params),
         ).fetchone()
         return self._task_json(row) if row else None
 
@@ -322,8 +370,8 @@ class ManagementStoreMixin:
         """run에 연결된 task 전체 — run→task 상태 투영용."""
         rows = self._conn.execute(
             "SELECT t.* FROM tasks t JOIN task_runs tr ON tr.task_id = t.id"
-            " WHERE tr.run_id=? ORDER BY tr.created_at",
-            (run_id,),
+            " WHERE tr.run_id=? AND (t.org_id=? OR ?='') ORDER BY tr.created_at",
+            (run_id, *_org_bind()),
         ).fetchall()
         return [self._task_json(r) for r in rows]
 
@@ -350,6 +398,7 @@ class ManagementStoreMixin:
         summary: str = "",
         detail: dict[str, Any] | None = None,
         occurred_at: str | None = None,
+        org_id: str | None = None,
     ) -> tuple[dict[str, Any] | None, bool]:
         """이벤트 추가 — (event, created) 반환.
 
@@ -358,6 +407,8 @@ class ManagementStoreMixin:
         key = (idempotency_key or "").strip()[:200]
         if not key:
             key = f"auto:{uuid.uuid4().hex}"
+        # spec 003 US3 — UNIQUE(org_id,idempotency_key) 복합키가 조직을
+        # 네임스페이스하므로 원시 키를 저장한다(조회는 org_id와 함께).
         now = _iso(_now())
         eid = uuid.uuid4().hex[:12]
         # detail은 TEXT 컬럼 — 직렬화 결과를 그대로 자르면 JSON이 깨져
@@ -374,13 +425,25 @@ class ManagementStoreMixin:
                 },
                 ensure_ascii=False,
             )
+        # org_id 해석(FR-013) — 부모(task/run/agent)의 org를 우선 전파하고,
+        # 없으면 명시 인자 → 요청 컨텍스트 순.
+        oid = ""
+        for table, pid in (
+            ("tasks", task_id),
+            ("runs", run_id),
+            ("agents", agent_id),
+        ):
+            oid = self._org_id_of_parent(table, pid)
+            if oid:
+                break
+        oid = oid or orgctx.org_for_write(org_id)
         try:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO agent_events(id,idempotency_key,event_type,"
                     "agent_id,task_id,run_id,actor,summary,detail,"
-                    "occurred_at,created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "occurred_at,org_id,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         eid,
                         key,
@@ -392,25 +455,39 @@ class ManagementStoreMixin:
                         summary.strip()[:200],
                         detail_json,
                         occurred_at or now,
+                        oid,
                         now,
                     ),
                 )
         except self._integrity_errors:
-            existing = self.get_agent_event_by_key(key)
+            existing = self.get_agent_event_by_key(key, org_id=oid)
             if existing is not None:
                 return existing, False
             raise
-        return self.get_agent_event_by_key(key), True
+        return self.get_agent_event_by_key(key, org_id=oid), True
 
-    def get_agent_event_by_key(self, idempotency_key: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM agent_events WHERE idempotency_key=?",
-            ((idempotency_key or "").strip()[:200],),
-        ).fetchone()
+    def get_agent_event_by_key(
+        self, idempotency_key: str, *, org_id: str | None = None
+    ) -> dict[str, Any] | None:
+        key = (idempotency_key or "").strip()[:200]
+        if org_id is not None:
+            # record/replay 내부 조회 — (org_id,key) 복합 UNIQUE에 대응.
+            row = self._conn.execute(
+                "SELECT * FROM agent_events WHERE idempotency_key=? AND org_id=?",
+                (key, org_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM agent_events WHERE idempotency_key=? AND (org_id=? OR ?='')",
+                (key, *_org_bind()),
+            ).fetchone()
         return self._event_json(row) if row else None
 
     def get_agent_event(self, event_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM agent_events WHERE id=?", (event_id,)).fetchone()
+        row = self._conn.execute(
+            "SELECT * FROM agent_events WHERE id=? AND (org_id=? OR ?='')",
+            (event_id, *_org_bind()),
+        ).fetchone()
         return self._event_json(row) if row else None
 
     def list_agent_events(
@@ -428,8 +505,8 @@ class ManagementStoreMixin:
         (created_at DESC, id DESC 순서 기준, 동일 타임스탬프는 id로 구분),
         ISO 타임스탬프면 그 시각 이후(>)만 반환. 해석 불가 값은 무시한다."""
         sql = "SELECT * FROM agent_events"
-        conds: list[str] = []
-        params: list[Any] = []
+        conds: list[str] = ["(org_id=? OR ?='')"]
+        params: list[Any] = [*_org_bind()]
         if agent_id:
             conds.append("agent_id=?")
             params.append(agent_id.strip()[:64])

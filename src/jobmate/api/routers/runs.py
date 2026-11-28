@@ -18,7 +18,7 @@ from ... import budget_scope, wakeups
 from ...models import AgentCapability, StageStatus, canonical_agent_status
 from ...services import agent_management as mgmt
 from ...services import permissions as perm_svc
-from ...workflows import WORKFLOWS
+from ...workflows.resolver import resolve_workflow_spec
 from ..jobs import _parse_diff_files
 from ..schemas import ApprovalRequest, RunCreateRequest, RunPatchRequest
 from ..support import _workflow_needs_lead
@@ -53,12 +53,15 @@ def register(app: FastAPI, ctx: Any) -> None:
         # 사용자/IP당 분당 버스트 제한 — LLM 비용이 큰 run 무한 생성 방지
         if _run_rate_limited(_actor_label(request)):
             return err(429, "rate_limited", "run 생성 요청이 너무 많습니다", request)
-        if body.workflow not in WORKFLOWS:
+        # spec 해석은 요청 조직 컨텍스트 기준 — 조직별 동명 커스텀 spec이
+        # 서로를 덮어쓰지 않는다(spec 003 US3).
+        wf_spec = resolve_workflow_spec(store, body.workflow)
+        if wf_spec is None:
             return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
         # 사이드이펙트 워크플로(gmail_calendar의 실제 캘린더 쓰기, 커스텀 spec의
         # 외부 부수효과 function stage)는 lead 이상만 실행 가능 — member는
         # dev_review* 등 읽기/검토성 워크플로만.
-        if _workflow_needs_lead(body.workflow):
+        if _workflow_needs_lead(store, body.workflow):
             gate = _lead_gate(request)
             if gate is not None:
                 return gate
@@ -183,7 +186,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             idempotency_key=body.idempotency_key,
             force_new=body.force_new,
             created_by=_actor_label(request),
-            version=WORKFLOWS[body.workflow].version,
+            version=wf_spec.version,
             job_payload={"task": body.task},
             agent_id=agent_id,
             goal_id=goal_id,

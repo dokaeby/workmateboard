@@ -13,10 +13,21 @@ import uuid
 from typing import Any
 
 from ..models import BillingType, CostStatus
+from . import orgctx
 from .util import _clamp_limit, _iso, _now
 
 _COST_STATUSES = {s.value for s in CostStatus}
 _BILLING_TYPES = {s.value for s in BillingType}
+
+
+def _org_filter(alias: str = "") -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND [alias.]org_id=?` 조건 — ctx=''는 무필터."""
+    oid = orgctx.current_org_id()
+    if not oid:
+        return "", []
+    col = f"{alias}.org_id" if alias else "org_id"
+    return f" AND {col}=?", [oid]
+
 
 # 예산 스코프 어휘 — budget_scope.SCOPE_TYPES와 동일 집합을 유지한다
 # (store 계층이 서비스 계층을 import하지 않도록 여기서 독립 정의).
@@ -89,6 +100,7 @@ class CostStoreMixin:
         pricing_source: str = "",
         pricing_version: str = "",
         occurred_at: str | None = None,
+        org_id: str | None = None,
     ) -> tuple[dict[str, Any] | None, bool]:
         """비용 이벤트 기록 — (event, created) 반환. append_agent_event와 동일 패턴.
 
@@ -106,6 +118,8 @@ class CostStoreMixin:
         key = (idempotency_key or "").strip()[:200]
         if not key:
             key = f"auto:{uuid.uuid4().hex}"
+        # spec 003 US3 — UNIQUE(org_id,idempotency_key) 복합키가 조직을
+        # 네임스페이스하므로 원시 키를 그대로 저장한다.
         tin = self._validate_token_count("input_tokens", input_tokens)
         tcached = self._validate_token_count("cached_input_tokens", cached_input_tokens)
         tout = self._validate_token_count("output_tokens", output_tokens)
@@ -131,14 +145,21 @@ class CostStoreMixin:
             raise ValueError("priced cost event requires integer cost_microusd")
         now = _iso(_now())
         cid = uuid.uuid4().hex[:12]
+        # org 귀속: 명시 > 부모(run→task→agent) > ctx. run 실행/백필 등
+        # ctx='' 경로에서도 비용 이벤트가 올바른 조직 원장에 기록되게 한다.
+        oid = (org_id or "").strip()
+        if not oid:
+            oid = self._cost_parent_org(run_id, task_id, agent_id)
+        if not oid:
+            oid = orgctx.org_for_write()
         try:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO cost_events(id,idempotency_key,agent_id,task_id,"
                     "run_id,stage_run_id,provider,model,billing_type,cost_status,"
                     "input_tokens,cached_input_tokens,output_tokens,cost_microusd,"
-                    "pricing_source,pricing_version,occurred_at,created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "pricing_source,pricing_version,occurred_at,created_at,org_id)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         cid,
                         key,
@@ -158,24 +179,54 @@ class CostStoreMixin:
                         (pricing_version or "").strip()[:40],
                         occurred_at or now,
                         now,
+                        oid,
                     ),
                 )
         except self._integrity_errors:
-            existing = self.get_cost_event_by_key(key)
+            existing = self.get_cost_event_by_key(key, org_id=oid)
             if existing is not None:
                 return existing, False
             raise
-        return self.get_cost_event_by_key(key), True
+        return self.get_cost_event_by_key(key, org_id=oid), True
 
-    def get_cost_event_by_key(self, idempotency_key: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM cost_events WHERE idempotency_key=?",
-            ((idempotency_key or "").strip()[:200],),
-        ).fetchone()
+    def _cost_parent_org(self, run_id: str | None, task_id: str | None, agent_id: str) -> str:
+        """비용 이벤트의 부모 행(org-scoped)에서 org_id 상속 — run 우선."""
+        for table, pid in (("runs", run_id), ("tasks", task_id), ("agents", agent_id)):
+            pid_s = (pid or "").strip()[:64]
+            if not pid_s:
+                continue
+            row = self._conn.execute(
+                f"SELECT org_id FROM {table} WHERE id=?",  # noqa: S608 - table은 고정 리터럴
+                (pid_s,),
+            ).fetchone()
+            if row is not None:
+                return str(row["org_id"] or "")
+        return ""
+
+    def get_cost_event_by_key(
+        self, idempotency_key: str, *, org_id: str | None = None
+    ) -> dict[str, Any] | None:
+        key = (idempotency_key or "").strip()[:200]
+        if org_id is not None:
+            # record_cost_event replay — (org_id,key) 복합 UNIQUE에 대응.
+            row = self._conn.execute(
+                "SELECT * FROM cost_events WHERE idempotency_key=? AND org_id=?",
+                (key, org_id),
+            ).fetchone()
+        else:
+            frag, params = _org_filter()
+            row = self._conn.execute(
+                "SELECT * FROM cost_events WHERE idempotency_key=?" + frag,  # noqa: S608
+                (key, *params),
+            ).fetchone()
         return self._cost_event_json(row) if row else None
 
     def get_cost_event(self, event_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM cost_events WHERE id=?", (event_id,)).fetchone()
+        frag, params = _org_filter()
+        row = self._conn.execute(
+            "SELECT * FROM cost_events WHERE id=?" + frag,  # noqa: S608
+            (event_id, *params),
+        ).fetchone()
         return self._cost_event_json(row) if row else None
 
     def list_cost_events(
@@ -227,6 +278,10 @@ class CostStoreMixin:
         if occurred_to:
             conds.append("occurred_at < ?")
             params.append(occurred_to[:64])
+        frag, fparams = _org_filter()
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+            params.extend(fparams)
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY occurred_at DESC, id DESC LIMIT ?"
@@ -279,14 +334,16 @@ class CostStoreMixin:
         if scope_type not in _COST_SCOPE_TYPES:
             return 0
         join_sql, cond_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
+        org_sql, org_params = _org_filter("ce")
         sql = (
             "SELECT COALESCE(SUM(ce.cost_microusd),0) AS s FROM cost_events ce"  # noqa: S608 - join/cond는 고정 fragment + 바운드 파라미터
             + join_sql
             + " WHERE ce.cost_microusd IS NOT NULL"
             + cond_sql
+            + org_sql
         )
-        # cond_sql의 ? 는 WHERE 절 선두에 위치하므로 scope_params를 먼저 둔다.
-        params: list[Any] = list(scope_params)
+        # cond_sql/org_sql의 ? 는 WHERE 절 선두에 위치하므로 scope→org 순으로 둔다.
+        params: list[Any] = [*scope_params, *org_params]
         if since_iso:
             sql += " AND ce.occurred_at >= ?"
             params.append(since_iso)
@@ -310,14 +367,16 @@ class CostStoreMixin:
         if scope_type not in _COST_SCOPE_TYPES:
             return 0
         join_sql, cond_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
+        org_sql, org_params = _org_filter("ce")
         sql = (
             "SELECT COUNT(*) AS n FROM cost_events ce"  # noqa: S608 - join/cond는 고정 fragment + 바운드 파라미터
             + join_sql
             + " WHERE 1=1"
             + cond_sql
+            + org_sql
         )
-        # cond_sql의 ? 는 WHERE 절 선두에 위치하므로 scope_params를 먼저 둔다.
-        params: list[Any] = list(scope_params)
+        # cond_sql/org_sql의 ? 는 WHERE 절 선두에 위치하므로 scope→org 순으로 둔다.
+        params: list[Any] = [*scope_params, *org_params]
         if since_iso:
             sql += " AND ce.occurred_at >= ?"
             params.append(since_iso)
@@ -347,13 +406,14 @@ class CostStoreMixin:
         (_cost_scope_joins가 'AND 1=0'을 붙인다) — global로 강제 변환해
         전체 합계를 보여주지 않는다."""
         join_sql, cond_sql, scope_params = self._cost_scope_joins(scope_type, scope_id)
+        org_sql, org_params = _org_filter("ce")
         sql = (
             "SELECT ce.cost_status AS cost_status, COUNT(*) AS n,"  # noqa: S608 - join/cond는 고정 fragment + 바운드 파라미터
             " COALESCE(SUM(ce.cost_microusd),0) AS s"
-            " FROM cost_events ce" + join_sql + " WHERE 1=1" + cond_sql
+            " FROM cost_events ce" + join_sql + " WHERE 1=1" + cond_sql + org_sql
         )
-        # cond_sql의 ? 는 WHERE 절 선두에 위치하므로 scope_params를 먼저 둔다.
-        params: list[Any] = list(scope_params)
+        # cond_sql/org_sql의 ? 는 WHERE 절 선두에 위치하므로 scope→org 순으로 둔다.
+        params: list[Any] = [*scope_params, *org_params]
         if occurred_from:
             sql += " AND ce.occurred_at >= ?"
             params.append(occurred_from[:64])
@@ -380,9 +440,9 @@ class CostStoreMixin:
             f"SELECT {agent_expr} AS agent_id,"  # noqa: S608 - agent_expr는 고정 fragment
             " COALESCE(SUM(ce.cost_microusd),0) AS s,"
             " SUM(CASE WHEN ce.cost_microusd IS NULL THEN 1 ELSE 0 END) AS unpriced"
-            " FROM cost_events ce" + join_sql + " WHERE 1=1" + cond_sql
+            " FROM cost_events ce" + join_sql + " WHERE 1=1" + cond_sql + org_sql
         )
-        # WHERE 절은 by_status 쿼리와 동일 — params는 이미 scope_params +
+        # WHERE 절은 by_status 쿼리와 동일 — params는 이미 scope→org→
         # occurred_from/to 순으로 바인드돼 있으므로 값을 다시 append하지 않는다.
         if occurred_from:
             agent_sql += " AND ce.occurred_at >= ?"
@@ -432,14 +492,14 @@ class CostStoreMixin:
         원장/미커버 집계가 어긋날 수 있으나 드물고 허용 범위로 본다."""
         if scope_type not in _COST_SCOPE_TYPES:
             return []
+        org_sql, org_params = _org_filter("r")
         sql = (
-            "SELECT sr.model, sr.tokens_in, sr.tokens_out FROM stage_runs sr"
+            "SELECT sr.model, sr.tokens_in, sr.tokens_out FROM stage_runs sr"  # noqa: S608
             " JOIN runs r ON r.id = sr.run_id"
-            " WHERE sr.started_at >= ?"
-            " AND NOT EXISTS (SELECT 1 FROM cost_events ce"
+            " WHERE sr.started_at >= ?" + org_sql + " AND NOT EXISTS (SELECT 1 FROM cost_events ce"
             "  WHERE ce.stage_run_id = sr.id)"
         )
-        params: list[Any] = [since_iso]
+        params: list[Any] = [since_iso, *org_params]
         sid = (scope_id or "").strip()[:200]
         if scope_type == "workflow" and sid:
             sql += " AND r.workflow_key = ?"

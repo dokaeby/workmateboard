@@ -14,15 +14,43 @@ from ..models import (
     Notification,
     NotificationStatus,
 )
+from . import orgctx
 from .util import _clamp_limit, _dt, _iso, _loads, _now
 
 
+def _org_filter() -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND org_id=?` 조건 — 시스템/미인증(ctx='')은 무필터."""
+    oid = orgctx.current_org_id()
+    return (" AND org_id=?", [oid]) if oid else ("", [])
+
+
 class CommsStoreMixin:
+    def _parent_org(self, table: str, column: str, value: str) -> str:
+        """부모 행의 org_id 조회 — (table,column)은 고정 리터럴 호출만."""
+        v = (value or "").strip()[:64]
+        if not v:
+            return ""
+        row = self._conn.execute(
+            f"SELECT org_id FROM {table} WHERE {column}=?",  # noqa: S608 - 고정 리터럴
+            (v,),
+        ).fetchone()
+        return str(row["org_id"] or "") if row is not None else ""
+
     def reserve_link(
-        self, idempotency_key: str, gmail_message_id: str, connection_id: str, source_url: str
+        self,
+        idempotency_key: str,
+        gmail_message_id: str,
+        connection_id: str,
+        source_url: str,
+        org_id: str | None = None,
     ) -> EventLink | None:
         """멱등 키로 pending 링크 예약. 이미 있으면 None 반환."""
         now = _now()
+        # org 귀속: 명시 > connector 부모 > ctx — run/웹훅 실행(ctx='')에서도
+        # 링크가 올바른 조직에 기록되게 한다.
+        oid = (org_id or "").strip() or self._parent_org("connectors", "id", connection_id)
+        if not oid:
+            oid = orgctx.org_for_write()
         link = EventLink(
             id=uuid.uuid4().hex[:12],
             idempotency_key=idempotency_key,
@@ -37,8 +65,8 @@ class CommsStoreMixin:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO event_links(id,idempotency_key,gmail_message_id,"
-                    "connection_id,status,source_url,created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?)",
+                    "connection_id,status,source_url,created_at,updated_at,org_id)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         link.id,
                         link.idempotency_key,
@@ -48,6 +76,7 @@ class CommsStoreMixin:
                         link.source_url,
                         _iso(link.created_at),
                         _iso(link.updated_at),
+                        oid,
                     ),
                 )
         except self._integrity_errors:
@@ -55,8 +84,14 @@ class CommsStoreMixin:
         return link
 
     def get_link_by_key(self, key: str) -> EventLink | None:
+        # spec 003 US3/FR-018 — UNIQUE(org_id,idempotency_key)로 재스코프.
+        # 같은 키가 조직별로 공존할 수 있으므로 조회도 조직 범위로 제한한다
+        # (ctx='' 시스템 경로는 무필터 — 다른 조직 행을 임의로 집을 수
+        # 있으나 호출 경로는 org_scope 아래에서 실행된다).
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM event_links WHERE idempotency_key=?", (key,)
+            "SELECT * FROM event_links WHERE idempotency_key=?" + frag,  # noqa: S608
+            (key, *params),
         ).fetchone()
         return self._row_to_link(row) if row else None
 
@@ -99,9 +134,13 @@ class CommsStoreMixin:
             )
 
     def list_links(self, limit: int = 50) -> list[EventLink]:
+        frag, params = _org_filter()
         limit = _clamp_limit(limit)
         rows = self._conn.execute(
-            "SELECT * FROM event_links ORDER BY created_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM event_links"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY created_at DESC LIMIT ?",
+            (*params, limit),
         ).fetchall()
         return [self._row_to_link(r) for r in rows]
 
@@ -130,6 +169,7 @@ class CommsStoreMixin:
         run_id: str = "",
         link_id: str = "",
         channel: str = "inapp",
+        org_id: str | None = None,
     ) -> Notification:
         n = Notification(
             id=uuid.uuid4().hex[:12],
@@ -142,10 +182,19 @@ class CommsStoreMixin:
             status=NotificationStatus.PENDING,
             created_at=_now(),
         )
+        # org 귀속: 명시 > run/link 부모 > ctx — 알림 발신 경로(ctx='')에서도
+        # 부모 리소스의 조직으로 기록된다.
+        oid = (org_id or "").strip()
+        if not oid:
+            oid = self._parent_org("runs", "id", run_id)
+        if not oid:
+            oid = self._parent_org("event_links", "id", link_id)
+        if not oid:
+            oid = orgctx.org_for_write()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO notifications(id,run_id,link_id,channel,title,body,source_url,"
-                "status,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                "status,created_at,org_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     n.id,
                     n.run_id,
@@ -156,6 +205,7 @@ class CommsStoreMixin:
                     n.source_url,
                     n.status.value,
                     _iso(n.created_at),
+                    oid,
                 ),
             )
         return n
@@ -172,9 +222,13 @@ class CommsStoreMixin:
             )
 
     def list_notifications(self, limit: int = 50) -> list[Notification]:
+        frag, params = _org_filter()
         limit = _clamp_limit(limit)
         rows = self._conn.execute(
-            "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM notifications"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY created_at DESC LIMIT ?",
+            (*params, limit),
         ).fetchall()
         return [self._row_to_notif(r) for r in rows]
 
@@ -232,6 +286,7 @@ class CommsStoreMixin:
         status: str,
         source_text: str = "",
         retry_at: str = "",
+        org_id: str | None = None,
     ) -> bool:
         """INSERT OR IGNORE — 재전송이면 False.
 
@@ -243,8 +298,8 @@ class CommsStoreMixin:
             cur = c.execute(
                 "INSERT OR IGNORE INTO message_extractions"
                 "(source_provider,source_id,thread_id,extraction_json,"
-                "processing_status,source_text,retry_at,created_at)"
-                " VALUES(?,?,?,?,?,?,?,?)",
+                "processing_status,source_text,retry_at,created_at,org_id)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     provider,
                     source_id,
@@ -254,14 +309,19 @@ class CommsStoreMixin:
                     source_text,
                     retry_at,
                     _iso(now),
+                    orgctx.org_for_write(org_id),
                 ),
             )
             return cur.rowcount > 0
 
     def has_message(self, provider: str, source_id: str) -> bool:
+        # spec 003 US3 — message_extractions PK가 (provider,source_id,org_id)로
+        # 재스코프되므로 중복 판정도 같은 조직 범위로 제한한다.
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT 1 FROM message_extractions WHERE source_provider=? AND source_id=?",
-            (provider, source_id),
+            "SELECT 1 FROM message_extractions WHERE source_provider=? AND source_id=?"  # noqa: S608
+            + frag,
+            (provider, source_id, *params),
         ).fetchone()
         return row is not None
 
@@ -284,22 +344,30 @@ class CommsStoreMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def claim_message(self, provider: str, source_id: str) -> bool:
+    def claim_message(self, provider: str, source_id: str, org_id: str | None = None) -> bool:
         """메시지 원자 claim — pending(또는 리스 만료 processing)을 processing으로.
 
         UPDATE ... WHERE processing_status 조건 + retry_at 리스 설정을 한
         문장으로 수행해, 복수 worker/cron tick이 같은 메시지를 동시에
-        처리해 run을 중복 생성하는 것을 막는다. rowcount>0이면 claim 성공."""
+        처리해 run을 중복 생성하는 것을 막는다. rowcount>0이면 claim 성공.
+        org_id 명시 시 ctx와 무관하게 그 조직 행만 claim한다('' 포함) —
+        ctx='' 배치 루프에서 같은 키의 타 조직 행까지 뒤집히는 것을 막는다."""
         lease_until = _iso(_now() + timedelta(seconds=self._MESSAGE_LEASE_SECONDS))
         now_iso = _iso(_now())
+        # spec 003 US3 — 복합 PK(provider,source_id,org_id)에서 같은 키가
+        # 조직별로 존재할 수 있으므로 조직 범위로 claim을 제한한다.
+        if org_id is not None:
+            frag, fparams = " AND org_id=?", [org_id]
+        else:
+            frag, fparams = _org_filter()
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE message_extractions SET processing_status='processing',"
+                "UPDATE message_extractions SET processing_status='processing',"  # noqa: S608
                 " retry_at=?"
                 " WHERE source_provider=? AND source_id=?"
                 " AND processing_status IN ('pending','processing')"
-                " AND retry_at <= ?",
-                (lease_until, provider, source_id, now_iso),
+                " AND retry_at <= ?" + frag,  # noqa: S608
+                (lease_until, provider, source_id, now_iso, *fparams),
             )
         return cur.rowcount > 0
 
@@ -311,24 +379,38 @@ class CommsStoreMixin:
         error: str = "",
         retry_at: str = "",
         attempts: int = 0,
+        org_id: str | None = None,
     ) -> None:
+        # org_id 명시면 ctx와 무관하게 그 조직 행만 갱신한다('' 포함) —
+        # claim과 동일하게 복합 PK의 타 조직 행을 건드리지 않기 위함.
+        if org_id is not None:
+            frag, fparams = " AND org_id=?", [org_id]
+        else:
+            frag, fparams = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE message_extractions SET processing_status=?,"
+                "UPDATE message_extractions SET processing_status=?,"  # noqa: S608
                 " error_message=?, retry_at=?, attempts=?"
-                " WHERE source_provider=? AND source_id=?",
-                (status, error, retry_at, attempts, provider, source_id),
+                " WHERE source_provider=? AND source_id=?" + frag,  # noqa: S608
+                (status, error, retry_at, attempts, provider, source_id, *fparams),
             )
 
     def list_message_extractions(
         self, provider: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
         limit = _clamp_limit(limit, 20, 500)
+        frag, fparams = _org_filter()
         q = "SELECT * FROM message_extractions"
+        conds: list[str] = []
         args: list[Any] = []
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+            args.extend(fparams)
         if provider:
-            q += " WHERE source_provider=?"
+            conds.append("source_provider=?")
             args.append(provider)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
         q += " ORDER BY created_at DESC LIMIT ?"
         args.append(limit)
         out = []
@@ -337,6 +419,30 @@ class CommsStoreMixin:
             d["extraction"] = _loads(d.pop("extraction_json"))
             out.append(d)
         return out
+
+    def _source_message_org(self, provider: str, source_id: str) -> str:
+        """message_extractions 부모 행의 org_id — ctx 조직 범위 우선.
+
+        복합 PK(source_provider,source_id,org_id)라 같은 키가 조직별로 존재할
+        수 있으므로 ctx 조직의 행을 먼저 보고, 없으면 org_id 오름차순 첫 행을
+        결정적으로 선택한다('' org 행이 가장 먼저 온다)."""
+        prov = (provider or "")[:64]
+        sid = (source_id or "")[:64]
+        ctx_oid = orgctx.current_org_id()
+        if ctx_oid:
+            row = self._conn.execute(
+                "SELECT org_id FROM message_extractions"
+                " WHERE source_provider=? AND source_id=? AND org_id=?",
+                (prov, sid, ctx_oid),
+            ).fetchone()
+            if row is not None:
+                return ctx_oid
+        row = self._conn.execute(
+            "SELECT org_id FROM message_extractions"
+            " WHERE source_provider=? AND source_id=? ORDER BY org_id LIMIT 1",
+            (prov, sid),
+        ).fetchone()
+        return str(row["org_id"] or "") if row is not None else ""
 
     # ---- scheduled_events ----
     def save_scheduled_event(
@@ -358,15 +464,27 @@ class CommsStoreMixin:
         confidence: float = 0.0,
         reason: str = "",
         source_refs: str = "",
+        org_id: str | None = None,
     ) -> str:
         now = _iso(_now())
+        # org 귀속: 명시 > message_extractions 부모 > ctx — 캘린더/이메일
+        # 파이프라인(ctx='')에서도 후보 이벤트가 올바른 조직에 기록된다.
+        oid = (org_id or "").strip()
+        if not oid:
+            oid = self._source_message_org(source_provider, source_id)
+        if not oid:
+            oid = orgctx.org_for_write()
+        # scheduled_events.id는 전역 PK — 같은 메시지를 조직별로 처리할 때
+        # event_id가 충돌해 타 조직 행을 덮어쓰지 않도록 org를 접두한다.
+        if oid and not event_id.startswith(f"{oid}:"):
+            event_id = f"{oid}:{event_id}"
         with self.tx() as c:
             c.execute(
                 "INSERT INTO scheduled_events(id,source_provider,source_id,"
                 "thread_id,calendar_event_id,title,start_at,end_at,timezone,"
                 "location,attendees_json,summary,status,confidence,reason,"
-                "source_refs,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                "source_refs,created_at,updated_at,org_id)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT (id) DO UPDATE SET status=excluded.status,"
                 " calendar_event_id=excluded.calendar_event_id,"
                 " version=version+1, updated_at=excluded.updated_at",
@@ -389,14 +507,30 @@ class CommsStoreMixin:
                     source_refs,
                     now,
                     now,
+                    oid,
                 ),
             )
         return event_id
 
-    def get_scheduled_by_source(self, provider: str, source_id: str) -> dict[str, Any] | None:
+    def get_scheduled_by_source(
+        self, provider: str, source_id: str, org_id: str | None = None
+    ) -> dict[str, Any] | None:
+        # 조직 범위 필수 — 무필터면 같은 메시지의 타 조직 이벤트 행을 반환한다.
+        # org 해석 순서는 save_scheduled_event와 동일(명시 > 부모 > ctx).
+        oid = (org_id or "").strip()
+        if not oid:
+            oid = self._source_message_org(provider, source_id)
+        if not oid:
+            oid = orgctx.org_for_write()
+        frag = " AND org_id=?" if oid else ""
+        params: list[Any] = [oid] if oid else []
+        # 동일 조직에 구버전(무접두) id 행과 신규(접두) id 행이 공존할 수
+        # 있으므로 최신 행을 결정적으로 반환한다.
         row = self._conn.execute(
-            "SELECT * FROM scheduled_events WHERE source_provider=? AND source_id=?",
-            (provider, source_id),
+            "SELECT * FROM scheduled_events WHERE source_provider=? AND source_id=?"  # noqa: S608
+            + frag
+            + " ORDER BY updated_at DESC LIMIT 1",
+            (provider, source_id, *params),
         ).fetchone()
         return dict(row) if row else None
 
@@ -404,11 +538,18 @@ class CommsStoreMixin:
         self, status: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         limit = _clamp_limit(limit)
+        frag, fparams = _org_filter()
         q = "SELECT * FROM scheduled_events"
+        conds: list[str] = []
         args: list[Any] = []
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+            args.extend(fparams)
         if status:
-            q += " WHERE status=?"
+            conds.append("status=?")
             args.append(status)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
         q += " ORDER BY created_at DESC LIMIT ?"
         args.append(limit)
         return [dict(r) for r in self._conn.execute(q, args).fetchall()]
@@ -437,19 +578,22 @@ class CommsStoreMixin:
         rowcount>0이면 claim 성공 — 호출자는 작업 후 registered/rejected 등으로
         전이하거나, 실패 시 원래 상태로 복구해야 한다."""
         now = _iso(_now())
+        frag, fparams = _org_filter()
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE scheduled_events SET status='registering', updated_at=?"
+                "UPDATE scheduled_events SET status='registering', updated_at=?"  # noqa: S608
                 " WHERE id=? AND (status IN"
                 " ('needs_review','needs_confirmation','candidate')"
-                " OR (status='registering' AND updated_at < ?))",
-                (now, event_id, stale_before),
+                " OR (status='registering' AND updated_at < ?))" + frag,
+                (now, event_id, stale_before, *fparams),
             )
         return cur.rowcount > 0
 
     def get_scheduled_event(self, event_id: str) -> dict[str, Any] | None:
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM scheduled_events WHERE id=?", (event_id,)
+            "SELECT * FROM scheduled_events WHERE id=?" + frag,  # noqa: S608
+            (event_id, *params),
         ).fetchone()
         return dict(row) if row else None
 
@@ -458,24 +602,55 @@ class CommsStoreMixin:
         if not sets:
             return False
         sets["updated_at"] = _iso(_now())
+        frag, fparams = _org_filter()
         cols = ", ".join(f"{k}=?" for k in sets)
         with self.tx() as c:
             cur = c.execute(
-                f"UPDATE scheduled_events SET {cols}, version=version+1 WHERE id=?",  # noqa: S608 - cols는 화이트리스트 필드명만 사용
-                (*sets.values(), event_id),
+                f"UPDATE scheduled_events SET {cols}, version=version+1 WHERE id=?"  # noqa: S608 - cols는 화이트리스트 필드명만 사용
+                + frag,
+                (*sets.values(), event_id, *fparams),
             )
         return cur.rowcount > 0
 
     # ---- notification_jobs ----
     def save_notification_job(self, scheduled_event_id: str, notify_type: str, fire_at: str) -> str:
-        job_id = f"job:{scheduled_event_id}:{notify_type}:{fire_at}"
+        # org 귀속은 부모 scheduled_events 행에서 상속 — scheduled_events.id는
+        # `oid:provider:source` 네임스페이스라 여기 전달되는 키는 비접두
+        # `provider:source_id`이므로 source 컬럼으로 조회한다. 동일 소스를
+        # 공유하는 조직이 있어도 ctx 조직 행을 우선하고 결정적으로 폴백한다.
+        oid = ""
+        prov, _, sid = scheduled_event_id.partition(":")
+        if prov and sid:
+            cur_oid = orgctx.current_org_id()
+            if cur_oid:
+                row = self._conn.execute(
+                    "SELECT org_id FROM scheduled_events"
+                    " WHERE source_provider=? AND source_id=? AND org_id=?",
+                    (prov, sid, cur_oid),
+                ).fetchone()
+            else:
+                row = None
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT org_id FROM scheduled_events"
+                    " WHERE source_provider=? AND source_id=?"
+                    " ORDER BY org_id LIMIT 1",
+                    (prov, sid),
+                ).fetchone()
+            if row is not None:
+                oid = str(row["org_id"] or "")
+        if not oid:
+            oid = orgctx.org_for_write()
+        # job_id는 org 네임스페이스 — 동일 provider:source를 공유하는 조직의
+        # 알림 job이 INSERT OR IGNORE로 서로를 drop하지 않게 한다.
+        job_id = f"job:{oid}:{scheduled_event_id}:{notify_type}:{fire_at}"
         now = _iso(_now())
         with self.tx() as c:
             c.execute(
                 "INSERT OR IGNORE INTO notification_jobs"
                 "(id,scheduled_event_id,notify_type,fire_at,status,"
-                "created_at,updated_at) VALUES(?,?,?,?,'pending',?,?)",
-                (job_id, scheduled_event_id, notify_type, fire_at, now, now),
+                "created_at,updated_at,org_id) VALUES(?,?,?,?,'pending',?,?,?)",
+                (job_id, scheduled_event_id, notify_type, fire_at, now, now, oid),
             )
         return job_id
 
@@ -523,9 +698,13 @@ class CommsStoreMixin:
             )
 
     def list_notification_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         limit = _clamp_limit(limit)
         rows = self._conn.execute(
-            "SELECT * FROM notification_jobs ORDER BY fire_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM notification_jobs"  # noqa: S608
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY fire_at DESC LIMIT ?",
+            (*params, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 

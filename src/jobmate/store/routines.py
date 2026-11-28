@@ -18,12 +18,19 @@ import uuid
 from typing import Any
 
 from ..models import RoutineRunStatus, RoutineStatus, ScheduleKind
+from . import orgctx
 from .util import _clamp_limit, _iso, _loads, _now
 
 # routine_runs.status 유효 어휘 — services 계층이 쓰기 전 검증하지만
 # 저장 계층에서도 방어적으로 화이트리스트한다.
 _RUN_STATUSES = {s.value for s in RoutineRunStatus}
 # routines.status는 컬럼이 없고 enabled 플래그의 파생값이다(_routine_json).
+
+
+def _org_filter() -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND org_id=?` 조건 — 시스템/미인증(ctx='')은 무필터."""
+    oid = orgctx.current_org_id()
+    return (" AND org_id=?", [oid]) if oid else ("", [])
 
 
 class RoutineStoreMixin:
@@ -57,16 +64,27 @@ class RoutineStoreMixin:
         enabled: bool = True,
         next_run_at: str | None = None,
         created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """routine 생성 — schedule/next_run_at 검증·계산은 서비스 계층 몫."""
         now = _iso(_now())
         rid = uuid.uuid4().hex[:12]
+        # org 귀속: 명시 > project 부모 > ctx — project 없는 routine도
+        # ctx/명시값으로 올바른 조직에 기록된다.
+        oid = (org_id or "").strip()
+        pid = (project_id or "").strip()[:64]
+        if not oid and pid:
+            prow = self._conn.execute("SELECT org_id FROM projects WHERE id=?", (pid,)).fetchone()
+            if prow is not None:
+                oid = str(prow["org_id"] or "")
+        if not oid:
+            oid = orgctx.org_for_write()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO routines(id,name,description,project_id,task_template,"
                 "assignee_agent_id,schedule_kind,schedule,timezone,max_concurrent,"
-                "enabled,next_run_at,last_run_at,created_by,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "enabled,next_run_at,last_run_at,created_by,created_at,updated_at,"
+                "org_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     rid,
                     name.strip()[:200],
@@ -84,13 +102,18 @@ class RoutineStoreMixin:
                     created_by[:200],
                     now,
                     now,
+                    oid,
                 ),
             )
         row = self.get_routine(rid)
         return row if row is not None else {"id": rid}
 
     def get_routine(self, routine_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM routines WHERE id=?", (routine_id,)).fetchone()
+        frag, params = _org_filter()
+        row = self._conn.execute(
+            "SELECT * FROM routines WHERE id=?" + frag,  # noqa: S608
+            (routine_id, *params),
+        ).fetchone()
         return self._routine_json(row) if row else None
 
     def list_routines(
@@ -101,8 +124,12 @@ class RoutineStoreMixin:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM routines"
+        frag, fparams = _org_filter()
         conds: list[str] = []
         params: list[Any] = []
+        if frag:
+            conds.append(frag.strip().removeprefix("AND").strip())
+            params.extend(fparams)
         if enabled is not None:
             conds.append("enabled=?")
             params.append(1 if enabled else 0)
@@ -170,17 +197,19 @@ class RoutineStoreMixin:
         if "description" in updates:
             updates["description"] = str(updates["description"]).strip()[:2000]
         sets = ", ".join(f"{k}=?" for k in updates)
+        frag, fparams = _org_filter()
         with self.tx() as c:
             c.execute(
-                f"UPDATE routines SET {sets}, updated_at=? WHERE id=?",  # noqa: S608
-                (*updates.values(), _iso(_now()), routine_id),
+                f"UPDATE routines SET {sets}, updated_at=? WHERE id=?" + frag,  # noqa: S608
+                (*updates.values(), _iso(_now()), routine_id, *fparams),
             )
         return self.get_routine(routine_id)
 
     def delete_routine(self, routine_id: str) -> bool:
         """routine 삭제 — routine_runs 이력은 보존한다(감사 가능성)."""
+        frag, params = _org_filter()
         with self.tx() as c:
-            cur = c.execute("DELETE FROM routines WHERE id=?", (routine_id,))
+            cur = c.execute("DELETE FROM routines WHERE id=?" + frag, (routine_id, *params))  # noqa: S608
         return cur.rowcount > 0
 
     def due_routines(self, *, now: str | None = None, limit: int = 50) -> list[dict[str, Any]]:

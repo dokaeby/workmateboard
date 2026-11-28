@@ -39,6 +39,15 @@ def register(app: FastAPI, ctx: Any) -> None:
     _lead_gate = ctx._lead_gate
     _prefs = ctx._prefs
 
+    def _workflow_keys() -> list[str]:
+        """내장 + 현재 조직의 커스텀 workflow key — 인사이트 집계용(spec 003 US3)."""
+        keys = set(WORKFLOWS)
+        try:
+            keys |= {str(r.get("name") or "") for r in store.list_custom_workflows()}
+        except Exception:
+            logger.debug("custom workflow list failed for insights", exc_info=True)
+        return sorted(keys)
+
     @app.get("/api/v1/insights")
     def insights(request: Request, days: int = 30) -> JSONResponse:
         """인사이트 뷰 — 세션/런/비용/실패 집계 (최대 365일). lead 이상."""
@@ -46,7 +55,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         if gate is not None:
             return gate
         return JSONResponse(
-            content=insights_summary(store, sorted(WORKFLOWS), max(1, min(days, 365)))
+            content=insights_summary(store, _workflow_keys(), max(1, min(days, 365)))
         )
 
     @app.get("/api/v1/automation/overview")
@@ -196,7 +205,7 @@ def register(app: FastAPI, ctx: Any) -> None:
                 return err(404, "not_found", "report not found", request)
             payload = rep
         else:
-            payload = insights_summary(store, sorted(WORKFLOWS), 30)
+            payload = insights_summary(store, _workflow_keys(), 30)
         token = secrets.token_urlsafe(24)
         expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
         store.create_share_link(token, kind, ref, payload, _actor_label(request), expires_at)

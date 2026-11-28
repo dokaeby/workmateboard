@@ -32,6 +32,9 @@ def _session_cookie(client: TestClient, store: Store, email: str = "u@b.com") ->
     """유효 세션 쿠키를 직접 발급 — 머신 전용 엔드포인트의 세션 거부 검증용."""
     user = store.create_user(email, password_hash="x" * 32, email_verified=True)
     assert user is not None
+    _orgs = store.list_organizations()
+    assert _orgs
+    store.add_org_member(_orgs[0]["id"], user["id"], "member")
     token = f"sess-{email}"
     store.create_session(user["id"], hash_token(token))
     client.cookies.set("jobmate_session", token)
@@ -379,6 +382,10 @@ def test_events_requires_lead_but_tasks_member_readable(monkeypatch):
     ul = store.create_user("l@b.com", password_hash="x" * 32, email_verified=True)
     assert um is not None and ul is not None
     store.set_user_role(ul["id"], "lead")
+    _orgs = store.list_organizations()
+    assert _orgs
+    store.add_org_member(_orgs[0]["id"], um["id"], "member")
+    store.add_org_member(_orgs[0]["id"], ul["id"], "member")
     tm = f"sess-m-{um['id']}"
     tl = f"sess-l-{ul['id']}"
     store.create_session(um["id"], hash_token(tm))
@@ -647,6 +654,9 @@ def test_release_task_machine_key_requires_owner_even_admin_equivalent(monkeypat
     user = store.create_user("lead@b.com", password_hash="x" * 32, email_verified=True)
     assert user is not None
     store.set_user_role(user["id"], "lead")
+    _orgs = store.list_organizations()
+    assert _orgs
+    store.add_org_member(_orgs[0]["id"], user["id"], "member")
     token = f"sess-lead-release-{user['id'][:8]}"
     store.create_session(user["id"], hash_token(token))
     lead_client = TestClient(client.app)

@@ -20,6 +20,7 @@ from .models import RunStatus
 from .store.db import Store
 from .workflows import WORKFLOWS
 from .workflows.registry_builder import build_runner
+from .workflows.resolver import resolve_workflow_spec
 
 logger = logging.getLogger("jobmate.cli")
 
@@ -130,6 +131,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "workflows":
         for w in WORKFLOWS.values():
             print(f"{w.key} v{w.version}")
+        # 커스텀 워크플로 — ctx=''라 전 조직 행이 보인다. 동명은 1회만 표시.
+        seen = set(WORKFLOWS)
+        for row in store.list_custom_workflows():
+            name = str(row.get("name") or "")
+            if name and name not in seen:
+                seen.add(name)
+                print(f"{name} (custom)")
         return 0
 
     if args.cmd == "google-auth":
@@ -155,17 +163,31 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "run":
-        run = store.create_run(
-            args.workflow, WORKFLOWS[args.workflow].version, {"task": args.task}, trace_id="cli"
-        )
-        runner = build_runner(args.workflow, store=store, llm=llm, settings=settings)
-        logger.info("cli run %s workflow=%s", run.id, args.workflow)
-        try:
-            runner.invoke(run.id, {"task": args.task})
-        except Exception as e:
-            store.update_run(run.id, status=RunStatus.FAILED, error=str(e)[:300])
-            logger.error("cli run %s failed: %s", run.id, str(e)[:300])
-        r = store.get_run(run.id)
+        # spec 003 FR-019 — CLI는 세션 컨텍스트가 없으므로 생성 run을
+        # 기본 조직(첫 활성 조직)에 귀속시킨다.
+        from .store import orgctx
+
+        _orgs = store.list_organizations()
+        _oid = str(_orgs[0]["id"]) if _orgs else ""
+        with orgctx.org_scope(_oid):
+            wf_spec = resolve_workflow_spec(store, args.workflow)
+            if wf_spec is None:
+                print(f"unknown workflow: {args.workflow}", file=sys.stderr)
+                return 1
+            run = store.create_run(
+                args.workflow,
+                wf_spec.version,
+                {"task": args.task},
+                trace_id="cli",
+            )
+            runner = build_runner(args.workflow, store=store, llm=llm, settings=settings)
+            logger.info("cli run %s workflow=%s", run.id, args.workflow)
+            try:
+                runner.invoke(run.id, {"task": args.task})
+            except Exception as e:
+                store.update_run(run.id, status=RunStatus.FAILED, error=str(e)[:300])
+                logger.error("cli run %s failed: %s", run.id, str(e)[:300])
+            r = store.get_run(run.id)
         print(
             json.dumps(
                 {
@@ -200,8 +222,21 @@ def main(argv: list[str] | None = None) -> int:
         if not r:
             print("not found", file=sys.stderr)
             return 1
-        runner = build_runner(r.workflow_key, store=store, llm=llm, settings=settings)
-        runner.resume(r.id, {"decision": args.decision, "comment": getattr(args, "comment", "")})
+        # spec 003 FR-019 — resume의 stage/approval/audit 쓰기가 run의
+        # 조직에 귀속되도록 행 org_id로 스코프한다.
+        from .services.management_common import row_org_id
+        from .store import orgctx
+
+        _oid = row_org_id(store, "runs", r.id)
+        decision_payload = {"decision": args.decision, "comment": getattr(args, "comment", "")}
+        if _oid:
+            with orgctx.org_scope(_oid):
+                # 커스텀 spec 해석도 run의 조직 컨텍스트 안에서 해야 한다.
+                runner = build_runner(r.workflow_key, store=store, llm=llm, settings=settings)
+                runner.resume(r.id, decision_payload)
+        else:
+            runner = build_runner(r.workflow_key, store=store, llm=llm, settings=settings)
+            runner.resume(r.id, decision_payload)
         r2 = store.get_run(r.id)
         print(json.dumps({"id": r.id, "status": r2.status.value if r2 else "?"}))
         return 0

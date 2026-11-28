@@ -15,7 +15,7 @@ from ... import messenger
 from ...models import RunStatus
 from ...pricing import cost_usd
 from ...reports import REPORT_KIND_LABELS, build_report
-from ...workflows import WORKFLOWS
+from ...workflows.resolver import resolve_workflow_spec
 from ..schemas import (
     AskRequest,
     ReportGenerateRequest,
@@ -53,7 +53,7 @@ def register(app: FastAPI, ctx: Any) -> None:
     def create_schedule(body: ScheduleCreateRequest, request: Request) -> JSONResponse:
         if _admin_user(request) is None:
             return err(403, "forbidden", "admin role required", request)
-        if body.workflow not in WORKFLOWS:
+        if resolve_workflow_spec(store, body.workflow) is None:
             return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
         sched = store.create_schedule(body.workflow, body.input, body.interval_minutes)
         store.audit(

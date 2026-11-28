@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 from ... import webutil
 from ...models import WorkflowSpec
-from ...workflows import WORKFLOWS
+from ...workflows.resolver import resolve_workflow_spec
 from ..connectors import (
     _CONNECTOR_CACHE,
     _CONNECTOR_CACHE_TTL,
@@ -26,7 +26,7 @@ from ..schemas import (
     TriggerCreateRequest,
 )
 from ..sensitive_fields import _config_has_secret, _encrypt_config_secrets
-from ..support import _BUILTIN_WF_KEYS, _sync_workflow_registry
+from ..support import _BUILTIN_WF_KEYS
 
 logger = logging.getLogger("jobmate.api")
 
@@ -54,7 +54,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         gate = _lead_gate(request)
         if gate is not None:
             return gate
-        if body.workflow not in WORKFLOWS:
+        if resolve_workflow_spec(store, body.workflow) is None:
             return err(404, "unknown_workflow", f"workflow '{body.workflow}' not found", request)
         name = body.name.strip()
         if not name:
@@ -89,7 +89,8 @@ def register(app: FastAPI, ctx: Any) -> None:
         if pb is None:
             return err(404, "not_found", "playbook not found", request)
         wf = str(pb.get("workflow") or "")
-        if wf not in WORKFLOWS:
+        wf_spec = resolve_workflow_spec(store, wf)
+        if wf_spec is None:
             return err(409, "workflow_unavailable", f"workflow '{wf}' is not registered", request)
         payload = dict(pb.get("input") or {})
         payload.setdefault("task", str(pb.get("name") or pb["id"]))
@@ -112,7 +113,7 @@ def register(app: FastAPI, ctx: Any) -> None:
             input_data=payload,
             source="api",
             created_by=_actor_label(request),
-            version=WORKFLOWS[wf].version,
+            version=wf_spec.version,
             job_payload={"task": payload["task"]},
         )
         action = str(res.get("action") or "")
@@ -347,7 +348,6 @@ def register(app: FastAPI, ctx: Any) -> None:
                 request,
                 extra={"current_revision": int(res.get("current_revision") or 0)},
             )
-        _sync_workflow_registry(store)
         _audit_api(
             request,
             "custom_workflow_save",
@@ -378,7 +378,6 @@ def register(app: FastAPI, ctx: Any) -> None:
             return err(400, "validation", "cannot delete a builtin workflow", request)
         if not store.delete_custom_workflow(name):
             return err(404, "not_found", "custom workflow not found", request)
-        _sync_workflow_registry(store)
         _audit_api(request, "custom_workflow_delete", name, {})
         logger.info("custom workflow deleted name=%s", name)
         return JSONResponse(content={"ok": True})
@@ -433,7 +432,6 @@ def register(app: FastAPI, ctx: Any) -> None:
                     extra={"current_revision": int(res.get("current_revision") or 0)},
                 )
             return err(404, "not_found", "workflow revision not found", request)
-        _sync_workflow_registry(store)
         _audit_api(request, "custom_workflow_restore", name, {"revision": res["revision"]})
         logger.info(
             "custom workflow restored name=%s from_rev=%s new_rev=%s",

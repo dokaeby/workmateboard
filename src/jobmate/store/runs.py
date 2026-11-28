@@ -9,9 +9,25 @@ import uuid
 from typing import Any, Literal
 
 from ..models import Approval, AuditEvent, Run, RunStatus, StageRun, StageStatus
+from . import orgctx
 from .util import _clamp_limit, _dt, _iso, _loads, _now, clean_scope_id
 
 logger = logging.getLogger("jobmate.store")
+
+
+def _org_bind() -> list[str]:
+    """org_id 필터 바인딩 파라미터 — 요청 조직 컨텍스트(없으면 '').
+
+    쿼리에는 `AND (org_id=? OR ?='')` 조건을 리터럴로 박고 이 값을 넘긴다 —
+    ctx=''이면 OR 우항이 항상 참이라 전 조직 조회(시스템/스케줄러 의도),
+    ctx가 있으면 해당 조직 행만 조회·갱신한다(spec 003 US3/FR-013).
+    동적 SQL 문자열 연결을 쓰지 않아 S608 정적 검사도 통과한다."""
+    oid = orgctx.current_org_id()
+    return [oid, oid]
+
+
+def _org_id_of(row: Any) -> str:
+    return str(row["org_id"] or "") if row is not None else ""
 
 
 class RunStoreMixin:
@@ -75,6 +91,7 @@ class RunStoreMixin:
         created_by: str = "",
         agent_id: str = "",
         goal_id: str = "",
+        org_id: str | None = None,
     ) -> Run:
         # input.project 자유 태그를 컬럼으로도 유지 (PATCH /runs/{id}와 동일 경로).
         # budget policy scope_id와 동일 정규화(clean_scope_id)를 적용해야
@@ -105,10 +122,22 @@ class RunStoreMixin:
         # goal 컨텍스트를 input에 주입 — 워크플로 stage가 run.input["goal"]
         # 의 {id,title}을 읽어 목표 맥락을 프롬프트에 반영할 수 있다.
         # ("goal" 키는 코얼레싱 scope 계산에서 제외 — wakeups.scope_key_for)
-        if gid:
-            g = self.get_goal(gid)
-            if g is not None:
-                input_data["goal"] = {"id": gid, "title": str(g.get("title") or "")}
+        goal_row = self.get_goal(gid) if gid else None
+        if goal_row is not None:
+            input_data["goal"] = {"id": gid, "title": str(goal_row.get("title") or "")}
+        # org_id 해석(FR-013) — 부모(agents/goals)의 org를 우선 전파한다.
+        # 스케줄러·웹훅 경로는 요청 ctx가 ''라 명시/ctx만으로는 org를 알 수
+        # 없고, 부모 org 전파가 유일한 정확한 경로다. 부모가 없으면
+        # 명시 인자 → 요청 컨텍스트 순(orgctx.org_for_write).
+        oid = ""
+        aid = (agent_id or "").strip()[:64]
+        if aid:
+            oid = _org_id_of(
+                self._conn.execute("SELECT org_id FROM agents WHERE id=?", (aid,)).fetchone()
+            )
+        if not oid and goal_row is not None:
+            oid = str(goal_row.get("org_id") or "")
+        oid = oid or orgctx.org_for_write(org_id)
         run = Run(
             id=uuid.uuid4().hex[:12],
             workflow_key=workflow_key,
@@ -127,8 +156,9 @@ class RunStoreMixin:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO runs(id,workflow_key,workflow_version,input,status,trace_id,"
-                "error,metadata,created_by,project,agent_id,goal_id,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "error,metadata,created_by,project,agent_id,goal_id,org_id,"
+                "created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run.id,
                     run.workflow_key,
@@ -142,6 +172,7 @@ class RunStoreMixin:
                     project,
                     run.agent_id or None,
                     run.goal_id or None,
+                    oid,
                     _iso(run.created_at),
                     _iso(run.updated_at),
                 ),
@@ -152,20 +183,24 @@ class RunStoreMixin:
         return run
 
     def get_run(self, run_id: str) -> Run | None:
-        row = self._conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE id=? AND (org_id=? OR ?='')",
+            (run_id, *_org_bind()),
+        ).fetchone()
         return self._row_to_run(row) if row else None
 
     def list_runs(self, limit: int = 50, workflow: str | None = None) -> list[Run]:
         limit = _clamp_limit(limit, 50, 500)
-        if workflow is None:
-            rows = self._conn.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM runs WHERE workflow_key=? ORDER BY created_at DESC LIMIT ?",
-                (workflow, limit),
-            ).fetchall()
+        conds: list[str] = ["(org_id=? OR ?='')"]
+        params: list[Any] = [*_org_bind()]
+        if workflow is not None:
+            conds.append("workflow_key=?")
+            params.append(workflow)
+        sql = "SELECT * FROM runs"
+        sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_run(r) for r in rows]
 
     def update_run(
@@ -186,13 +221,14 @@ class RunStoreMixin:
             c.execute(
                 "UPDATE runs SET status=COALESCE(?, status),"
                 " error=COALESCE(?, error), metadata=COALESCE(?, metadata),"
-                " updated_at=? WHERE id=?",
+                " updated_at=? WHERE id=? AND (org_id=? OR ?='')",
                 (
                     status.value if status is not None else None,
                     error,
                     json.dumps(metadata) if metadata is not None else None,
                     _iso(_now()),
                     run_id,
+                    *_org_bind(),
                 ),
             )
 
@@ -203,8 +239,9 @@ class RunStoreMixin:
         막는다. rowcount>0이면 이 호출이 claim에 성공한 것."""
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE runs SET status=?, updated_at=? WHERE id=? AND status=?",
-                (to_status, _iso(_now()), run_id, from_status),
+                "UPDATE runs SET status=?, updated_at=? WHERE id=? AND status=?"
+                " AND (org_id=? OR ?='')",
+                (to_status, _iso(_now()), run_id, from_status, *_org_bind()),
             )
         return cur.rowcount > 0
 
@@ -224,17 +261,20 @@ class RunStoreMixin:
         반환값: 마감된 run 수."""
         now = _iso(_now())
         reaped: list[str] = []
+        org_params = _org_bind()
         with self.tx() as c:
             rows = c.execute(
-                "SELECT id FROM runs WHERE status IN ('queued','running') AND updated_at < ?",
-                (stale_before_iso,),
+                "SELECT id FROM runs WHERE status IN ('queued','running') AND updated_at < ?"
+                " AND (org_id=? OR ?='')",
+                (stale_before_iso, *org_params),
             ).fetchall()
             for r in rows:
                 rid = str(r["id"])
                 cur = c.execute(
                     "UPDATE runs SET status='failed', error=?, updated_at=?"
-                    " WHERE id=? AND status IN ('queued','running')",
-                    (error, now, rid),
+                    " WHERE id=? AND status IN ('queued','running')"
+                    " AND (org_id=? OR ?='')",
+                    (error, now, rid, *org_params),
                 )
                 if int(getattr(cur, "rowcount", 0) or 0) <= 0:
                     continue  # 조회~갱신 사이 상태 전이 — 다른 경로가 처리 중
@@ -256,8 +296,8 @@ class RunStoreMixin:
         gid = (goal_id or "").strip()[:64] or None
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE runs SET goal_id=? WHERE id=?",
-                (gid, run_id),
+                "UPDATE runs SET goal_id=? WHERE id=? AND (org_id=? OR ?='')",
+                (gid, run_id, *_org_bind()),
             )
         return cur.rowcount > 0
 
@@ -465,10 +505,17 @@ class RunStoreMixin:
         detail: dict[str, Any] | None = None,
     ) -> None:
         """본문/토큰이 detail에 들어가지 않도록 호출자가 책임진다."""
+        # org_id는 부모 run의 org를 전파 — 스케줄러·내부 경로(ctx='')에서도
+        # run이 속한 조직의 감사 로그로 기록된다(FR-013). run을 못 찾으면
+        # 명시/요청 컨텍스트로 폴백.
+        oid = _org_id_of(
+            self._conn.execute("SELECT org_id FROM runs WHERE id=?", (run_id,)).fetchone()
+        )
+        oid = oid or orgctx.org_for_write()
         with self.tx() as c:
             c.execute(
-                "INSERT INTO audit_events(id,run_id,actor,action,object_ref,detail,created_at)"
-                " VALUES(?,?,?,?,?,?,?)",
+                "INSERT INTO audit_events(id,run_id,actor,action,object_ref,detail,org_id,"
+                "created_at) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     uuid.uuid4().hex[:12],
                     run_id,
@@ -476,13 +523,15 @@ class RunStoreMixin:
                     action,
                     object_ref,
                     json.dumps(detail or {}),
+                    oid,
                     _iso(_now()),
                 ),
             )
 
     def get_audit(self, run_id: str) -> list[AuditEvent]:
         rows = self._conn.execute(
-            "SELECT * FROM audit_events WHERE run_id=? ORDER BY created_at", (run_id,)
+            "SELECT * FROM audit_events WHERE run_id=? AND (org_id=? OR ?='') ORDER BY created_at",
+            (run_id, *_org_bind()),
         ).fetchall()
         return [
             AuditEvent(

@@ -15,8 +15,9 @@ from typing import Any
 from .. import messenger
 from ..config import Settings
 from ..engine.trace import job_traceable
+from ..store import orgctx
 from ..store.db import Store
-from ..workflows import WORKFLOWS
+from ..workflows.resolver import resolve_workflow_spec
 
 worker_logger = logging.getLogger("jobmate.worker")
 
@@ -76,7 +77,13 @@ def _evaluate_triggers(
         new_prev[ident] = cur
         if ident not in prev or prev.get(ident) == cur:
             continue  # 첫 관측 또는 상태 변화 없음 — 전이 아님
+        # spec 003 US3 — org가 다른 trigger×session 조합은 매칭하지 않는다.
+        # ''(레거시/시스템 행)는 어느 조직과도 매칭 가능한 와일드카드.
+        sess_org = str(sess.get("org_id") or "")
         for trig in triggers:
+            trig_org = str(trig.get("org_id") or "")
+            if sess_org and trig_org and sess_org != trig_org:
+                continue
             match = trig.get("match") or {}
             action = trig.get("action") or {}
             if not _trigger_match(match, sess):
@@ -84,28 +91,31 @@ def _evaluate_triggers(
             fp = _session_transition_fp(sess, cur)
             if not store.claim_trigger_fire(trig["id"], tool, skey, cur, fp):
                 continue  # 동일 전이 재평가 — 이미 발사됨
-            try:
-                _fire_trigger_action(store, settings, llm, adapters, trig, sess, defer)
-            except Exception as e:
-                store.mark_trigger_error(trig["id"], str(e)[:200])
-                worker_logger.warning("trigger %s fire failed: %s", trig["id"], str(e)[:200])
-                continue
-            store.mark_trigger_fired(trig["id"])
-            store.audit(
-                "",
-                "trigger",
-                f"trigger_fire:{trig['id']}",
-                ident,
-                {"action": str(action.get("type") or ""), "state": cur},
-            )
-            fired += 1
-            worker_logger.info(
-                "trigger %s fired session=%s state=%s action=%s",
-                trig["id"],
-                ident,
-                cur,
-                action.get("type"),
-            )
+            # spec 003 FR-019 — trigger 행의 org로 발사를 스코프한다.
+            # admit_run→create_run·report·inbox·audit이 이 조직을 상속한다.
+            with orgctx.org_scope(str(trig.get("org_id") or "")):
+                try:
+                    _fire_trigger_action(store, settings, llm, adapters, trig, sess, defer)
+                except Exception as e:
+                    store.mark_trigger_error(trig["id"], str(e)[:200])
+                    worker_logger.warning("trigger %s fire failed: %s", trig["id"], str(e)[:200])
+                    continue
+                store.mark_trigger_fired(trig["id"])
+                store.audit(
+                    "",
+                    "trigger",
+                    f"trigger_fire:{trig['id']}",
+                    ident,
+                    {"action": str(action.get("type") or ""), "state": cur},
+                )
+                fired += 1
+                worker_logger.info(
+                    "trigger %s fired session=%s state=%s action=%s",
+                    trig["id"],
+                    ident,
+                    cur,
+                    action.get("type"),
+                )
     store.set_state(_TRIGGER_STATE_KEY, new_prev)
     return fired
 
@@ -139,7 +149,10 @@ def _fire_trigger_action(
     trigger_meta = {"id": tid, "session": sess_ref}
 
     def _launch(workflow: str, payload: dict[str, Any]) -> None:
-        if workflow not in WORKFLOWS:
+        # 호출부(_fire_trigger_action)가 trigger 행의 org로 org_scope를 씌운
+        # 상태 — 커스텀 spec은 그 조직 컨텍스트로 해석된다(spec 003 US3).
+        wf_spec = resolve_workflow_spec(store, workflow)
+        if wf_spec is None:
             raise ValueError(f"unknown workflow {workflow}")
         # 스코프드 예산 — hard_stop 초과 시 트리거 발사 보류(예외 없이 스킵)
         from .. import budget_scope, wakeups
@@ -163,7 +176,7 @@ def _fire_trigger_action(
             input_data=payload,
             source="trigger",
             created_by=f"trigger:{tid}",
-            version=WORKFLOWS[workflow].version,
+            version=wf_spec.version,
             job_payload={"task": payload.get("task", "")},
         )
         if res["action"] == "invalid_goal":

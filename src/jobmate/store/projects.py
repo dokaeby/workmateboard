@@ -4,10 +4,20 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from . import orgctx
 from .util import _iso, _now, clean_scope_id
 
 # spec 3차 A — projects.status 어휘(planned|active|paused|completed|cancelled).
 PROJECT_STATUSES = ("planned", "active", "paused", "completed", "cancelled")
+
+
+def _org_bind() -> list[str]:
+    """org_id 필터 바인딩 — `AND (org_id=? OR ?='')` 조건에 넘길 [oid, oid].
+
+    ctx=''이면 OR 우항이 항상 참이라 전 조직 조회(시스템/스케줄러),
+    ctx가 있으면 해당 조직 행만 조회·갱신한다(spec 003 US3/FR-013)."""
+    oid = orgctx.current_org_id()
+    return [oid, oid]
 
 
 class ProjectStoreMixin:
@@ -37,6 +47,7 @@ class ProjectStoreMixin:
         repository_ref: str | None = None,
         workspace_path: str | None = None,
         created_by: str = "",
+        org_id: str | None = None,
     ) -> dict[str, Any] | None:
         """프로젝트 생성. name은 trim 후 lower() 기준 중복 시 None.
         goal_id는 goals.id 참조(존재/상태 검증은 라우트 계층)."""
@@ -48,13 +59,22 @@ class ProjectStoreMixin:
         pid = uuid.uuid4().hex[:12]
         now = _iso(_now())
         gid = (goal_id or "").strip()[:64] or None
+        # org_id 해석(FR-013) — owner_agent_id 부모의 org를 우선 전파하고,
+        # 없으면 명시 인자 → 요청 컨텍스트 순.
+        oid = ""
+        oaid = (owner_agent_id or "").strip()[:64]
+        if oaid:
+            arow = self._conn.execute("SELECT org_id FROM agents WHERE id=?", (oaid,)).fetchone()
+            if arow is not None:
+                oid = str(arow["org_id"] or "")
+        oid = oid or orgctx.org_for_write(org_id)
         try:
             with self.tx() as c:
                 c.execute(
                     "INSERT INTO projects(id,name,color,description,goal,target_count,"
                     "goal_id,status,owner_agent_id,repository_url,repository_ref,"
-                    "workspace_path,created_by,created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "workspace_path,created_by,org_id,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         pid,
                         name,
@@ -64,11 +84,12 @@ class ProjectStoreMixin:
                         int(target_count or 0),
                         gid,
                         (status or "").strip().lower()[:20] or "active",
-                        (owner_agent_id or "").strip()[:64] or None,
+                        oaid or None,
                         (repository_url or "").strip()[:500] or None,
                         (repository_ref or "").strip()[:200] or None,
                         (workspace_path or "").strip()[:1000] or None,
                         created_by[:200],
+                        oid,
                         now,
                         now,
                     ),
@@ -78,18 +99,24 @@ class ProjectStoreMixin:
         return self.get_project(pid)
 
     def list_projects(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute("SELECT * FROM projects ORDER BY lower(name), name").fetchall()
+        rows = self._conn.execute(
+            "SELECT * FROM projects WHERE (org_id=? OR ?='') ORDER BY lower(name), name",
+            _org_bind(),
+        ).fetchall()
         return [self._project_json(r) for r in rows]
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        row = self._conn.execute(
+            "SELECT * FROM projects WHERE id=? AND (org_id=? OR ?='')",
+            (project_id, *_org_bind()),
+        ).fetchone()
         return self._project_json(row) if row else None
 
     def find_project_by_name(self, name: str) -> dict[str, Any] | None:
         """프로젝트 이름 조회 — trim + case-insensitive."""
         row = self._conn.execute(
-            "SELECT * FROM projects WHERE lower(name)=lower(?)",
-            (name.strip()[:200],),
+            "SELECT * FROM projects WHERE lower(name)=lower(?) AND (org_id=? OR ?='')",
+            (name.strip()[:200], *_org_bind()),
         ).fetchone()
         return self._project_json(row) if row else None
 
@@ -146,8 +173,9 @@ class ProjectStoreMixin:
         try:
             with self.tx() as c:
                 c.execute(
-                    f"UPDATE projects SET {sets}, updated_at=? WHERE id=?",  # noqa: S608 - keys는 고정 허용 목록
-                    (*updates.values(), _iso(_now()), project_id),
+                    f"UPDATE projects SET {sets}, updated_at=? WHERE id=?"  # noqa: S608 - keys는 고정 허용 목록
+                    " AND (org_id=? OR ?='')",
+                    (*updates.values(), _iso(_now()), project_id, *_org_bind()),
                 )
         except self._integrity_errors:
             return None
@@ -160,8 +188,9 @@ class ProjectStoreMixin:
         하드 DELETE는 태그 이력과의 연결을 끊으므로 사용하지 않는다."""
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE projects SET status='cancelled', updated_at=? WHERE id=?",
-                (_iso(_now()), project_id),
+                "UPDATE projects SET status='cancelled', updated_at=? WHERE id=?"
+                " AND (org_id=? OR ?='')",
+                (_iso(_now()), project_id, *_org_bind()),
             )
         return cur.rowcount > 0
 
@@ -170,7 +199,7 @@ class ProjectStoreMixin:
         """run의 project 태그 설정. ''이면 태그 해제. updated_at은 건드리지 않는다."""
         with self.tx() as c:
             cur = c.execute(
-                "UPDATE runs SET project=? WHERE id=?",
-                (clean_scope_id(project), run_id),
+                "UPDATE runs SET project=? WHERE id=? AND (org_id=? OR ?='')",
+                (clean_scope_id(project), run_id, *_org_bind()),
             )
         return cur.rowcount > 0

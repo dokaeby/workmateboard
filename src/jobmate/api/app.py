@@ -39,7 +39,7 @@ from ..llm import CompositeLLM, MeteredLLM
 from ..store.db import Store
 from .appctx import build_app_context
 from .jobs import _automation_loop
-from .support import _default_adapters, _sync_workflow_registry
+from .support import _default_adapters
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -82,8 +82,9 @@ def create_app(
         )
     llm = MeteredLLM(llm or CompositeLLM(), store)
     adapters = adapters if adapters is not None else _default_adapters(settings, store)
-    # custom_workflows 테이블 → WORKFLOWS 동기화 (재시작 후에도 /runs에서 해석 가능)
-    _sync_workflow_registry(store)
+    # 커스텀 워크플로는 더 이상 전역 WORKFLOWS에 동기화하지 않는다 —
+    # spec 003 US3: 조회 시점에 조직 컨텍스트로 custom_workflows 테이블에서
+    # 해석한다(workflows.resolver). 재시작 후에도 별도 복원 없이 해석된다.
     stop_event = threading.Event()
     # 라우터에 주입할 요청 컨텍스트 — 인스턴스별 상태(레이트리밋/SSE/세마포어)는
     # 여기서 생성돼 create_app 호출마다 격리된다.
@@ -164,7 +165,21 @@ def create_app(
                 return ctx.err(
                     403, "insufficient_scope", "API key scope does not allow this endpoint", request
                 )
-        response = await call_next(request)
+        # spec 003 US3 — 요청 조직 컨텍스트. /api/* 요청에만 설정해
+        # store 계층의 org 스탬프/필터가 동작하게 한다. 비인증·면제
+        # 경로(webhook·공유·cron)는 ""가 돼 무필터+부모 상속 규칙 적용.
+        org_tok = None
+        if path.startswith("/api/"):
+            from ..store import orgctx
+
+            org_tok = orgctx.set_org_context(ctx._request_org_id(request))
+        try:
+            response = await call_next(request)
+        finally:
+            if org_tok is not None:
+                from ..store import orgctx
+
+                orgctx.reset_org_context(org_tok)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")

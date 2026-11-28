@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..models import RoutineRunStatus, TaskPriority, TaskStatus
+from ..store import orgctx
 from ..store.db import Store
 from ..store.util import _dt, _iso, _now
 from . import agent_management as mgmt
@@ -311,6 +312,13 @@ def fire_due_routine(
     loop은 daemon thread, cron tick은 BackgroundTasks defer로 전달된다.
     """
     now = now or _now()
+    # spec 003 FR-019 — routine 행의 org로 발사 전체를 스코프한다.
+    # 호출자(jobs._process_due_routines)가 이미 같은 org로 감쌌어도
+    # 직접 호출 경로를 위해 여기서도 보장한다(재귀 1회로 컨텍스트 정규화).
+    oid = str(routine.get("org_id") or "")
+    if oid and orgctx.current_org_id() != oid:
+        with orgctx.org_scope(oid):
+            return fire_due_routine(store, routine, now=now, schedule_run=schedule_run, actor=actor)
     rid = str(routine.get("id") or "")
     if not rid:
         return {"action": "claim_lost", "reason": "no id"}

@@ -22,7 +22,7 @@ from ... import budget_scope
 from ... import evals as evals_svc
 from ...models import RunStatus
 from ...store.util import clean_scope_id
-from ...workflows import WORKFLOWS
+from ...workflows.resolver import resolve_workflow_spec
 from ..schemas import EvalCreateRequest, EvalPatchRequest
 
 logger = logging.getLogger("jobmate.api")
@@ -165,7 +165,8 @@ def register(app: FastAPI, ctx: Any) -> None:
             # 생성 시점 검증을 통과했어도 이후 직접 DB 수정 등으로 깨질 수 있다.
             return err(422, "validation", "eval input is invalid", request)
         workflow = str(ev.get("workflow_key") or "")
-        if workflow not in WORKFLOWS:
+        wf_spec = resolve_workflow_spec(store, workflow)
+        if wf_spec is None:
             return err(404, "unknown_workflow", f"workflow '{workflow}' not found", request)
         # 월간 LLM 예산 + 스코프드 정책 — POST /runs와 동일한 두 단계 심사.
         # eval run도 실제 비용을 쓰므로 동일하게 차단한다.
@@ -217,7 +218,7 @@ def register(app: FastAPI, ctx: Any) -> None:
         # 일반 run 목록에 workflow/input으로 그대로 보인다).
         run = store.create_run(
             workflow,
-            WORKFLOWS[workflow].version,
+            wf_spec.version,
             dict(input_data),
             trace_id=uuid.uuid4().hex,
             metadata={"eval_id": eval_id},

@@ -8,7 +8,37 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import orgctx
 from .util import _clamp_limit, _dt, _iso, _now
+
+
+def _org_filter(alias: str = "") -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND [alias.](org_id=? OR org_id='')` 조건.
+
+    agent_sessions는 외부 에이전트 브리지가 env 키(조직 없음)로 푸시할 수
+    있어 org_id='' 행이 생긴다 — ''는 플랫폼 레벨 세션으로 간주해 모든
+    조직에 공유하고, 조직 귀속 행만 조직별로 격리한다."""
+    oid = orgctx.current_org_id()
+    if not oid:
+        return "", []
+    col = f"{alias}.org_id" if alias else "org_id"
+    return f" AND ({col}=? OR {col}='')", [oid]
+
+
+def _events_org_pred() -> tuple[str, list[Any]]:
+    """agent_session_events에는 org_id가 없어 부모 agent_sessions로 조직 판별.
+
+    반환은 WHERE 절에 AND로 연결할 수 있는 조건 서술자(접두 AND 없음)."""
+    oid = orgctx.current_org_id()
+    if not oid:
+        return "", []
+    return (
+        "EXISTS (SELECT 1 FROM agent_sessions s"
+        " WHERE s.tool = agent_session_events.tool"
+        " AND s.session_key = agent_session_events.session_key"
+        " AND (s.org_id=? OR s.org_id=''))",
+        [oid],
+    )
 
 
 class AgentSessionStoreMixin:
@@ -28,6 +58,7 @@ class AgentSessionStoreMixin:
         machine: str | None = None,
         tokens_in: int | None = None,
         tokens_out: int | None = None,
+        org_id: str | None = None,
     ) -> None:
         """(tool, session_key) 기준 upsert.
 
@@ -38,14 +69,48 @@ class AgentSessionStoreMixin:
         agent_session_events에 전이 이벤트를 남긴다 (60초 내 동일 이벤트는 생략)."""
         now_dt = _now()
         now = _iso(now_dt)
+        oid = orgctx.org_for_write(org_id)
         artifacts_json = (
             json.dumps(artifacts, ensure_ascii=False) if artifacts is not None else None
         )
         with self.tx() as c:
+            # spec 003 US3/FR-018 — UNIQUE(org_id,tool,session_key)로
+            # 재스코프. 구 전역 UNIQUE 시절 의미를 유지한다:
+            # ① org push는 ''(플랫폼 공유) 행을 본인 조직으로 흡수하되,
+            #    본인 조직 행이 이미 있으면 공유 행은 그대로 둔다.
+            # ② '' push는 '' 행이 없고 조직 소유 행만 있을 때 새 '' 행을
+            #    만들지 않는다 — 구 ON CONFLICT WHERE 가드가 update를
+            #    차단해 행이 생기지 않던 것과 동일한 결과다.
+            if oid:
+                own = c.execute(
+                    "SELECT 1 FROM agent_sessions"
+                    " WHERE tool=? AND session_key=? AND org_id=? LIMIT 1",
+                    (tool, session_key, oid),
+                ).fetchone()
+                if own is None:
+                    c.execute(
+                        "UPDATE agent_sessions SET org_id=?"
+                        " WHERE tool=? AND session_key=? AND org_id=''",
+                        (oid, tool, session_key),
+                    )
+            else:
+                has_shared = c.execute(
+                    "SELECT 1 FROM agent_sessions"
+                    " WHERE tool=? AND session_key=? AND org_id='' LIMIT 1",
+                    (tool, session_key),
+                ).fetchone()
+                if has_shared is None:
+                    org_owned = c.execute(
+                        "SELECT 1 FROM agent_sessions"
+                        " WHERE tool=? AND session_key=? AND org_id<>'' LIMIT 1",
+                        (tool, session_key),
+                    ).fetchone()
+                    if org_owned is not None:
+                        return
             prev = c.execute(
                 "SELECT status,project,title,doing,ask FROM agent_sessions"
-                " WHERE tool=? AND session_key=?",
-                (tool, session_key),
+                " WHERE tool=? AND session_key=? AND org_id=?",
+                (tool, session_key, oid),
             ).fetchone()
             # COALESCE 의미와 동일하게 effective 값을 계산해 변경 여부 판정
             eff = {
@@ -58,12 +123,12 @@ class AgentSessionStoreMixin:
             changed = prev is None or any(
                 eff[k] != prev[k] for k in ("status", "project", "title", "doing", "ask")
             )
-            c.execute(
+            cur = c.execute(
                 "INSERT INTO agent_sessions(id,tool,session_key,project,title,status,"
                 "doing,ask,ended_summary,artifacts,machine,tokens_in,tokens_out,"
-                "last_event_at,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT (tool,session_key) DO UPDATE SET"
+                "last_event_at,created_at,updated_at,org_id)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT (org_id,tool,session_key) DO UPDATE SET"
                 " project=COALESCE(excluded.project, agent_sessions.project),"
                 " title=COALESCE(excluded.title, agent_sessions.title),"
                 " status=excluded.status,"
@@ -83,7 +148,12 @@ class AgentSessionStoreMixin:
                 " THEN excluded.tokens_out ELSE agent_sessions.tokens_out END,"
                 " last_event_at=COALESCE(excluded.last_event_at,"
                 " agent_sessions.last_event_at),"
-                " updated_at=excluded.updated_at",
+                # org_id는 conflict target 컬럼이라 갱신 대상이 아니다 —
+                # '' 공유 행의 조직 흡수는 위 adopt UPDATE가 담당한다.
+                # WHERE 가드는 방어적으로 유지(충돌 행의 org_id는 항상
+                # excluded.org_id와 같으므로 실질 no-op).
+                " updated_at=excluded.updated_at"
+                " WHERE agent_sessions.org_id IN (excluded.org_id, '')",
                 (
                     uuid.uuid4().hex[:12],
                     tool,
@@ -101,9 +171,15 @@ class AgentSessionStoreMixin:
                     event_at,
                     now,
                     now,
+                    oid,
                 ),
             )
-            if changed and not self._recent_duplicate_event(c, tool, session_key, eff, now_dt):
+            # WHERE 가드로 다른 조직 행이 걸러지면 rowcount=0 — 이벤트도 생략
+            if (
+                changed
+                and cur.rowcount > 0
+                and not self._recent_duplicate_event(c, tool, session_key, eff, now_dt)
+            ):
                 c.execute(
                     "INSERT INTO agent_session_events(id,tool,session_key,status,"
                     "project,doing,ask,event_at,created_at)"
@@ -153,9 +229,10 @@ class AgentSessionStoreMixin:
         return (now_dt - prev_at).total_seconds() < self._SESSION_EVENT_DEDUP_SECONDS
 
     def get_agent_session(self, tool: str, session_key: str) -> dict[str, Any] | None:
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM agent_sessions WHERE tool=? AND session_key=?",
-            (tool, session_key),
+            "SELECT * FROM agent_sessions WHERE tool=? AND session_key=?" + frag,  # noqa: S608
+            (tool, session_key, *params),
         ).fetchone()
         return dict(row) if row else None
 
@@ -173,8 +250,12 @@ class AgentSessionStoreMixin:
             "last_event_at,created_at,updated_at"
             " FROM agent_sessions"
         )
+        frag, fparams = _org_filter()
         clauses: list[str] = []
         params: list[Any] = []
+        if frag:
+            clauses.append(frag.strip().removeprefix("AND").strip())
+            params.extend(fparams)
         if not include_ended:
             clauses.append("status != 'ended'")
         if machine is not None:
@@ -190,7 +271,13 @@ class AgentSessionStoreMixin:
     def agent_session_history(
         self, tool: str, session_key: str, limit: int = 100
     ) -> list[dict[str, Any]]:
-        """세션의 상태 전이 이벤트를 시간순(오래된→최신)으로 반환."""
+        """세션의 상태 전이 이벤트를 시간순(오래된→최신)으로 반환.
+
+        조직 격리 계약(spec 003 US3): agent_session_events에는 org_id가
+        없어 여기서는 필터하지 않는다 — 호출자는 반드시 org 필터가 적용된
+        get_agent_session/find_agent_session_by_key로 세션 소유를 먼저
+        확인한 뒤 호출해야 한다(현재 유일 호출자 lead_sessions.session_history가
+        그렇게 게이트한다). 직접 호출 시 cross-org 이벤트가 새므로 주의."""
         rows = self._conn.execute(
             "SELECT id,tool,session_key,status,project,doing,ask,event_at,created_at"
             " FROM agent_session_events WHERE tool=? AND session_key=?"
@@ -222,9 +309,11 @@ class AgentSessionStoreMixin:
                 },
             )
 
-        sess_rows = self._conn.execute(
-            "SELECT tool,status,last_event_at,updated_at FROM agent_sessions"
-        ).fetchall()
+        frag_s, params_s = _org_filter()
+        sql_s = "SELECT tool,status,last_event_at,updated_at FROM agent_sessions"
+        if frag_s:
+            sql_s += frag_s.replace(" AND ", " WHERE ", 1)
+        sess_rows = self._conn.execute(sql_s, tuple(params_s)).fetchall()  # noqa: S608
         for r in sess_rows:
             b = bucket(r["tool"])
             b["sessions"] += 1
@@ -236,9 +325,16 @@ class AgentSessionStoreMixin:
             "SELECT tool,session_key,status,doing,ask,event_at,created_at FROM agent_session_events"
         )
         params: list[Any] = []
+        conds: list[str] = []
         if since:
-            ev_sql += " WHERE created_at >= ?"
+            conds.append("created_at >= ?")
             params.append(since)
+        epred, eparams = _events_org_pred()
+        if epred:
+            conds.append(epred)
+            params.extend(eparams)
+        if conds:
+            ev_sql += " WHERE " + " AND ".join(conds)
         ev_sql += " ORDER BY tool, session_key, created_at, id"
         rows = [dict(r) for r in self._conn.execute(ev_sql, params).fetchall()]
 
@@ -301,20 +397,29 @@ class AgentSessionStoreMixin:
         project는 이벤트 값 우선, 없으면 agent_sessions의 현재 project,
         둘 다 없으면 "(no project)". 세션 수는 tool/project별 고유
         session_key 수 — 프로젝트를 오간 세션은 각 버킷에 모두 집계된다."""
+        conds: list[str] = ["created_at >= ?"]
+        params: list[Any] = [since_iso]
+        epred, eparams = _events_org_pred()
+        if epred:
+            conds.append(epred)
+            params.extend(eparams)
         rows = [
             dict(r)
             for r in self._conn.execute(
-                "SELECT tool,session_key,project,status,event_at,created_at"
-                " FROM agent_session_events WHERE created_at >= ?"
-                " ORDER BY tool, session_key, created_at, id",
-                (since_iso,),
+                "SELECT tool,session_key,project,status,event_at,created_at"  # noqa: S608
+                " FROM agent_session_events WHERE "
+                + " AND ".join(conds)  # noqa: S608
+                + " ORDER BY tool, session_key, created_at, id",
+                params,
             ).fetchall()
         ]
+        frag_p, fparams_p = _org_filter()
+        sql_p = "SELECT tool,session_key,project FROM agent_sessions"
+        if frag_p:
+            sql_p += frag_p.replace(" AND ", " WHERE ", 1)
         sess_project = {
             (r["tool"], r["session_key"]): r["project"]
-            for r in self._conn.execute(
-                "SELECT tool,session_key,project FROM agent_sessions"
-            ).fetchall()
+            for r in self._conn.execute(sql_p, tuple(fparams_p)).fetchall()  # noqa: S608
         }
 
         def project_of(tool: str, session_key: str, event_project: Any) -> str:
@@ -399,11 +504,18 @@ class AgentSessionStoreMixin:
         day_start = datetime(d.year, d.month, d.day).astimezone()
         day_end = day_start + timedelta(days=1)
         end_cap = min(day_end, _now())
-        rows = self._conn.execute(
-            "SELECT tool,session_key,status,event_at,created_at"
-            " FROM agent_session_events"
-            " ORDER BY tool, session_key, created_at, id"
-        ).fetchall()
+        conds: list[str] = []
+        epred, eparams = _events_org_pred()
+        if epred:
+            conds.append(epred)
+            params_e: list[Any] = list(eparams)
+        else:
+            params_e = []
+        ev_sql = "SELECT tool,session_key,status,event_at,created_at FROM agent_session_events"
+        if conds:
+            ev_sql += " WHERE " + " AND ".join(conds)
+        ev_sql += " ORDER BY tool, session_key, created_at, id"
+        rows = self._conn.execute(ev_sql, params_e).fetchall()
         per: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for r in rows:
             row = dict(r)
@@ -446,6 +558,7 @@ class AgentSessionStoreMixin:
         status: str,
         doing: str | None = None,
         project: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """push된 세션 상태를 활동 로그에 적재. status/doing이 바뀌었거나
         마지막 기록 후 60초가 지나야만 insert(스로틀). 가끔 7일 이전 행을 정리."""
@@ -453,12 +566,26 @@ class AgentSessionStoreMixin:
 
         now_dt = _now()
         now = _iso(now_dt)
+        # org 귀속: 명시 > agent_sessions 부모 > ctx — push 경로(ctx='')에서도
+        # 세션 소유 조직으로 활동이 기록된다.
+        oid = (org_id or "").strip()
         with self.tx() as c:
+            if not oid:
+                srow = c.execute(
+                    "SELECT org_id FROM agent_sessions WHERE tool=? AND session_key=?",
+                    (tool, session_key),
+                ).fetchone()
+                if srow is not None:
+                    oid = str(srow["org_id"] or "")
+            if not oid:
+                oid = orgctx.org_for_write()
+            frag, fparams = _org_filter()
             row = c.execute(
-                "SELECT status,doing,recorded_at FROM session_activity"
+                "SELECT status,doing,recorded_at FROM session_activity"  # noqa: S608
                 " WHERE tool=? AND session_key=?"
-                " ORDER BY recorded_at DESC, id DESC LIMIT 1",
-                (tool, session_key),
+                + frag
+                + " ORDER BY recorded_at DESC, id DESC LIMIT 1",
+                (tool, session_key, *fparams),
             ).fetchone()
             if row is not None:
                 prev_at = _dt(row["recorded_at"])
@@ -472,8 +599,8 @@ class AgentSessionStoreMixin:
                         return
             c.execute(
                 "INSERT INTO session_activity(tool,session_key,status,doing,project,"
-                "recorded_at) VALUES(?,?,?,?,?,?)",
-                (tool, session_key, status, doing, project, now),
+                "recorded_at,org_id) VALUES(?,?,?,?,?,?,?)",
+                (tool, session_key, status, doing, project, now, oid),
             )
             # 저비용 보존 정책 — insert마다 ~2% 확률로 7일 이전 행 삭제
             if secrets.randbelow(50) == 0:
@@ -484,11 +611,13 @@ class AgentSessionStoreMixin:
         self, tool: str, session_key: str, limit: int = 200
     ) -> list[dict[str, Any]]:
         """세션 활동을 시간순(오래된→최신)으로 반환."""
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT recorded_at,status,doing,project FROM session_activity"
+            "SELECT recorded_at,status,doing,project FROM session_activity"  # noqa: S608
             " WHERE tool=? AND session_key=?"
-            " ORDER BY recorded_at DESC, id DESC LIMIT ?",
-            (tool, session_key, _clamp_limit(limit, 200, 500)),
+            + frag
+            + " ORDER BY recorded_at DESC, id DESC LIMIT ?",
+            (tool, session_key, *params, _clamp_limit(limit, 200, 500)),
         ).fetchall()
         return [
             {
@@ -503,10 +632,12 @@ class AgentSessionStoreMixin:
     # ---- reports (daily/weekly 리포트) ----
     def find_agent_session_by_key(self, session_key: str) -> dict[str, Any] | None:
         """session_key만으로 세션 조회 — 복수 tool이 같은 key를 쓰면 최신 updated_at 우선."""
+        frag, params = _org_filter()
         row = self._conn.execute(
-            "SELECT * FROM agent_sessions WHERE session_key=?"
-            " ORDER BY updated_at DESC, last_event_at DESC LIMIT 1",
-            (session_key,),
+            "SELECT * FROM agent_sessions WHERE session_key=?"  # noqa: S608
+            + frag
+            + " ORDER BY updated_at DESC, last_event_at DESC LIMIT 1",
+            (session_key, *params),
         ).fetchone()
         return dict(row) if row else None
 
@@ -528,10 +659,12 @@ class AgentSessionStoreMixin:
         new_project = project.strip()[:500] if project else ""
         old_project = sess.get("project") or ""
         now = _iso(_now())
+        frag, fparams = _org_filter()
         with self.tx() as c:
             c.execute(
-                "UPDATE agent_sessions SET project=?, updated_at=? WHERE tool=? AND session_key=?",
-                (new_project or None, now, sess["tool"], sess["session_key"]),
+                "UPDATE agent_sessions SET project=?, updated_at=? WHERE tool=? AND session_key=?"  # noqa: S608
+                + frag,
+                (new_project or None, now, sess["tool"], sess["session_key"], *fparams),
             )
             if new_project != old_project:
                 c.execute(

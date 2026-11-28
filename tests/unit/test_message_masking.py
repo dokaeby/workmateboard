@@ -26,28 +26,39 @@ def _session_client(client, store, email, role=None):
     user = store.create_user(email, "", email)
     if role:
         store.set_user_role(user["id"], role)
+    # spec 003 US3 — 멤버십 없는 사용자는 ctx='__no_org__'로 어떤 조직
+    # 데이터도 보지 못한다. 테스트는 personal org을 만들어 준다.
+    oid = store.create_organization(f"org-{email}", f"org-{email}")
+    assert oid
+    store.add_org_member(oid, user["id"], "org_owner")
     token = new_session_token()
     store.create_session(user["id"], hash_token(token))
     client.cookies.set(SESSION_COOKIE, token)
-    return user
+    return user, oid
 
 
-def _seed(store):
+def _seed(store, org_id=""):
     store.save_message_extraction(
-        "gmail", "g1", "t", {}, "pending", source_text="gmail secret body"
+        "gmail", "g1", "t", {}, "pending", source_text="gmail secret body", org_id=org_id
     )
     store.save_message_extraction(
-        "slack", "s1", "t", {}, "pending", source_text="slack secret body"
+        "slack", "s1", "t", {}, "pending", source_text="slack secret body", org_id=org_id
     )
     store.save_message_extraction(
-        "telegram", "t1", "t", {}, "pending", source_text="telegram secret body"
+        "telegram",
+        "t1",
+        "t",
+        {},
+        "pending",
+        source_text="telegram secret body",
+        org_id=org_id,
     )
 
 
 def test_member_sees_no_source_text(monkeypatch):
     client, store = _client(monkeypatch)
-    _seed(store)
-    _session_client(client, store, "member@b.com")
+    _, oid = _session_client(client, store, "member@b.com")
+    _seed(store, oid)
 
     r = client.get("/api/v1/messages")
     assert r.status_code == 200
@@ -68,8 +79,8 @@ def test_member_sees_no_source_text(monkeypatch):
 
 def test_lead_sees_all_source_text(monkeypatch):
     client, store = _client(monkeypatch)
-    _seed(store)
-    _session_client(client, store, "lead@b.com", role="lead")
+    _, oid = _session_client(client, store, "lead@b.com", role="lead")
+    _seed(store, oid)
 
     msgs = client.get("/api/v1/messages").json()["messages"]
     texts = {m["source_provider"]: m["source_text"] for m in msgs}
@@ -87,9 +98,11 @@ def test_unauthenticated_rejected(monkeypatch):
 
 def test_limit_clamped(monkeypatch):
     client, store = _client(monkeypatch)
-    _session_client(client, store, "lead2@b.com", role="lead")
+    _, oid = _session_client(client, store, "lead2@b.com", role="lead")
     for i in range(3):
-        store.save_message_extraction("slack", f"s{i}", "t", {}, "pending", source_text="x")
+        store.save_message_extraction(
+            "slack", f"s{i}", "t", {}, "pending", source_text="x", org_id=oid
+        )
     # limit=5000도 200으로 클램프 — 오류 없이 응답
     r = client.get("/api/v1/messages?limit=5000")
     assert r.status_code == 200

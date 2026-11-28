@@ -15,7 +15,15 @@ import uuid
 from typing import Any
 
 from ..models import AgentCapability, PermissionEffect, PermissionScopeType
+from . import orgctx
 from .util import _clamp_limit, _iso, _now
+
+
+def _org_filter() -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND org_id=?` 조건 — 시스템/미인증(ctx='')은 무필터."""
+    oid = orgctx.current_org_id()
+    return (" AND org_id=?", [oid]) if oid else ("", [])
+
 
 # 저장 계층 방어선 — 서비스가 검증하지만 직접 store 호출도 어휘를 벗어나지 않게 한다.
 _CAPABILITIES = {c.value for c in AgentCapability}
@@ -59,8 +67,9 @@ class PermissionStoreMixin:
         limit: int = 500,
     ) -> list[dict[str, Any]]:
         """agent의 permission 규칙 — capability 필터 선택, 최신순."""
-        sql = "SELECT * FROM agent_permissions WHERE agent_id=?"
-        params: list[Any] = [agent_id.strip()[:64]]
+        frag, params = _org_filter()
+        sql = "SELECT * FROM agent_permissions WHERE agent_id=?" + frag  # noqa: S608
+        params = [agent_id.strip()[:64], *params]
         if capability:
             sql += " AND capability=?"
             params.append(capability.strip().lower()[:60])
@@ -79,6 +88,14 @@ class PermissionStoreMixin:
         방어적으로 건너뛴다. 반환값은 저장된 행 목록."""
         aid = agent_id.strip()[:64]
         now = _iso(_now())
+        # org 귀속은 부모 agent 행에서 상속 — ctx=''인 내부/스케줄 경로에서도
+        # 올바른 조직으로 기록된다. agent가 없으면 ctx/명시값으로 폴백.
+        oid = ""
+        arow = self._conn.execute("SELECT org_id FROM agents WHERE id=?", (aid,)).fetchone()
+        if arow is not None:
+            oid = str(arow["org_id"] or "")
+        else:
+            oid = orgctx.org_for_write()
         norm: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
         for rule in rules[:_MAX_RULES]:
@@ -91,11 +108,16 @@ class PermissionStoreMixin:
             seen.add(key)
             norm.append(n)
         with self.tx() as c:
-            c.execute("DELETE FROM agent_permissions WHERE agent_id=?", (aid,))
+            # org_id='' 레거시 행도 함께 정리 — agent_id는 전역 unique라
+            # 같은 agent의 규칙만 지워진다(타 조직 행은 존재할 수 없음).
+            c.execute(
+                "DELETE FROM agent_permissions WHERE agent_id=? AND org_id IN (?, '')",
+                (aid, oid),
+            )
             for n in norm:
                 c.execute(
                     "INSERT INTO agent_permissions(id,agent_id,capability,effect,"
-                    "scope_type,scope_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                    "scope_type,scope_id,created_at,org_id) VALUES(?,?,?,?,?,?,?,?)",
                     (
                         uuid.uuid4().hex[:12],
                         aid,
@@ -104,6 +126,7 @@ class PermissionStoreMixin:
                         n["scope_type"],
                         n["scope_id"],
                         now,
+                        oid,
                     ),
                 )
         return self.list_agent_permissions(aid)

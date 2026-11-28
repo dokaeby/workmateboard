@@ -6,7 +6,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from . import orgctx
 from .util import _clamp_limit, _iso, _loads, _now
+
+
+def _org_filter() -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND org_id=?` 조건 — 시스템/미인증(ctx='')은 무필터."""
+    oid = orgctx.current_org_id()
+    return (" AND org_id=?", [oid]) if oid else ("", [])
+
 
 # retention 삭제 대상 run 상태 — wakeups._TERMINAL_STATUSES와 동일 집합.
 # 고정 SQL 조각(리터럴)이라 f-string 삽입해도 인젝션 위험이 없다.
@@ -334,11 +342,15 @@ class AdminStoreMixin:
         }
 
     def list_audit(self, limit: int = 200) -> list[dict[str, Any]]:
-        """전체 audit_events 최신순 — 관리자 감사 타임라인용."""
+        """전체 audit_events 최신순 — 관리자 감사 타임라인용.
+        사용자-facing 조회라 ctx 조직으로 스코프한다(시스템 경로는 무필터)."""
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT id,run_id,actor,action,object_ref,detail,created_at"
-            " FROM audit_events ORDER BY created_at DESC, id DESC LIMIT ?",
-            (_clamp_limit(limit, 200, 1000),),
+            "SELECT id,run_id,actor,action,object_ref,detail,created_at"  # noqa: S608
+            " FROM audit_events"
+            + frag.replace(" AND ", " WHERE ", 1)
+            + " ORDER BY created_at DESC, id DESC LIMIT ?",
+            (*params, _clamp_limit(limit, 200, 1000)),
         ).fetchall()
         return [
             {
@@ -360,19 +372,34 @@ class AdminStoreMixin:
         created_by는 세션 사용자 email(없으면 'api-key'/'local' 등 시스템 값) —
         email/id 어느 쪽으로 기록됐든 매칭한다."""
         users = self.list_users()
+        frag, params = _org_filter()
         run_rows = self._conn.execute(
-            "SELECT created_by, COUNT(*) AS n, MAX(created_at) AS last_at"
-            " FROM runs WHERE created_by != '' GROUP BY created_by"
+            "SELECT created_by, COUNT(*) AS n, MAX(created_at) AS last_at"  # noqa: S608
+            " FROM runs WHERE created_by != ''" + frag + " GROUP BY created_by",  # noqa: S608
+            params,
         ).fetchall()
         sess_rows = self._conn.execute(
             "SELECT user_id, COUNT(*) AS n, MAX(created_at) AS last_at"
             " FROM auth_sessions GROUP BY user_id"
         ).fetchall()
+        # spec 003 US3 — ctx 조직이 있으면 멤버십 사용자만 노출한다.
+        # 전역 사용자 디렉터리(email/세션 수)가 타 조직에 새는 것을 막는다.
+        member_ids: set[str] | None = None
+        oid = orgctx.current_org_id()
+        if oid:
+            member_ids = {
+                str(r["user_id"])
+                for r in self._conn.execute(
+                    "SELECT user_id FROM organization_members WHERE org_id=?", (oid,)
+                ).fetchall()
+            }
         run_by_actor = {r["created_by"]: dict(r) for r in run_rows}
         sess_by_user = {r["user_id"]: dict(r) for r in sess_rows}
         items = []
         for u in users:
             uid, email = u["id"], u["email"]
+            if member_ids is not None and uid not in member_ids:
+                continue
             rr = run_by_actor.get(email) or run_by_actor.get(uid)
             sr = sess_by_user.get(uid)
             last_active = ""
@@ -398,28 +425,32 @@ class AdminStoreMixin:
 
     # ---- export 헬퍼 ----
     def export_runs(self, since_iso: str) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT id,workflow_key,workflow_version,status,trace_id,error,"
+            "SELECT id,workflow_key,workflow_version,status,trace_id,error,"  # noqa: S608
             "created_by,agent_id,goal_id,created_at,updated_at FROM runs"
-            " WHERE created_at >= ? ORDER BY created_at",
-            (since_iso,),
+            " WHERE created_at >= ?" + frag + " ORDER BY created_at",  # noqa: S608
+            (since_iso, *params),
         ).fetchall()
         return [dict(r) for r in rows]
 
     def export_sessions(self, since_iso: str) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT tool,session_key,project,title,status,machine,"
+            "SELECT tool,session_key,project,title,status,machine,"  # noqa: S608
             "tokens_in,tokens_out,last_event_at,created_at,updated_at"
-            " FROM agent_sessions WHERE updated_at >= ? ORDER BY updated_at",
-            (since_iso,),
+            " FROM agent_sessions WHERE updated_at >= ?" + frag + " ORDER BY updated_at",  # noqa: S608
+            (since_iso, *params),
         ).fetchall()
         return [dict(r) for r in rows]
 
     def export_reports(self, since_iso: str) -> list[dict[str, Any]]:
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT id,kind,content,created_at FROM reports WHERE created_at >= ?"
-            " ORDER BY created_at",
-            (since_iso,),
+            "SELECT id,kind,content,created_at FROM reports WHERE created_at >= ?"  # noqa: S608
+            + frag
+            + " ORDER BY created_at",
+            (since_iso, *params),
         ).fetchall()
         out = []
         for r in rows:
@@ -434,14 +465,17 @@ class AdminStoreMixin:
         리스크(7d 단계 실패)·성과 비교·프로젝트 상세(30d 비용) 집계용.
         반환 dict: stage 필드 + workflow_key/project/run_status/run_created_at/
         run_updated_at."""
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.model,"
+            "SELECT sr.run_id, sr.stage_key, sr.attempt, sr.status, sr.model,"  # noqa: S608
             " sr.tokens_in, sr.tokens_out, sr.started_at, sr.finished_at, sr.error,"
             " r.workflow_key, r.project, r.status AS run_status,"
             " r.created_at AS run_created_at, r.updated_at AS run_updated_at"
             " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
-            " WHERE r.created_at >= ? ORDER BY sr.started_at",
-            (since_iso,),
+            " WHERE r.created_at >= ?"  # noqa: S608
+            + frag.replace("org_id=?", "r.org_id=?")
+            + " ORDER BY sr.started_at",
+            (since_iso, *params),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -454,10 +488,11 @@ class AdminStoreMixin:
         sessions=created_at). 같은 ts의 복수 행은 호출자가 id로 중복 제거한다.
         """
         out: dict[str, list[dict[str, Any]]] = {"runs": [], "stages": [], "sessions": []}
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT id, workflow_key, status, project, created_at, updated_at"
-            " FROM runs WHERE updated_at >= ? ORDER BY updated_at, id LIMIT ?",
-            (since_iso, limit),
+            "SELECT id, workflow_key, status, project, created_at, updated_at"  # noqa: S608
+            " FROM runs WHERE updated_at >= ?" + frag + " ORDER BY updated_at, id LIMIT ?",  # noqa: S608
+            (since_iso, *params, limit),
         ).fetchall()
         for r in rows:
             out["runs"].append(
@@ -472,11 +507,13 @@ class AdminStoreMixin:
                 }
             )
         rows = self._conn.execute(
-            "SELECT id, run_id, stage_key, attempt, status, started_at, finished_at"
-            " FROM stage_runs"
-            " WHERE COALESCE(finished_at, started_at) >= ?"
-            " ORDER BY COALESCE(finished_at, started_at), id LIMIT ?",
-            (since_iso, limit),
+            "SELECT sr.id, sr.run_id, sr.stage_key, sr.attempt, sr.status,"  # noqa: S608
+            " sr.started_at, sr.finished_at"
+            " FROM stage_runs sr JOIN runs r ON r.id = sr.run_id"
+            " WHERE COALESCE(sr.finished_at, sr.started_at) >= ?"  # noqa: S608
+            + frag.replace("org_id=?", "r.org_id=?")
+            + " ORDER BY COALESCE(sr.finished_at, sr.started_at), sr.id LIMIT ?",
+            (since_iso, *params, limit),
         ).fetchall()
         for r in rows:
             ts = r["finished_at"] or r["started_at"] or ""
@@ -492,11 +529,20 @@ class AdminStoreMixin:
                     "ts": ts,
                 }
             )
+        # agent_session_events는 org_id가 없어 부모 agent_sessions로 조인해
+        # 조직을 판별한다 — ''(플랫폼/env 키 푸시) 세션은 공유, 고아 이벤트는
+        # org 특정 불가라 ctx 조직 요청에서는 제외한다.
+        _ev_oid = orgctx.current_org_id()
+        sfrag = " AND (s.org_id=? OR s.org_id='')" if _ev_oid else ""
+        sparams: tuple[Any, ...] = (since_iso, _ev_oid, limit) if _ev_oid else (since_iso, limit)
         rows = self._conn.execute(
-            "SELECT id, tool, session_key, status, project, doing, ask, created_at"
-            " FROM agent_session_events WHERE created_at >= ?"
-            " ORDER BY created_at, id LIMIT ?",
-            (since_iso, limit),
+            "SELECT e.id, e.tool, e.session_key, e.status, e.project, e.doing,"  # noqa: S608
+            " e.ask, e.created_at"
+            " FROM agent_session_events e"
+            " LEFT JOIN agent_sessions s"
+            " ON s.tool = e.tool AND s.session_key = e.session_key"
+            " WHERE e.created_at >= ?" + sfrag + " ORDER BY e.created_at, e.id LIMIT ?",  # noqa: S608
+            sparams,
         ).fetchall()
         for r in rows:
             out["sessions"].append(

@@ -355,8 +355,8 @@ def test_custom_workflow_lifecycle_and_run_resolution():
     items = client.get("/api/v1/workflows/custom").json()["items"]
     assert [i["name"] for i in items] == ["myflow"]
 
-    # 재시작 시뮬레이션 — 레지스트리 재동기화 후에도 /runs에서 해석됨
-    appmod._sync_workflow_registry(store)
+    # 재시작 시뮬레이션 — spec 003 US3 이후 커스텀 spec은 전역 레지스트리
+    # 동기화 없이 조회 시점에 조직 컨텍스트로 해석되므로 재시작 후에도 동일.
     r = client.post("/api/v1/runs", json={"workflow": "myflow", "task": "go"})
     assert r.status_code == 202
     run = store.get_run(r.json()["id"])

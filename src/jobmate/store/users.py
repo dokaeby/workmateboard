@@ -8,7 +8,14 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
+from . import orgctx
 from .util import _clamp_limit, _dt, _iso, _now
+
+
+def _org_filter() -> tuple[str, list[Any]]:
+    """ctx 조직이 있으면 ` AND org_id=?` 조건 — 시스템/미인증(ctx='')은 무필터."""
+    oid = orgctx.current_org_id()
+    return (" AND org_id=?", [oid]) if oid else ("", [])
 
 
 class UserStoreMixin:
@@ -680,15 +687,41 @@ class UserStoreMixin:
     ) -> None:
         from ..security import encrypt_str
 
+        # org 귀속: message_extractions 부모 행 > ctx — webhook/intake 경로
+        # (ctx='')에서도 요약이 올바른 조직에 기록된다.
+        # 복합 PK(provider,source_id,org_id)라 ctx 조직의 행을 먼저 보고,
+        # 없으면 org_id 오름차순 첫 행을 결정적으로 선택한다 — 무필터
+        # 임의 행이 이기면 요약이 타 조직 org_id로 찍힌다.
+        oid = ""
+        ctx_oid = orgctx.current_org_id()
+        if ctx_oid:
+            mrow = self._conn.execute(
+                "SELECT org_id FROM message_extractions"
+                " WHERE source_provider=? AND source_id=? AND org_id=?",
+                (provider, source_id, ctx_oid),
+            ).fetchone()
+            if mrow is not None:
+                oid = ctx_oid
+        if not oid:
+            mrow = self._conn.execute(
+                "SELECT org_id FROM message_extractions"
+                " WHERE source_provider=? AND source_id=? ORDER BY org_id LIMIT 1",
+                (provider, source_id),
+            ).fetchone()
+            if mrow is not None:
+                oid = str(mrow["org_id"] or "")
+        if not oid:
+            oid = orgctx.org_for_write()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO email_summaries(source_provider,source_id,"
-                "subject,sender,summary,message_at,checked_at)"
-                " VALUES(?,?,?,?,?,?,?)"
-                " ON CONFLICT (source_provider,source_id) DO UPDATE SET"
+                "subject,sender,summary,message_at,checked_at,org_id)"
+                " VALUES(?,?,?,?,?,?,?,?)"
+                " ON CONFLICT (source_provider,source_id,org_id) DO UPDATE SET"
                 " subject=excluded.subject, sender=excluded.sender,"
                 " summary=excluded.summary, message_at=excluded.message_at,"
-                " checked_at=excluded.checked_at",
+                " checked_at=excluded.checked_at,"
+                " org_id=COALESCE(NULLIF(email_summaries.org_id,''), excluded.org_id)",
                 (
                     provider,
                     source_id,
@@ -697,6 +730,7 @@ class UserStoreMixin:
                     encrypt_str(summary),
                     message_at,
                     _iso(_now()),
+                    oid,
                 ),
             )
 
@@ -707,10 +741,12 @@ class UserStoreMixin:
 
         limit = _clamp_limit(limit, 30, 200)
 
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT * FROM email_summaries WHERE source_provider=?"
-            " ORDER BY checked_at DESC LIMIT ?",
-            (provider, limit),
+            "SELECT * FROM email_summaries WHERE source_provider=?"  # noqa: S608
+            + frag
+            + " ORDER BY checked_at DESC LIMIT ?",
+            (provider, *params, limit),
         ).fetchall()
         out = []
         for r in rows:
@@ -725,25 +761,30 @@ class UserStoreMixin:
         암호화 키 로테이션 등으로 읽을 수 없게 된 행을 정리할 때 사용."""
         from ..security import PREFIX, decrypt_str
 
+        frag, params = _org_filter()
         rows = self._conn.execute(
-            "SELECT source_provider, source_id, subject, sender, summary"
-            " FROM email_summaries WHERE source_provider=?",
-            (provider,),
+            "SELECT source_provider, source_id, org_id, subject, sender, summary"  # noqa: S608
+            " FROM email_summaries WHERE source_provider=?" + frag,
+            (provider, *params),
         ).fetchall()
         bad = [
-            (r["source_provider"], r["source_id"])
+            (r["source_provider"], r["source_id"], str(r["org_id"] or ""))
             for r in rows
             if any(
-                decrypt_str(r.get(k, "")).startswith(PREFIX)
+                # sqlite3.Row는 .get이 없으므로 인덱스 접근(PG는 dict_row라 동일 키)
+                decrypt_str(r[k]).startswith(PREFIX)
                 for k in ("subject", "sender", "summary")
             )
         ]
         if not bad:
             return 0
         with self.tx() as c:
-            for prov, sid in bad:
+            for prov, sid, org in bad:
+                # 복합 PK라 같은 (provider,source_id)가 조직별로 존재 —
+                # org_id 조건 없이 지우면 타 조직 행까지 삭제된다.
                 c.execute(
-                    "DELETE FROM email_summaries WHERE source_provider=? AND source_id=?",
-                    (prov, sid),
+                    "DELETE FROM email_summaries WHERE source_provider=?"
+                    " AND source_id=? AND org_id=?",
+                    (prov, sid, org),
                 )
         return len(bad)
