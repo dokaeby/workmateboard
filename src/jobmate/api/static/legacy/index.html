@@ -1681,7 +1681,8 @@
             <option value="90" data-jm-i18n="common.last90">최근 90일</option>
           </select>
           <button class="secondary" id="exp-dl" style="padding:6px 12px;font-size:13px" data-jm-i18n="common.download">다운로드</button>
-          <button class="secondary" id="share-open" style="padding:6px 12px;font-size:13px" data-jm-i18n="share.open">공유 링크 만들기</button>
+          <button type="button" class="secondary" id="share-open" commandfor="share-dialog" command="show-modal"
+                  style="padding:6px 12px;font-size:13px" data-jm-i18n="share.open">공유 링크 만들기</button>
         </div>
         <div class="card-meta" style="margin-top:6px" data-jm-i18n="share.hint">공유 링크는 로그인 없이 열리는 읽기 전용 URL입니다.</div>
       </div>
@@ -1991,7 +1992,7 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
 <dialog id="sl-dialog" style="width:min(760px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <h2 style="font-size:18px;margin:0" id="sl-title" data-jm-i18n="page.sessionlog.title">세션 기록</h2>
-    <button class="secondary" id="sl-close" style="padding:4px 12px">✕</button>
+    <button type="button" class="secondary" id="sl-close" commandfor="sl-dialog" command="close" style="padding:4px 12px">✕</button>
   </div>
   <div id="sl-body"><span class="empty" data-jm-i18n="common.loading">로딩…</span></div>
 </dialog>
@@ -1999,7 +2000,7 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
 <dialog id="compare-dialog" style="width:min(960px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <h2 style="font-size:18px;margin:0" data-jm-i18n="dlg.compare">실행 비교</h2>
-    <button class="secondary" id="compare-close" style="padding:4px 12px">✕</button>
+    <button type="button" class="secondary" id="compare-close" commandfor="compare-dialog" command="close" style="padding:4px 12px">✕</button>
   </div>
   <div id="compare-body" class="table-scroll"><span class="empty" data-jm-i18n="common.loading">로딩…</span></div>
 </dialog>
@@ -2007,7 +2008,7 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
 <dialog id="settings-dialog" style="width:min(560px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
     <h2 style="font-size:18px;margin:0">설정</h2>
-    <button class="secondary" id="settings-close" style="padding:4px 12px">✕</button>
+    <button type="button" class="secondary" id="settings-close" commandfor="settings-dialog" command="close" style="padding:4px 12px">✕</button>
   </div>
   <div class="grid-form">
     <label style="font-size:13px;font-weight:600">메일 체크 간격
@@ -2100,7 +2101,7 @@ kind: llm(등록된 agent 키 필요) | function | human</pre>
 <dialog id="share-dialog" style="width:min(480px,94vw);padding:24px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <h2 style="font-size:18px;margin:0" data-jm-i18n="share.title">공유 링크 만들기</h2>
-    <button class="secondary" id="share-close" style="padding:4px 12px">✕</button>
+    <button type="button" class="secondary" id="share-close" commandfor="share-dialog" command="close" style="padding:4px 12px">✕</button>
   </div>
   <div class="grid-form">
     <label style="font-size:13px;font-weight:600"><span data-jm-i18n="share.kind">종류</span>
@@ -2134,6 +2135,34 @@ const EMBEDDED_API_KEY = "__JOBMATE_API_KEY__";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// commandfor/command(Invoker Commands) 미지원 브라우저 대응 — 폴리필을 먼저 시도하고,
+// 오프라인/실패/미지원 지속 시 원래 JS 리스너로 폴백해 버튼이 죽지 않게 한다.
+const _cmdSupported = () => "commandForElement" in HTMLButtonElement.prototype;
+const _wireDialogFallbacks = () => {
+  const pairs = [
+    ["#share-open", "#share-dialog", "show"],
+    ["#sl-close", "#sl-dialog", "close"],
+    ["#compare-close", "#compare-dialog", "close"],
+    ["#settings-close", "#settings-dialog", "close"],
+    ["#share-close", "#share-dialog", "close"],
+  ];
+  for (const [btnSel, dlgSel, mode] of pairs) {
+    const b = $(btnSel), d = $(dlgSel);
+    if (!b || !d || b.dataset.cmdBound) continue;
+    b.dataset.cmdBound = "1";
+    b.addEventListener("click", () => {
+      if (mode === "show") { if (!d.open) d.showModal(); }
+      else d.close();
+    });
+  }
+};
+if (!_cmdSupported()) {
+  const _fbTimer = setTimeout(() => { if (!_cmdSupported()) _wireDialogFallbacks(); }, 3000);
+  import("https://esm.run/invokers-polyfill")
+    .catch(() => {})
+    .finally(() => { clearTimeout(_fbTimer); if (!_cmdSupported()) _wireDialogFallbacks(); });
+}
 
 // ── i18n (ko/en) — /static/legacy/i18n.js 의 JM_I18N. 사전에 없는 키는 ko 원문/키로 fallback.
 // JS 렌더 문자열용 T(key, fallback, ...args): 사전에 있으면 번역, 없으면 fallback.
@@ -2648,7 +2677,8 @@ $("#auth-resend").addEventListener("click", async () => {
   } catch (e) { infoEl.textContent = T("auth.errNet", "네트워크 오류"); }
 });
 $("#auth-password").addEventListener("keydown", e => {
-  if (e.key === "Enter") $("#auth-submit").click();
+  // IME 조합 확정 Enter(isComposing/keyCode 229)는 제출하지 않는다
+  if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) $("#auth-submit").click();
 });
 $("#logout-btn").addEventListener("click", async () => {
   try { await fetch(API + "/auth/logout", {method: "POST"}); } catch (e) {}
@@ -2665,8 +2695,8 @@ async function api(path, opts, _retried) {
   } catch (e) {
     // TypeError: Failed to fetch 등 브라우저 영어 원문 → 한국어 안내로 변환
     const err = new Error(T("err.netCheck",
-      "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요"));
-    err.cause = e;
+      "네트워크 연결을 확인하세요 — 인터넷 연결 상태를 확인한 뒤 다시 시도해주세요"),
+      { cause: e });
     throw err;
   }
   if (r.status === 401 && !_retried) {
@@ -3062,7 +3092,7 @@ function officePickRun(runs) {
   const byCreated = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
   const active = dr.filter(r => OFFICE_ACTIVE.has(r.status)).sort(byCreated);
   if (active.length) return active[0];
-  return dr.slice().sort(byCreated)[0];
+  return dr.toSorted(byCreated)[0];
 }
 
 // stage_key별 최신 attempt의 StageRun — 없으면 pending/null
@@ -3632,7 +3662,8 @@ async function officeEnsureRunForm() {
 /* ── 새 실행 (워크플로 탭) ── */
 $("#office-run-btn").addEventListener("click", officeSubmitRun);
 $("#office-task-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") officeSubmitRun();
+  // IME 조합 확정 Enter(isComposing/keyCode 229)는 제출하지 않는다
+  if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) officeSubmitRun();
 });
 $("#office-wf-select").addEventListener("change", officeWfStageCount);
 
@@ -3694,7 +3725,7 @@ async function officeLoadDiff() {
   const real = run && run.id &&
     !String(run.id).startsWith("demo") && run.id !== "live-sessions";
   if (!box || !real || run.status !== "waiting_approval") {
-    if (box) box.innerHTML = "";
+    if (box) box.replaceChildren();
     officeState.diffKey = ""; officeState.diffHtml = null;
     officeState.diffFiles = [];
     return;
@@ -4078,7 +4109,7 @@ function _renderHourly(hourly) {
   const arr = (Array.isArray(hourly) ? hourly : [])
     .filter(h => h && Number.isFinite(Number(h.hour)))
     .sort((a, b) => Number(a.hour) - Number(b.hour));
-  if (!arr.length) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!arr.length) { box.hidden = true; box.replaceChildren(); return; }
   const max = Math.max(...arr.map(h => Number(h.working_seconds) || 0), 1);
   box.innerHTML = arr.map(h => {
     const sec = Math.max(0, Number(h.working_seconds) || 0);
@@ -4161,7 +4192,7 @@ async function jmShowSessionHistory(tool, key) {
       body = `<p class="sd-ended">기록 없음</p>`;
     } else {
       // 타임라인 — 최신이 위. 상태색: working=초록 decision=amber rest=회색 ended=검정
-      body = `<ol class="jmo-timeline">` + events.slice().reverse().map(e => {
+      body = `<ol class="jmo-timeline">` + events.toReversed().map(e => {
         const when = (e.event_at || e.created_at || "").slice(5, 16).replace("T", " ");
         const st = String(e.to_status || e.status || "");
         const cls = st === "working" || st === "decision" ||
@@ -4485,7 +4516,7 @@ async function loadCalendar() {
       reviewEvent(b.dataset.id, "approve", b.closest("[data-review]"))));
     revEl.querySelectorAll(".rv-reject").forEach(b => b.addEventListener("click", () =>
       reviewEvent(b.dataset.id, "reject", b.closest("[data-review]"))));
-  } catch (e) { revEl.innerHTML = ""; }
+  } catch (e) { revEl.replaceChildren(); }
   try {
     const [events, jobs] = await Promise.all([
       api("/events?limit=50"), api("/notification-jobs?limit=20")]);
@@ -4696,7 +4727,7 @@ minStarsRange.addEventListener("input", () => {
 function renderFiltered() {
   const items = sr.lastItems.filter(passFilters);
   if (!items.length) {
-    grid.innerHTML = "";
+    grid.replaceChildren();
     emptyTitle.textContent = t("emptyTitle");
     emptyDesc.textContent = t("emptyDesc");
     empty.hidden = false;
@@ -4874,7 +4905,7 @@ async function submitDevReview(item, btn, msg) {
 function renderTopicRepos(data) {
   sr.lastItems = data.items ?? [];
   if (!sr.lastItems.length) {
-    grid.innerHTML = "";
+    grid.replaceChildren();
     emptyTitle.textContent = t("topicNoRepos");
     emptyDesc.textContent = t("topicNoReposDesc");
     empty.hidden = false;
@@ -4928,7 +4959,7 @@ function selectTopic(topic, count) {
   void loadRelatedTopics(topic);
 }
 async function loadRelatedTopics(topic) {
-  relatedTopics.innerHTML = "";
+  relatedTopics.replaceChildren();
   try {
     const data = await api(`/radar/related-topics?topic=${encodeURIComponent(topic)}`);
     const related = (data.related ?? []).filter(r => r.topic !== topic).slice(0, 8);
@@ -5003,7 +5034,7 @@ async function loadTrending() {
     const data = await api(`/radar/trending?${params.toString()}`);
     sr.lastItems = data.items ?? [];
     if (!sr.lastItems.length) {
-      grid.innerHTML = "";
+      grid.replaceChildren();
       emptyTitle.textContent = t("emptyTitle");
       emptyDesc.textContent = t("emptyDesc");
       empty.hidden = false;
@@ -5025,7 +5056,7 @@ async function loadRanking() {
     const data = await api(`/radar/ranking?${params.toString()}`);
     sr.lastItems = data.items ?? [];
     if (!sr.lastItems.length) {
-      grid.innerHTML = "";
+      grid.replaceChildren();
       emptyTitle.textContent = t("emptyTitle");
       emptyDesc.textContent = t("emptyDesc");
       empty.hidden = false;
@@ -5274,7 +5305,6 @@ async function showRunCompare() {
     `</tbody></table>`;
 }
 $("#runs-compare-btn").addEventListener("click", showRunCompare);
-$("#compare-close").addEventListener("click", () => $("#compare-dialog").close());
 $("#compare-dialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
 });
@@ -5532,7 +5562,6 @@ $("#notify-rules-list")?.addEventListener("click", (e) => {
 $("#settings-open").addEventListener("click", () => {
   location.href = "/static/legacy/settings.html";
 });
-$("#settings-close").addEventListener("click", () => $("#settings-dialog").close());
 $("#settings-dialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
 });
@@ -5971,7 +6000,7 @@ async function jmLoadSessionActivity(tool, key, body) {
       body.innerHTML = '<span class="card-meta">활동 기록 없음</span>';
       return;
     }
-    body.innerHTML = `<ol class="jmo-timeline">` + arr.slice().reverse().map(a => {
+    body.innerHTML = `<ol class="jmo-timeline">` + arr.toReversed().map(a => {
       const when = (a.at || a.created_at || "").slice(5, 16).replace("T", " ");
       const st = String(a.status || "");
       const cls = ["working", "decision", "rest", "ended"].includes(st) ? st : "rest";
@@ -6938,8 +6967,7 @@ async function loadAudit() {
   try {
     const d = await api("/audit?limit=200");
     const items = (d.items || [])
-      .slice()
-      .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+      .toSorted((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
     if (!items.length) {
       tb.innerHTML = '<tr><td colspan="5" class="empty">감사 로그가 없습니다</td></tr>';
       return;
@@ -7242,7 +7270,6 @@ async function openSessionHistory(s) {
     body.innerHTML = `<span class="empty">${esc(e.message)}</span>`;
   }
 }
-$("#sl-close")?.addEventListener("click", () => $("#sl-dialog").close());
 $("#sl-dialog")?.addEventListener("click", (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
 });
@@ -7258,7 +7285,7 @@ function sessionHistoryHtml(d, s, projNames) {
     `<span class="proj-chip">토큰 in ${esc((stats.tokens_in ?? 0).toLocaleString())} / out ${esc((stats.tokens_out ?? 0).toLocaleString())}</span>` +
     `<span class="proj-chip">비용 ${usd(stats.est_cost_usd)}</span>` +
     `<span class="proj-chip">총 시간 ${officeFmtSecs(stats.total_seconds || 0)}</span>`;
-  const tl = (d.timeline || []).slice().reverse();
+  const tl = (d.timeline || []).toReversed();
   const tlHtml = tl.length
     ? `<ol class="sl-tl">` + tl.map(t => {
         const trans = t.from_state && t.to_state
@@ -7335,8 +7362,7 @@ async function loadRisks() {
   try {
     const d = await api("/risks");
     const items = (d.items || [])
-      .slice()
-      .sort((a, b) =>
+      .toSorted((a, b) =>
         (RISK_SEV_RANK[String(a.severity || "").toLowerCase()] ?? 3) -
         (RISK_SEV_RANK[String(b.severity || "").toLowerCase()] ?? 3));
     if (!items.length) {
@@ -7388,8 +7414,7 @@ async function loadApprovals() {
   try {
     const d = await api("/approvals");
     const items = (d.items || [])
-      .slice()
-      .sort((a, b) => (a.age_seconds || 0) - (b.age_seconds || 0));  // 오래된 순
+      .toSorted((a, b) => (a.age_seconds || 0) - (b.age_seconds || 0));  // 오래된 순
     if (!items.length) {
       el.innerHTML = '<div class="empty">대기 중인 승인이 없습니다</div>';
       return;
@@ -7654,8 +7679,6 @@ $("#exp-dl")?.addEventListener("click", async () => {
   }
 });
 
-$("#share-open")?.addEventListener("click", () => $("#share-dialog")?.showModal());
-$("#share-close")?.addEventListener("click", () => $("#share-dialog")?.close());
 $("#share-dialog")?.addEventListener("click", (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
 });

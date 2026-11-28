@@ -114,7 +114,7 @@ const OfficePanel = (() => {
     P.sel = sel || null;
     const list = $("jmo-people");
     const order = { decision: 0, working: 1 };
-    const sorted = [...P.people].sort((a, b) => (order[modeOf(a)] ?? 2) - (order[modeOf(b)] ?? 2) || a.name.localeCompare(b.name));
+    const sorted = P.people.toSorted((a, b) => (order[modeOf(a)] ?? 2) - (order[modeOf(b)] ?? 2) || a.name.localeCompare(b.name));
     $("jmo-count").textContent = t("count", { n: sorted.length, w: sorted.filter(p => modeOf(p) === "working").length });
     // 프로젝트별 묶기 — 일하는/결정 있는 그룹이 먼저, 나머지는 프로젝트 이름순. 그룹 안 순서는 위 정렬 그대로.
     const groups = new Map();

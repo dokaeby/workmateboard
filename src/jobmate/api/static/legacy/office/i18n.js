@@ -180,10 +180,8 @@ const JMO_I18N = (() => {
   async function init() {
     if (!fixed) {
       try {
-        const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort(), 1500);
-        const res = await fetch("/api/config", { signal: ctl.signal, cache: "no-store" });
-        clearTimeout(timer);
+        const res = await fetch("/api/config",
+          { signal: AbortSignal.timeout(1500), cache: "no-store" });
         if (res.ok) { const c = await res.json(); const l = norm(c && c.lang); if (l) lang = l; }
       } catch { /* 설정을 못 읽어도 화면은 뜬다 */ }
     }

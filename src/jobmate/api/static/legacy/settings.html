@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>jobMate 설정</title>
 <link rel="icon" href="/static/icon.png">
 <style>
@@ -38,6 +39,9 @@
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
           Arial, "Noto Sans", sans-serif;
   --mono: "SF Mono", Monaco, Consolas, "Liberation Mono", monospace;
+  /* 네이티브 UI(스크롤바·체크박스 등)도 시스템 다크 모드를 따르도록 선언.
+     토큰 전환은 아래 prefers-color-scheme 미디어쿼리가 담당(light-dark() 미지원 대비). */
+  color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -769,8 +773,7 @@ async function api(path, opts) {
   try {
     r = await fetch(API + path, Object.assign({}, opts, {headers}));
   } catch (e) {
-    const err = new Error(t("settings.net_err"));
-    err.cause = e;
+    const err = new Error(t("settings.net_err"), { cause: e });
     throw err;
   }
   if (r.status === 401) { _unauthorized(); throw new Error("unauthorized"); }
