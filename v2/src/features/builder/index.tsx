@@ -2,7 +2,7 @@
  *  API 계약: GET/POST /workflows/custom, PATCH/DELETE /workflows/custom/{name},
  *  GET /workflows/custom/{name}/revisions[/{rev}], POST .../revisions/{rev}/restore.
  *  저장은 base_revision 낙관적 잠금 — 409 revision_conflict 시 충돌 UI를 띄운다. */
-import { useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiDelete, ApiError } from "../../shared/api/client";
 import type { CustomWorkflow } from "../../shared/api/types";
@@ -147,11 +147,47 @@ export default function BuilderPage() {
   });
   const revisions = revsData?.items || [];
 
-  const { data: revDetail, isLoading: revDetailLoading } = useQuery({
+  const { data: revDetail, isLoading: revDetailLoading, error: revDetailError, refetch: refetchRevDetail } = useQuery({
     queryKey: ["wf-revision", revName, viewRev],
     queryFn: () => apiGet<WorkflowRevisionDetail>(`${revsPath(revName)}/${viewRev}`),
     enabled: !!revName && viewRev != null,
   });
+
+  const revDialogRef = useRef<HTMLDialogElement>(null);
+  const revPressOutside = useRef(false);
+  // 네이티브 <dialog> — viewRev가 설정되면 마운트 후 showModal().
+  // 'close' 이벤트(Esc 등)에서 viewRev를 null로 동기화한다.
+  useEffect(() => {
+    const d = revDialogRef.current;
+    if (!d) return;
+    if (!d.open) d.showModal();
+    const sync = () => setViewRev(null);
+    d.addEventListener("close", sync);
+    return () => d.removeEventListener("close", sync);
+  });
+
+  // 프로그램적 닫기 — d.close()가 'close' 이벤트를 발생시켜 위 리스너가
+  // viewRev를 null로 동기화한다(포커스도 invoker로 복귀).
+  const closeRevDialog = () => {
+    const d = revDialogRef.current;
+    if (d) d.close();
+    else setViewRev(null);
+  };
+
+  // 라이트 디스미스 — pointerdown·click 모두 dialog 자신(=backdrop 표면)을
+  // 타겟으로 하고 좌표가 패널 rect 밖일 때만 닫는다(선택 드래그·select 오인 방지).
+  const outsideRevDialog = (e: { clientX: number; clientY: number; currentTarget: HTMLDialogElement }) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  };
+  const onRevBackdropPointerDown = (e: PointerEvent<HTMLDialogElement>) => {
+    revPressOutside.current = outsideRevDialog(e);
+  };
+  const onRevBackdropClick = (e: MouseEvent<HTMLDialogElement>) => {
+    const dismiss = revPressOutside.current && e.target === e.currentTarget && outsideRevDialog(e);
+    revPressOutside.current = false;
+    if (dismiss) closeRevDialog();
+  };
 
   /** 리비전 목록의 최신 번호 — 없으면 null. */
   const latestRevOf = async (n: string): Promise<number | null> => {
@@ -171,7 +207,7 @@ export default function BuilderPage() {
     setNote("");
     setConflict(null);
     setCasWarn(false);
-    setViewRev(null);
+    closeRevDialog();
     setStatus({ text: t("wf.loaded", "불러왔습니다: {name}").replace("{name}", w.name) });
     // 기준 리비전 = 최신 리비전. 리비전 API 미구현 환경에서는 목록의 latest_revision을 시도.
     const rev = await latestRevOf(w.name || "");
@@ -321,7 +357,7 @@ export default function BuilderPage() {
         setSpecText(specToText(d?.spec));
         setBaseRev(newRev);
       }
-      setViewRev(null);
+      closeRevDialog();
       setStatus({
         text: t("wf.restored", "리비전 {rev}로 복원했습니다").replace("{rev}", String(newRev ?? rev)),
       });
@@ -495,21 +531,20 @@ export default function BuilderPage() {
       </div>
 
       {viewRev != null && revName && (
-        <div className="fixed inset-0 z-50">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setViewRev(null)} />
-          <aside
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("wf.revDetail", "버전 {rev} 상세").replace("{rev}", String(viewRev))}
-            className="absolute inset-y-0 right-0 flex w-full max-w-lg flex-col overflow-y-auto border-l border-border bg-surface shadow-xl"
-          >
+        <dialog
+          ref={revDialogRef}
+          aria-label={t("wf.revDetail", "버전 {rev} 상세").replace("{rev}", String(viewRev))}
+          onPointerDown={onRevBackdropPointerDown}
+          onClick={onRevBackdropClick}
+          className="start-auto end-0 top-0 bottom-0 m-0 h-dvh w-full max-w-lg max-h-none overflow-y-auto border-l border-border bg-surface p-0 text-ink shadow-xl open:flex flex-col [&:modal]:overscroll-contain [&::backdrop]:overflow-hidden [&::backdrop]:overscroll-contain [&::backdrop]:bg-black/30"
+        >
             <div className="flex items-center gap-2 border-b border-border px-4 py-3">
               <h2 className="min-w-0 flex-1 truncate text-base font-bold text-ink">
                 {t("wf.revDetail", "버전 {rev} 상세").replace("{rev}", String(viewRev))}
               </h2>
               <button
                 type="button"
-                onClick={() => setViewRev(null)}
+                onClick={closeRevDialog}
                 aria-label={t("common.close", "닫기")}
                 className="rounded-md px-2 py-1 text-muted hover:bg-surface-hover"
               >
@@ -518,6 +553,12 @@ export default function BuilderPage() {
             </div>
             <div className="flex-1 space-y-3 p-4">
               {revDetailLoading && <Spinner />}
+              {revDetailError && (
+                <ErrorBox
+                  message={revDetailError instanceof Error ? revDetailError.message : String(revDetailError)}
+                  onRetry={() => refetchRevDetail()}
+                />
+              )}
               {revDetail && (
                 <>
                   <dl className="grid grid-cols-1 gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
@@ -550,8 +591,7 @@ export default function BuilderPage() {
                 </>
               )}
             </div>
-          </aside>
-        </div>
+        </dialog>
       )}
     </div>
   );
