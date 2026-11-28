@@ -1065,18 +1065,29 @@ class MigrationStoreMixin:
         add를 건너뛰고, 구 집합이 없으면 drop을 건너뛴다."""
         old_set = set(old_cols)
         new_set = set(new_cols) if new_cols else set()
+        constraints = self._pg_table_constraints(table)
+        have_new = bool(
+            new_cols and any(ct == ctype and set(cl) == new_set for _, ct, cl in constraints)
+        )
         with self.tx() as c:
-            for con_name, con_type, cols in self._pg_table_constraints(table):
+            for con_name, con_type, cols in constraints:
                 if con_type == ctype and set(cols) == old_set:
                     c.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{con_name}"')
-            if new_cols is None or add_sql is None or cname is None:
+            if new_cols is None or add_sql is None or cname is None or have_new:
                 return
-            have_new = any(
-                ct == ctype and set(cl) == new_set
-                for _, ct, cl in self._pg_table_constraints(table)
-            )
-            if not have_new:
-                c.execute(f"ALTER TABLE {table} ADD CONSTRAINT {cname} {add_sql}")
+            if ctype == "PRIMARY KEY":
+                # 컬럼 드리프트로 스펙의 old/new 어느 쪽과도 안 맞는 PK가
+                # 남아 있으면 그대로 ADD가 'multiple primary keys'로 영구
+                # 실패한다 — rescope 의도대로 기존 PK를 전부 제거 후 재생성.
+                for con_name, con_type, _cols in self._pg_table_constraints(table):
+                    if con_type == "PRIMARY KEY":
+                        c.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{con_name}"')
+            # 동명 제약/인덱스 잔재(이전 부분 마이그레이션의 standalone
+            # unique index 등)가 있으면 ADD CONSTRAINT가 'relation already
+            # exists'로 실패 — 이름을 비워두고 추가한다.
+            c.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {cname}")
+            c.execute(f"DROP INDEX IF EXISTS {cname}")
+            c.execute(f"ALTER TABLE {table} ADD CONSTRAINT {cname} {add_sql}")
         logger.info("%s org rescope: %s %s -> %s", table, ctype, old_cols, new_cols)
 
     def _migrate_org_unique_rescope_pg(self) -> None:
@@ -1534,9 +1545,15 @@ class MigrationStoreMixin:
                 for r in legacy:
                     if {"provider", "external_id"} == set(r["cols"] or []):
                         c.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{r["constraint_name"]}"')
+                # 이전 부분 마이그레이션이 만든 동명 제약/인덱스 잔재가
+                # 있으면 ADD CONSTRAINT가 'relation already exists'로 실패 —
+                # 이름을 비워두고 추가한다.
+                cname = f"{table}_provider_company_external_key"
+                c.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {cname}")
+                c.execute(f"DROP INDEX IF EXISTS {cname}")
                 c.execute(
                     f"ALTER TABLE {table} ADD CONSTRAINT"
-                    f" {table}_provider_company_external_key"
+                    f" {cname}"
                     " UNIQUE(provider, company_id, external_id)"
                 )
                 c.execute(
